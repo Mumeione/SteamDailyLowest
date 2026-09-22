@@ -1,0 +1,118 @@
+# 每日史低日报（对应 .scratch/deploy/spec.md 与 docs/DEVELOPMENT.md §8）
+#
+# 三个入口（cron 是 UTC，GitHub 不认 timezone 字段）：
+#   0 19 * * *   每日 03:00 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
+#   0 7 2 * *    每月 2 日 15:00           orphan 清理：把 data 分支历史清零（只留当前一版）
+#   workflow_dispatch                    手动触发，行为同主任务
+#
+# §8 的四个坑在这里的处理方式：
+#   1. GITHUB_TOKEN 推的 commit 不触发 Pages 构建 → 发布用 deploy-pages 在同一次运行内完成
+#   2. 公开仓库 60 天无活动会禁用定时任务 → 每日回写 data 分支正好持续产生活动
+#   3. runner 无持久磁盘 → 状态 JSON 提交回 data 分支
+#   4. main 的 .gitignore 直接整体忽略 data/（状态由 data 分支持有，不再依赖取反写法）
+#
+# 预抓 job（15:00 --prefetch）待批 B 落地后加入，见 spec Comments。
+
+name: daily
+
+on:
+  schedule:
+    - cron: "0 19 * * *"
+    - cron: "0 7 2 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# 主任务与预抓都写 data 分支，串行排队防并发写坏状态
+concurrency:
+  group: state-write
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 19 * * *'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取出 data 分支（状态库持久层）
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: statedata
+
+      - name: 恢复状态文件
+        run: |
+          mkdir -p data
+          if [ -f statedata/data/state.json ]; then
+            cp statedata/data/state.json data/state.json
+            echo "状态库 $(wc -c < data/state.json) 字节"
+          else
+            echo "data 分支无状态文件，按空库起步"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: pip install requests jinja2
+
+      - name: 生成运行配置（key 走 secrets 环境变量，config.py 已支持覆盖）
+        run: cp config.example.json config.json
+
+      - name: 日常抓取与报表
+        env:
+          ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+        run: python run.py
+
+      - name: Pages 配置
+        uses: actions/configure-pages@v5
+
+      - name: 打包报表
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+      - name: 发布 Pages（必须在同一次运行内，§8 坑 1）
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 状态回写 data 分支（§8 坑 3）
+        if: always() && hashFiles('data/state.json') != ''
+        run: |
+          cd statedata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          cp ../data/state.json data/state.json
+          git add data/state.json
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "state $(date -u +%F)"
+            git push
+          fi
+
+  cleanup-data-branch:
+    if: github.event.schedule == '0 7 2 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: data
+
+      - name: orphan 重置 —— 历史清零、只留当前一版（用户裁决：json 不留历史）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan data-new
+          git add -A
+          git commit -m "state reset $(date -u +%F)"
+          git push origin HEAD:data --force

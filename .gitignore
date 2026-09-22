@@ -4,11 +4,11 @@ __pycache__/
 .venv/
 venv/
 
-# data/ 下除 state.json 外全部忽略（probe 产物、logs、临时状态）。
-# 必须写成 `data/*` 再取反：写成 `data/` 时 git 不会进入该目录，
-# 下面的 `!` 取反无效，state.json 会被静默忽略、提交不上去（见 DEVELOPMENT.md §8）。
-data/*
-!data/state.json
+# data/ 整体不入库（probe 产物、logs、临时状态、本地 state.json）。
+# 状态库由独立的 data 分支持有（见 .scratch/deploy/spec.md）——
+# main 不留 state.json 历史；旧写法 `data/* + !data/state.json` 只在
+# 「状态留 main」的方案里才需要（DEVELOPMENT.md §8 坑 4）。
+data/
 
 output/
 
