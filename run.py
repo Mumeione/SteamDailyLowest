@@ -4,6 +4,7 @@
     python run.py              # 日常：抓列表 → 筛 → 出首版报表 → 取当日新增详情 → 覆盖报表
     python run.py --baseline   # 只把当前全部折扣写入状态，不取详情、不出报表
     python run.py --audit      # 体检：无 filter 全量抓取，统计完整分布，不取详情、不出报表
+    python run.py --probe      # 抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步）
 
 两个必须遵守的结构性约定（§3.3）：
 
@@ -588,6 +589,138 @@ def run_baseline(cfg: dict) -> int:
     return 0
 
 
+def build_probe_steam_client(cfg: dict) -> SteamClient:
+    """探针专用 Steam 客户端：超时用 `probe_timeout_seconds`（§9 的独立短超时）。"""
+    calls, window = parse_rate_limit(cfg["steam_rate_limit"], default=(150, 300))
+    limiter = RateLimiter(
+        name="steam",
+        max_calls=calls,
+        window_seconds=window,
+        min_interval=float(cfg["steam_min_interval"]),
+    )
+    return SteamClient(
+        limiter=limiter,
+        timeout=float(cfg.get("probe_timeout_seconds", 6)),
+        pause=float(cfg["request_pause_seconds"]),
+        log=log,
+        lang=cfg.get("steam_lang", "schinese"),
+    )
+
+
+def run_probe(cfg: dict, *, state: State | None = None,
+              steam: SteamClient | None = None,
+              log: Callable[[str], None] = log) -> int:
+    """§12 第 8 步：人工抽查 3 个游戏的「价格 / 好评率 / 中文名」。
+
+    从状态库选 3 个**最近出现**且已有缓存详情的游戏，实时重拉 Steam 侧
+    （`appdetails` 单 appid 给 name + 国区价；`appreviews` 给好评率），
+    与 `game_meta` / `seen_deal` 里缓存的数据对照。**只读 state，不写。**
+
+    报告落 `output/probe_report.txt`（UTF-8）——另一台 agent 的环境
+    PowerShell 捕获 stdout 不可靠，一律以文件为准；stdout 同时打印一份。
+    """
+    tz = classify.zone(cfg["timezone"])
+    now = datetime.now(tz)
+    if state is None:
+        state = State(resolve_path(cfg, "state_path"), tz=tz).load()
+    if steam is None:
+        steam = build_probe_steam_client(cfg)
+
+    # ---- 抽样：按 game_id 取最近一次出现的折扣，要求缓存里有 appid + 好评率 ----
+    latest: dict[str, dict] = {}
+    for entry in state.seen_deal.values():
+        gid = entry.get("game_id")
+        if not gid:
+            continue
+        prev = latest.get(gid)
+        if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
+            latest[gid] = entry
+    candidates = [
+        e for e in latest.values()
+        if state.has_appid(e["game_id"]) and (state.meta(e["game_id"]) or {}).get("reviews")
+    ]
+    candidates.sort(key=lambda e: e.get("last_seen_at") or "", reverse=True)
+    if not candidates:
+        log("[probe] 状态库里没有可抽查的对象（需要已有 appid + 好评率缓存）")
+        return 0
+    # 取首 / 中 / 尾各一，避免全抽到最近三条
+    picks = {0, len(candidates) // 2, len(candidates) - 1}
+    samples = [candidates[i] for i in sorted(picks)]
+    log(f"[probe] 抽样 {len(samples)} 个：{[s.get('title') for s in samples]}")
+
+    lines: list[str] = [
+        f"probe 抽查报告 {now.isoformat(timespec='seconds')}",
+        f"抽样 {len(samples)} 个 · Steam 客户端超时 {cfg.get('probe_timeout_seconds')}s",
+        "=" * 70,
+    ]
+    mismatches = 0
+    for entry in samples:
+        gid = entry["game_id"]
+        appid = state.meta(gid).get("appid")
+        cached_meta = state.meta(gid) or {}
+        cached_reviews = cached_meta.get("reviews") or {}
+        cached_title = state.title_zh(gid)
+        lines.append(f"游戏：{entry.get('title')}  appid={appid}  last_seen={entry.get('last_seen_at')}")
+        try:
+            info = steam.info(int(appid), cc=cfg.get("country", "CN"))
+            reviews = steam.reviews(int(appid))
+        except HttpError as exc:
+            lines.append(f"  [请求失败] {exc}")
+            mismatches += 1
+            continue
+
+        # 1) 中文名（Steam 没有中文标题时会回落英文名，缓存为 None 属正常，§2.5）
+        live_name = (info or {}).get("name")
+        if not cached_title:
+            name_ok = True
+            lines.append(f"  中文名  缓存=（无）  实时={live_name!r}  → 一致（Steam 无中文标题，回落英文名）")
+        else:
+            name_ok = bool(live_name) and cached_title.strip() == live_name.strip()
+            lines.append(f"  中文名  缓存={cached_title!r}  实时={live_name!r}  → {'一致' if name_ok else '不一致'}")
+        if not name_ok:
+            mismatches += 1
+
+        # 2) 价格（ITAD 落库价 vs Steam 国区实时价；折扣已过期的差异属正常，附 expiry 供人工判断）
+        itad_price = entry.get("price_int")
+        steam_final = (info or {}).get("final")
+        price_ok = itad_price and steam_final is not None and abs(int(steam_final) - int(itad_price)) <= 1
+        lines.append(
+            f"  价格    ITAD落库={itad_price}  Steam国区={steam_final}  "
+            f"折扣={((info or {}).get('discount_percent'))}%  expiry={entry.get('expiry')}"
+            f"  → {'一致' if price_ok else '不一致（先看折扣是否已结束）'}"
+        )
+        if not price_ok:
+            mismatches += 1
+
+        # 3) 好评率（§11：与 ITAD 缓存误差 ≤1 视为一致）
+        live_reviews = reviews or {}
+        live_score = live_reviews.get("score")
+        cached_score = cached_reviews.get("score")
+        score_ok = (
+            live_score is not None and cached_score is not None
+            and abs(int(live_score) - int(cached_score)) <= 1
+        )
+        lines.append(
+            f"  好评率  缓存={cached_score}%/{cached_reviews.get('count')}条  "
+            f"实时={live_score}%/{live_reviews.get('count')}条  → {'一致' if score_ok else '不一致'}"
+        )
+        if not score_ok:
+            mismatches += 1
+        lines.append("-" * 70)
+
+    lines.append(f"结论：{len(samples)} 个抽查对象，{mismatches} 处需人工确认（Steam 实发 {steam.calls} 次请求）。")
+    lines.append("说明：价格不一致 ≠ 数据错误 —— 折扣结束后 Steam 恢复原价而 ITAD 落库价是折扣价，属预期。")
+
+    out_dir = resolve_path(cfg, "output_dir")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "probe_report.txt"
+    out_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for line in lines:
+        log(line)
+    log(f"报告已写入：{out_file}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -597,11 +730,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit", action="store_true",
                         help="体检：无 filter 全量抓取（162 页），统计完整分布与 §4.1 交叉校验，"
                              "不取详情、不出报表")
+    parser.add_argument("--probe", action="store_true",
+                        help="抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步），"
+                             "报告写 output/probe_report.txt，只读状态库")
     parser.add_argument("--config", default=None, help="配置文件路径（默认 config.json）")
     args = parser.parse_args(argv)
 
     try:
         cfg = load_config(args.config)
+        if args.probe:
+            return run_probe(cfg)
         if args.audit:
             return run_daily(cfg, audit=True)
         return run_baseline(cfg) if args.baseline else run_daily(cfg)
