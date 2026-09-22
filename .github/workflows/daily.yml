@@ -1,9 +1,10 @@
 # 每日史低日报（对应 .scratch/deploy/spec.md 与 docs/DEVELOPMENT.md §8）
 #
-# 三个入口（cron 是 UTC，GitHub 不认 timezone 字段）：
+# 入口（cron 是 UTC，GitHub 不认 timezone 字段）：
 #   0 19 * * *   每日 03:00 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
+#   0 7 * * *    每日 15:00 Asia/Shanghai  预抓：run.py --prefetch，只补详情缓存、不出报表（批 B）
 #   0 7 2 * *    每月 2 日 15:00           orphan 清理：把 data 分支历史清零（只留当前一版）
-#   workflow_dispatch                    手动触发，行为同主任务
+#   workflow_dispatch                    手动触发：主任务与预抓都跑（并发组串行排队）
 #
 # §8 的四个坑在这里的处理方式：
 #   1. GITHUB_TOKEN 推的 commit 不触发 Pages 构建 → 发布用 deploy-pages 在同一次运行内完成
@@ -11,13 +12,15 @@
 #   3. runner 无持久磁盘 → 状态 JSON 提交回 data 分支
 #   4. main 的 .gitignore 直接整体忽略 data/（状态由 data 分支持有，不再依赖取反写法）
 #
-# 预抓 job（15:00 --prefetch）待批 B 落地后加入，见 spec Comments。
+# 每月 2 日的 0 7 UTC，预抓与 orphan 清理会同时命中：二者都进 state-write 并发组串行排队，
+# 且 orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
 
 name: daily
 
 on:
   schedule:
     - cron: "0 19 * * *"
+    - cron: "0 7 * * *"
     - cron: "0 7 2 * *"
   workflow_dispatch: {}
 
@@ -116,3 +119,58 @@ jobs:
           git add -A
           git commit -m "state reset $(date -u +%F)"
           git push origin HEAD:data --force
+
+  prefetch:
+    # 批 B 预抓（.scratch/prefetch/spec.md R2）：15:00 Asia/Shanghai 补详情缓存，
+    # 只写 state 不出报表；与主任务错开，防并发写坏 state.json
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 7 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取出 data 分支（状态库持久层）
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: statedata
+
+      - name: 恢复状态文件
+        run: |
+          mkdir -p data
+          if [ -f statedata/data/state.json ]; then
+            cp statedata/data/state.json data/state.json
+            echo "状态库 $(wc -c < data/state.json) 字节"
+          else
+            echo "data 分支无状态文件，按空库起步"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: pip install requests jinja2
+
+      - name: 生成运行配置（key 走 secrets 环境变量，config.py 已支持覆盖）
+        run: cp config.example.json config.json
+
+      - name: 预抓详情（只写 state，不出报表）
+        env:
+          ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+        run: python run.py --prefetch
+
+      - name: 状态回写 data 分支（§8 坑 3）
+        if: always() && hashFiles('data/state.json') != ''
+        run: |
+          cd statedata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          cp ../data/state.json data/state.json
+          git add data/state.json
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "state (prefetch) $(date -u +%F)"
+            git push
+          fi

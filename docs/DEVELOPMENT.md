@@ -1013,6 +1013,7 @@ SteamDailyLowest/
 | `sweep_mode` | `"low_only"` | 抓取口径：`low_only` = 服务端只取「本体 + 史低」（27 页）／`full` = 无 filter 全量（162 页）。见 §2.1 / §3.2 |
 | `detail_scope` | `"catalog"` | 详情抓取范围：`catalog` = 当日新增全部 + 目录里按预算增量补／`new_today` = 只抓当日新增 |
 | `detail_daily_budget` | `300` | 每轮额外补详情的**条数上限**（`0` = 关闭增量补齐）。300 条约 3.5 分钟 |
+| `prefetch_daily_budget` | `300` | **预抓任务**（`run.py --prefetch`，15:00 CST）每轮补详情的条数上限，与 `detail_daily_budget` **相互独立**；`0` = 关闭。顺序 = 最近出现在史低的优先（`.scratch/prefetch/spec.md`） |
 | `fx_cache_path` | `"data/fx_cache.json"` | 汇率缓存文件（每天一份） |
 | `steam_timeout_seconds` | `15` | Steam 请求超时（响应都很小，比 ITAD 短一些） |
 | `steam_batch_size` | `20` | 批量 `appdetails` 一次塞几个 appid（实测 20 正常，文档说的 50 未复核） |

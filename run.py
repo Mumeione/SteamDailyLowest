@@ -4,6 +4,7 @@
     python run.py              # 日常：抓列表 → 筛 → 出首版报表 → 取当日新增详情 → 覆盖报表
     python run.py --baseline   # 只把当前全部折扣写入状态，不取详情、不出报表
     python run.py --audit      # 体检：无 filter 全量抓取，统计完整分布，不取详情、不出报表
+    python run.py --prefetch   # 预抓：只补详情缓存（独立预算），不出报表（.scratch/prefetch/spec.md）
     python run.py --probe      # 抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步）
 
 两个必须遵守的结构性约定（§3.3）：
@@ -589,6 +590,138 @@ def run_baseline(cfg: dict) -> int:
     return 0
 
 
+def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetime) -> tuple[list[dict], dict]:
+    """批 B 预抓目标（.scratch/prefetch/spec.md R1）。
+
+    与日常 `detail_targets` 的两个差别：
+
+    1. **顺序 = 最近出现在史低的优先**（spec 定稿口径）：按当前折扣的开始时间
+       `start`（即 deal.timestamp）降序 —— 刚进史低的最可能被人看到；
+       没有时间戳的排最后。
+    2. **预算独立**：用 `prefetch_daily_budget`（默认 300），与 `detail_daily_budget`
+       互不相干；`0` = 关闭预抓。
+
+    「缺数据」= 缺 appid / 好评率（`meta_valid` 不通过）**或**已有详情但缺中文名
+    （两条独立缓存，§2.5）。调用前须已 `record_seen`。
+    """
+    budget = int(cfg.get("prefetch_daily_budget", 300) or 0)
+    ttl = int(cfg.get("reviews_ttl_days", 7))
+    empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
+
+    need: list[tuple[str, dict]] = []
+    for entry in hist_low:
+        game_id = entry.get("game_id")
+        if not state.meta_valid(game_id, now, ttl, empty_ttl):
+            need.append((entry.get("start") or "", entry))
+        elif state.has_appid(game_id) and not state.title_zh(game_id):
+            need.append((entry.get("start") or "", entry))
+    need.sort(key=lambda pair: pair[0], reverse=True)
+    targets = [entry for _, entry in need[:max(0, budget)]]
+    return targets, {"budget": budget, "needed": len(need), "chosen": len(targets)}
+
+
+def run_prefetch(cfg: dict, *, state: State | None = None,
+                 client: ItadClient | None = None,
+                 steam: SteamClient | None = None,
+                 log: Callable[[str], None] = log) -> int:
+    """批 B 预抓（.scratch/prefetch/spec.md R1）：只补缓存，**不出报表**。
+
+    与日常同一套筛选（collect + funnel）；对缺数据的条目按「最近出现在史低的优先」
+    用独立预算 `prefetch_daily_budget` 补齐：
+
+    1. 缺 appid / 好评率 → ITAD `info/v2`（复用日常的 fetch_details，缓存命中不发请求）；
+    2. 缺中文名 → Steam 逐游戏（必须走 :mod:`src.steam`，全站合并限流 + 最小间隔 2 秒）。
+
+    产物只有 state.json + run_log，不写 `output/` 任何文件 ——
+    次日常规运行（或 Pages 构建）自然读到补全的数据。幂等：连续跑第二次应几乎零请求。
+    """
+    tz = classify.zone(cfg["timezone"])
+    now = datetime.now(tz)
+    sweep = resolve_sweep(cfg, audit=False)
+    if state is None:
+        state = State(resolve_path(cfg, "state_path"), tz=tz).load()
+    if client is None:
+        client = build_client(cfg)
+    if steam is None:
+        steam = build_steam_client(cfg)
+
+    log("=" * 70)
+    log(f"SteamDailyLowest 预抓 --prefetch {now.isoformat(timespec='seconds')}"
+        f"（时区 {cfg['timezone']}，抓取口径 {sweep}）")
+    log("=" * 70)
+
+    dropped = state.cleanup_expired(now, int(cfg["expired_retention_days"]))
+    items, normalized = collect(cfg, client, sweep)
+    result = funnel(normalized, cfg)
+    hist_low = result["hist_low"]
+    log(f"抓取 {len(items)} 条，史低 {len(hist_low)} 条，留存清理 {dropped} 条")
+
+    for entry in hist_low:
+        state.record_seen(entry, now)
+    state.save(now)  # 先落盘：详情阶段的失败不带走这一轮的攒库（§3.3）
+
+    targets, target_info = prefetch_targets(hist_low, state, cfg, now)
+    log(f"预抓目标 {target_info['chosen']} 个（缺数据 {target_info['needed']} 个，"
+        f"预算 {target_info['budget']}，顺序=最近出现在史低优先）")
+
+    # 1) ITAD info/v2：appid + 好评率（缓存命中不发请求，断点续传）
+    fetched = fetch_details(client, state, targets, cfg, now)
+
+    # 2) Steam 中文名：逐游戏单请求（批量拿不到 name，§2.2），永久缓存
+    title_fetched = 0
+    title_errors = 0
+    done = 0
+    for entry in targets:
+        game_id = entry.get("game_id")
+        if state.has_appid(game_id) and not state.title_zh(game_id):
+            appid = int(state.meta(game_id).get("appid"))
+            try:
+                info = steam.info(appid, cc=cfg.get("country", "CN"))
+            except HttpError as exc:
+                log(f"[warn] 中文名取失败，下次运行再补：{entry.get('title')}（{exc}）")
+                title_errors += 1
+            else:
+                if info and info.get("name"):
+                    state.set_title_zh(game_id, info["name"].strip(), now)
+                    title_fetched += 1
+        done += 1
+        if done % DETAIL_SAVE_EVERY == 0:
+            state.save(now)  # 断点续传：中途失败下次只补缺的
+    state.save(now)
+
+    backlog = count_backlog(hist_low, state, cfg, now)
+    log(f"预抓完成：详情新抓 {fetched} 个 · 中文名新取 {title_fetched} 个"
+        f"（失败 {title_errors} 个，Steam 请求 {steam.calls} 次）；"
+        f"目录还差 {backlog} 条。未产出报表。")
+
+    errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+    errors += [e for e in steam.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+    state.add_run_log(
+        {
+            "run_at": now.isoformat(timespec="seconds"),
+            "mode": "prefetch",
+            "sweep": sweep,
+            "deals_fetched": len(items),
+            "itad_requests": client.calls,
+            "steam_requests": steam.calls,
+            "filtered": result["counts"],
+            "hist_low_total": len(hist_low),
+            "prefetch_budget": target_info["budget"],
+            "prefetch_targets": target_info["chosen"],
+            "detail_fetched": fetched,
+            "title_zh_fetched": title_fetched,
+            "detail_backlog": backlog,
+            "limiter": client.limiter.stats(),
+            "steam_limiter": steam.limiter.stats(),
+            "errors": errors,
+        },
+        keep=int(cfg.get("run_log_keep", 30)),
+    )
+    state.save(now)
+    log(f"状态库已写入：{resolve_path(cfg, 'state_path')}")
+    return 0
+
+
 def build_probe_steam_client(cfg: dict) -> SteamClient:
     """探针专用 Steam 客户端：超时用 `probe_timeout_seconds`（§9 的独立短超时）。"""
     calls, window = parse_rate_limit(cfg["steam_rate_limit"], default=(150, 300))
@@ -730,6 +863,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit", action="store_true",
                         help="体检：无 filter 全量抓取（162 页），统计完整分布与 §4.1 交叉校验，"
                              "不取详情、不出报表")
+    parser.add_argument("--prefetch", action="store_true",
+                        help="预抓：同套筛选后按 prefetch_daily_budget 补详情缓存（只写 state、"
+                             "不出报表，.scratch/prefetch/spec.md R1）")
     parser.add_argument("--probe", action="store_true",
                         help="抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步），"
                              "报告写 output/probe_report.txt，只读状态库")
@@ -740,6 +876,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(args.config)
         if args.probe:
             return run_probe(cfg)
+        if args.prefetch:
+            return run_prefetch(cfg)
         if args.audit:
             return run_daily(cfg, audit=True)
         return run_baseline(cfg) if args.baseline else run_daily(cfg)
