@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -590,6 +590,19 @@ def run_baseline(cfg: dict) -> int:
     return 0
 
 
+def _start_key(entry: dict) -> datetime:
+    """预抓排序键：折扣开始时间的**绝对时刻**。
+
+    ITAD 的 ``deal.timestamp`` 带各自时区偏移（实测 +02:00 / +08:00 混杂），
+    直接对原始字符串做字典序会跨偏移错序，必须解析成 aware datetime 再比；
+    解析不了的排最后。
+    """
+    parsed = classify.parse_time(entry.get("start"))
+    if parsed is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetime) -> tuple[list[dict], dict]:
     """批 B 预抓目标（.scratch/prefetch/spec.md R1）。
 
@@ -608,15 +621,15 @@ def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetim
     ttl = int(cfg.get("reviews_ttl_days", 7))
     empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
 
-    need: list[tuple[str, dict]] = []
+    need: list[dict] = []
     for entry in hist_low:
         game_id = entry.get("game_id")
         if not state.meta_valid(game_id, now, ttl, empty_ttl):
-            need.append((entry.get("start") or "", entry))
+            need.append(entry)
         elif state.has_appid(game_id) and not state.title_zh(game_id):
-            need.append((entry.get("start") or "", entry))
-    need.sort(key=lambda pair: pair[0], reverse=True)
-    targets = [entry for _, entry in need[:max(0, budget)]]
+            need.append(entry)
+    need.sort(key=_start_key, reverse=True)
+    targets = need[:max(0, budget)]
     return targets, {"budget": budget, "needed": len(need), "chosen": len(targets)}
 
 
