@@ -28,9 +28,9 @@
 ```yaml
 on:
   schedule:
-    - cron: "0 19 * * *"    # 03:00 Asia/Shanghai（UTC 表达）
-    - cron: "0 7 1 * *"     # 每月 1 日 15:00 预抓（UTC 表达）
-    - cron: "0 7 2 * *"     # 每月 2 日跑 orphan 清理（UTC 表达）
+    - cron: "0 19 * * *"    # 03:00 Asia/Shanghai 主任务（UTC 表达）
+    - cron: "0 7 * * *"     # 15:00 Asia/Shanghai 每日预抓（UTC 表达）
+    - cron: "0 7 2 * *"     # 每月 2 日 15:00 orphan 清理（UTC 表达）
   workflow_dispatch: {}
 permissions:
   contents: write
@@ -39,6 +39,7 @@ permissions:
 ```
 
 ⚠️ cron 用 **UTC**：03:00 CST = 19:00 UTC（前一天）；`timezone:` 字段 GitHub 不支持。
+⚠️ 预抓 job 依赖批 B 的 `--prefetch`，**该 job 在批 B 落地后才加入 workflow**。
 
 - **主任务 job**（03:00）：
   1. checkout `main` + 单独 checkout `data` 分支到子目录（`actions/checkout` 两次，
@@ -81,3 +82,7 @@ permissions:
 - [ ] 故意置错（如改错 API key）能收到失败通知。
 
 ## Comments
+
+- 2026-09-22：spec 定稿时明确 —— **预抓 job 暂不写入 `daily.yml`**（`--prefetch` 属批 B，
+  未实现前引用会让 job 每天报失败、触发无意义告警）。批 B 落地时一并加入。
+- 失败通知用 GitHub 默认的 workflow 失败邮件（发给仓库所有者），不引入第三方依赖。
