@@ -1,0 +1,144 @@
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --line: #e3e5e9;
+  --text: #1c1e21;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --new-low: #d92b2b;
+  --equal-low: #e07b00;
+  --store-low: #6b7280;
+  --price: #0a7d33;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap { max-width: 900px; margin: 0 auto; padding: 0 12px; }
+
+/* 顶栏 */
+.topbar { background: var(--card); border-bottom: 1px solid var(--line); }
+.topbar .wrap { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-top: 10px; padding-bottom: 10px; }
+.topbar h1 { font-size: 17px; margin: 0; }
+.generated { font-size: 12px; color: var(--muted); }
+
+.stale-banner {
+  background: #b91c1c;
+  color: #fff;
+  padding: 8px 12px;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* 概览 */
+.overview {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 12px 0;
+}
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 6px; text-align: center; }
+.stat-value { display: block; font-size: 18px; font-weight: 600; }
+.stat-label { display: block; font-size: 11px; color: var(--muted); }
+
+/* 筛选栏 */
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.filter {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+}
+.filter.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.filter:disabled { opacity: .45; cursor: not-allowed; }
+.toggle { margin-left: auto; font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+
+.notice { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+/* 筛选条件说明（页面上要注明判定口径） */
+.criteria-box { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+.criteria-box summary { cursor: pointer; padding: 4px 0; color: var(--accent); }
+.criteria-box ul { margin: 4px 0 0; padding-left: 18px; }
+.criteria-box li { margin: 2px 0; line-height: 1.55; }
+
+/* 分组 */
+.group { margin-bottom: 14px; }
+.group-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600;
+  padding: 6px 2px; cursor: pointer; user-select: none;
+}
+.group-head .count { font-weight: 400; color: var(--muted); font-size: 12px; }
+/* 分组标题旁的入组条件：让「好评达标」这类标签不靠猜 */
+.group-head .group-criteria {
+  font-weight: 400; font-size: 11px; color: var(--muted);
+  background: #eef1f5; border-radius: 4px; padding: 1px 6px;
+}
+.group-head .group-label { flex: 0 0 auto; }
+.group-head .arrow { transition: transform .15s ease; color: var(--muted); font-size: 12px; }
+.group.collapsed .arrow { transform: rotate(-90deg); }
+.group.collapsed .cards, .group.collapsed .pager { display: none; }
+
+/* 卡片 */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.card-summary { display: flex; gap: 10px; padding: 8px; align-items: center; cursor: pointer; }
+.thumb { width: 92px; height: 43px; flex: 0 0 92px; object-fit: cover; border-radius: 6px; background: #eceff3; }
+body.no-image .thumb { display: none; }
+.card-main { min-width: 0; flex: 1; }
+.card-title { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-price { text-align: right; flex: 0 0 auto; }
+.price-now { color: var(--price); font-weight: 600; font-size: 15px; }
+.price-regular { font-size: 12px; color: var(--muted); text-decoration: line-through; }
+
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #eef1f5; color: var(--muted); }
+.tag-new { background: #fdecec; color: var(--new-low); }
+.tag-equal { background: #fff3e0; color: var(--equal-low); }
+.tag-store { background: #eef1f5; color: var(--store-low); }
+.tag-cut { background: #e8f5ec; color: var(--price); }
+.tag-pending { background: #f1f0ff; color: #5b4bd6; }
+
+.card-detail { border-top: 1px dashed var(--line); padding: 8px 10px 10px; font-size: 13px; display: none; }
+.card.open .card-detail { display: block; }
+.detail-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--muted); }
+.detail-row b { color: var(--text); font-weight: 500; }
+.detail-links a { color: var(--accent); text-decoration: none; margin-right: 12px; }
+
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 0 10px; font-size: 13px; color: var(--muted); }
+.pager button {
+  font: inherit; font-size: 13px; padding: 4px 10px;
+  border: 1px solid var(--line); background: var(--card); border-radius: 6px; cursor: pointer;
+}
+.pager button:disabled { opacity: .45; cursor: not-allowed; }
+
+.empty { text-align: center; color: var(--muted); padding: 32px 0; }
+.footer { color: var(--muted); font-size: 12px; padding: 16px 12px 32px; }
+.footer p { margin: 4px 0; }
+
+/* 断点必须与 app.js 的 data.page_size.breakpoint 一致（默认 768px） */
+@media (max-width: 768px) {
+  .topbar h1 { font-size: 15px; }
+  .overview { grid-template-columns: repeat(2, 1fr); }
+  .thumb { width: 72px; height: 34px; flex-basis: 72px; }
+  .card-title { font-size: 13px; }
+  .toggle { margin-left: 0; }
+}

@@ -1,0 +1,17 @@
+config.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# data/ 下除 state.json 外全部忽略（probe 产物、logs、临时状态）。
+# 必须写成 `data/*` 再取反：写成 `data/` 时 git 不会进入该目录，
+# 下面的 `!` 取反无效，state.json 会被静默忽略、提交不上去（见 DEVELOPMENT.md §8）。
+data/*
+!data/state.json
+
+output/
+
+# 双 agent 的工作记忆与历史探针归档，不入库（探针结论已沉淀进 docs/DEVELOPMENT.md）
+.workbuddy/
+tools/probes/
