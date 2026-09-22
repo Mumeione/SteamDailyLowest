@@ -50,6 +50,7 @@ DEFAULTS: dict = {
     "sweep_mode": "low_only",
     "detail_scope": "catalog",
     "detail_daily_budget": 300,
+    "prefetch_daily_budget": 300,
     "probe_timeout_seconds": 6,
     "fx_cache_path": "data/fx_cache.json",
     "steam_batch_size": 20,

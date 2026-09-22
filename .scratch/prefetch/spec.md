@@ -1,6 +1,6 @@
 # 预抓取任务（prefetch）spec
 
-> Status: spec 待审
+> Status: R1/R3 已实现（2026-09-22 批 B，见 Comments）；R2 的 workflow job 已落地
 > 决策时间：2026-09-22，需求来自用户：「建立 UUID 与 appID 的对应数据库，每日增量更新，
 > 也可以每日单开一个任务就跑这个，把符合条件的游戏信息全部收入数据库中，防止大促时详情拿不到。
 > 后台慢慢跑，第二天合并。」
@@ -53,3 +53,26 @@
 - [ ] 单测：预算裁剪、最近优先排序、无报表输出、幂等。
 
 ## Comments
+
+### 实现记录（2026-09-22，批 B）
+
+- **R1 `run.py --prefetch`**：`run_prefetch()` 复用日常的 `collect + funnel` 同套筛选；
+  新增 `prefetch_targets()` —— 「缺数据」= `meta_valid` 不通过（缺 appid/好评率）
+  **或** 已有详情但缺中文名（两条独立缓存）；顺序 = **`start`（deal.timestamp）降序**
+  （最近出现在史低的优先；不用 `seen_deal.last_seen_at`，因为 record_seen 会把本轮
+  全部条目刷成同一时间戳，排序失效）；预算 = `prefetch_daily_budget`（默认 300，
+  已进 §9 / config.example.json），`0` = 关闭。
+  详情走现有 `fetch_details`（ITAD info/v2，缓存命中零请求）；中文名走
+  `SteamClient.info`（逐游戏，全站合并限流 + 2 秒间隔）。产物只有 state.json + run_log
+  （mode="prefetch"），**不写 output/ 任何文件**、不拉汇率。
+- **R2 调度**：daily.yml 加 cron `0 7 * * *`（15:00 CST）+ `prefetch` job
+  （恢复 state → `python run.py --prefetch` → 回写 data 分支）；
+  与主任务共用 `state-write` 并发组串行，不会并发写 state。
+  每月 2 日 0 7 UTC 预抓与 orphan 清理同刻命中：清理只清历史、保留当前 state 内容，无冲突。
+- **幂等**：第二轮 meta_valid 命中 + title_zh 永久缓存 → 详情与 Steam 请求均为零
+  （单测 `test_idempotent_second_run` 钉死）。
+- **测试**：`tests/test_prefetch.py` 8 个（假客户端零网络）：预算截断 / 预算 0 关闭 /
+  最近优先排序 / 缺 start 排最后 / 幂等 / 无报表输出 / 中文名补齐 / 只缺中文名不碰 ITAD。
+  全量 103 个单测通过；`check_payload.py` 判定不受影响。
+- 注意：Steam 侧真跑（含 15:00 的 job）前留意 store host 静默超时惩罚
+  （交接文档 §3）——本地今天已触发，真跑一轮验收（spec 验收第 1、2 条）建议放 Steam 恢复后。
