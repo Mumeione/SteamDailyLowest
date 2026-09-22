@@ -1,6 +1,7 @@
 /* 报表前端：分组 + 手翻分页 + 卡片折叠（对应 docs/DEVELOPMENT.md §7.2 / §7.3）。
- * report-ui spec：R1 组内排序 / R3 详情两栏 / R4 图标链接前置 / R5 密度切换 /
- * R6 英文名 / R7 方向键翻页。R2（去 ITAD 链接）与 R8（boxart 小图）在 payload 侧完成。 */
+ * report-ui spec：R1 组内排序 / R3 详情两栏 / R4 图标链接前置 / R6 英文名 /
+ * R7 方向键翻页。R2（去 ITAD 链接）与 R8（boxart 小图）在 payload 侧完成；
+ * R5 密度切换已取消 —— 默认双列、≤768px 收单列，由 app.css 直接实现。 */
 (function () {
   "use strict";
 

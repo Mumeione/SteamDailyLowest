@@ -76,3 +76,12 @@
   全量 103 个单测通过；`check_payload.py` 判定不受影响。
 - 注意：Steam 侧真跑（含 15:00 的 job）前留意 store host 静默超时惩罚
   （交接文档 §3）——本地今天已触发，真跑一轮验收（spec 验收第 1、2 条）建议放 Steam 恢复后。
+
+### 代码审查记录（2026-09-22，双轴）
+
+- **已修**：`prefetch_targets` 原对 `start` 原始 ISO 串做字典序排序，ITAD 时间戳带
+  混杂时区偏移（+02:00/+08:00）会跨偏移错序 → 改为 `_start_key()` 解析成 aware
+  datetime 按绝对时刻比；新增混合偏移回归测试（104 测全过）。
+- 记录不阻塞（judgement call）：中文名补齐循环与 `enrich.py` 形状重复（后续可抽公共函数）；
+  daily.yml 两个 job 的步骤逐字重复（可抽 composite action）；
+  FakeSteamClient 与 test_probe.py 重复；`budget=0` 关闭语义与 cleanup_expired 属轻微 scope creep（与既有惯例对齐）。

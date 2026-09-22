@@ -153,6 +153,21 @@ class PrefetchTest(unittest.TestCase):
         self.assertEqual(info["needed"], 2)
         self.assertEqual([e["game_id"] for e in targets], ["uuid-y", "uuid-x"])
 
+    def test_ordering_by_instant_across_offsets(self):
+        """start 带不同时区偏移时按绝对时刻排序，而不是字符串字典序（审查修正回归）。
+
+        uuid-a：本地钟 14:00（+08:00）= 06:00 UTC；uuid-b：本地钟 09:00（+02:00）= 07:00 UTC
+        → b 更晚发生，应排前面；若按字典序会比错。
+        """
+        from datetime import datetime
+        tz = classify.zone("Asia/Shanghai")
+        entries = [
+            classify.normalize_item(raw_item("uuid-a", "2026-09-22T14:00:00+08:00")),
+            classify.normalize_item(raw_item("uuid-b", "2026-09-22T09:00:00+02:00")),
+        ]
+        targets, _ = prefetch_targets(entries, self.state, self.cfg, datetime.now(tz))
+        self.assertEqual([e["game_id"] for e in targets], ["uuid-b", "uuid-a"])
+
     # ---- 幂等：第二次几乎零请求 ----
     def test_idempotent_second_run(self):
         self._run(FakeItadClient(self.items, self.info_map),

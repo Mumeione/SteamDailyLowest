@@ -112,3 +112,12 @@
   汇率只读当天缓存。产出的只是测试报表，正式报表仍由 run.py 产出。
 - Steam 侧请求额度宝贵（store host 有静默超时惩罚，见交接文档 §3），
   UI 迭代一律用这个脚本，别为看版式重跑全流程。
+
+### 代码审查记录（2026-09-22，双轴，针对 5dbc811 快照）
+
+- **已修**：app.js 文件头注释仍写「R5 密度切换」，与 Comments#3 的取消决定矛盾 → 已更正。
+- 记录不阻塞（judgement call）：CSS 媒体查询硬编码 768px 与 JS 可配置 breakpoint 仅靠约定一致
+  （改 `mobile_breakpoint_px` 会复活 §7.3 错位，若改配置需同步 CSS）；
+  `build_card` 的 `or entry.get("banner")` 回落是死代码（SEEN_KEEP 从未落 banner，保留无害）；
+  render_report.py 手工解析 data.js 的形状重复；方向键对已折叠的活动组仍翻页、
+  点卡片外链会改写活动分组（spec 未定义，轻微）。
