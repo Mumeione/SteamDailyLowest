@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steam 史低 · 当日新增</title>
+<link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <h1>Steam 史低 · 当日新增</h1>
+    <div class="generated">生成时间：{{ generated_at_text }}</div>
+  </div>
+</header>
+
+<div id="stale-banner" class="stale-banner" hidden>
+  数据已超过 {{ stale_banner_hours }} 小时未更新，可能抓取任务出了问题。
+</div>
+
+<main class="wrap">
+  <section class="overview">
+    <div class="stat">
+      <span class="stat-value">{{ overview.new_today_raw }}</span>
+      <span class="stat-label">当日新增</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value">{{ overview.new_today_shown }}</span>
+      <span class="stat-label">进列表</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value">{{ overview.hist_low_total }}</span>
+      <span class="stat-label">史低总数</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value">{{ overview.deals_fetched }}</span>
+      <span class="stat-label">抓取总数</span>
+    </div>
+  </section>
+
+  <nav class="filters" id="filters">
+    {% for view in views %}
+    <button type="button"
+            class="filter{% if view.enabled %} active{% endif %}"
+            data-view="{{ view.key }}"
+            {% if not view.enabled %}disabled title="数据攒够后再开"{% endif %}>
+      {{ view.label }}{% if view.enabled %} ({{ view.count }}){% endif %}
+    </button>
+    {% endfor %}
+    <label class="toggle">
+      <input type="checkbox" id="no-image"> 无图精简模式
+    </label>
+  </nav>
+
+  <p class="notice">{{ notice }}</p>
+
+  {% if conditions %}
+  <details class="criteria-box">
+    <summary>筛选条件（点开看判定口径）</summary>
+    <ul>
+      {% for line in conditions %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  <div id="list" class="list"></div>
+
+  <p id="empty" class="empty" hidden>今天没有符合条件的史低新增。</p>
+</main>
+
+<footer class="wrap footer">
+  <p>
+    数据来源：IsThereAnyDeal / Steam ·
+    抓取口径：{{ overview.sweep }} ·
+    详情：本轮抓 {{ overview.detail_fetched }} 条{% if overview.detail_backlog is not none %}，目录还差 {{ overview.detail_backlog }} 条{% endif %} ·
+    状态库最近一次运行：{{ overview.last_run_at or '—' }}
+  </p>
+  {% if fx %}
+  <p>
+    汇率取数日期 {{ fx.date }}（基准 {{ fx.base }}）：{% for r in fx.rates %}1 {{ fx.base }} = {{ r.rate }} {{ r.code }}{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+  <p>价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准，且不代表可购买。</p>
+</footer>
+
+<script src="data.js?v={{ assets_version }}"></script>
+<script src="static/app.js?v={{ assets_version }}"></script>
+</body>
+</html>
