@@ -244,9 +244,13 @@ class SlimDealTest(unittest.TestCase):
         self.assertTrue(set(slim).issubset(set(classify.SEEN_KEEP)))
         self.assertEqual(slim["game_id"], "uuid-1")
         self.assertEqual(slim["boxart"], "https://x/b.jpg")
-        self.assertEqual(slim["itad_url"], "https://itad.link/a")
-        for dropped in ("banner", "slug", "shop_id", "type", "mature"):
+        # R2：itad_url 302 直跳 Steam，信息冗余，不再落库
+        for dropped in ("banner", "itad_url", "slug", "shop_id", "type", "mature"):
             self.assertNotIn(dropped, slim)
+
+    def test_seen_keep_has_no_itad_url(self):
+        """R2 验收：SEEN_KEEP 白名单不再含 itad_url。"""
+        self.assertNotIn("itad_url", classify.SEEN_KEEP)
 
     def test_timestamps_added_after_slimming(self):
         """first/last_seen_at 由 state.record_seen 追加，裁剪时还不存在也不该报错。"""

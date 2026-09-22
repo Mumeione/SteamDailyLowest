@@ -102,10 +102,10 @@ class StateTest(unittest.TestCase):
         stored = next(iter(self.state.seen_deal.values()))
         self.assertTrue(set(stored).issubset(set(classify.SEEN_KEEP)))
         # 保留：报表与后续视图需要的
-        for kept in ("game_id", "title", "price_int", "flag", "expiry", "boxart", "itad_url"):
+        for kept in ("game_id", "title", "price_int", "flag", "expiry", "boxart"):
             self.assertIn(kept, stored)
-        # 裁掉：常量字段与重复的封面图
-        for dropped in ("banner", "slug", "shop_id", "type", "mature"):
+        # 裁掉：常量字段、重复的封面图，以及 R2 砍掉的 itad_url（302 直跳 Steam）
+        for dropped in ("banner", "itad_url", "slug", "shop_id", "type", "mature"):
             self.assertNotIn(dropped, stored)
         self.assertEqual(stored["first_seen_at"], NOW.isoformat(timespec="seconds"))
 

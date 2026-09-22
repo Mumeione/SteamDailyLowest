@@ -1,4 +1,6 @@
-/* 报表前端：分组 + 手翻分页 + 卡片折叠（对应 docs/DEVELOPMENT.md §7.2 / §7.3）。 */
+/* 报表前端：分组 + 手翻分页 + 卡片折叠（对应 docs/DEVELOPMENT.md §7.2 / §7.3）。
+ * report-ui spec：R1 组内排序 / R3 详情两栏 / R4 图标链接前置 / R5 密度切换 /
+ * R6 英文名 / R7 方向键翻页。R2（去 ITAD 链接）与 R8（boxart 小图）在 payload 侧完成。 */
 (function () {
   "use strict";
 
@@ -15,8 +17,32 @@
   }
 
   var pageSize = currentPageSize();
-  var pages = {};
-  var renderers = [];
+  var pages = {};          // groupKey -> 当前页码
+  var sorts = {};          // groupKey -> { mode: "cut"|"price"|"score", min: 0|500|5000 }
+  var groupOrder = [];     // 分组展示顺序（groupKey）
+  var groupsByKey = {};
+  var sectionsByKey = {};  // groupKey -> <section>
+  var renderersByKey = {}; // groupKey -> 该组重画函数
+  var activeGroupKey = null; // R7：最近一次被点击翻页按钮/卡片的分组
+
+  // R4：链接图标用 inline SVG 常量内嵌，不下载 favicon、不发外链；
+  // 链接语义靠 aria-label / title 文字。
+  var ICONS = {
+    steam: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.454 1.012H7.54zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.663 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.253 0-2.265-1.014-2.265-2.265z"/></svg>',
+    heihe: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h14a3 3 0 0 1 3 3v14a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3zm3.25 5.25a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8zm7.5 0a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8zM6.2 14.1h11.6v2.3H6.2v-2.3z"/></svg>'
+  };
+
+  // R1：组内排序三维度 + 好评数量筛选 chips
+  var SORT_MODES = [
+    { key: "cut", label: "折扣降序" },
+    { key: "price", label: "价格升" },
+    { key: "score", label: "好评率降" }
+  ];
+  var REVIEW_CHIPS = [
+    { min: 0, label: "全部" },
+    { min: 500, label: "≥500" },
+    { min: 5000, label: "≥5000" }
+  ];
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -46,6 +72,64 @@
     ]);
   }
 
+  function iconLink(href, label, svg) {
+    var a = el("a", { class: "icon-link", href: href, target: "_blank", rel: "noopener" });
+    a.setAttribute("aria-label", label);
+    a.title = label;
+    a.innerHTML = svg; // 常量字符串，无用户输入
+    return a;
+  }
+
+  function getSort(groupKey) {
+    if (!sorts[groupKey]) sorts[groupKey] = { mode: "cut", min: 0, newOnly: false };
+    return sorts[groupKey];
+  }
+
+  function hasReviews(item) {
+    return !!(item.reviews && item.reviews.score !== null && item.reviews.score !== undefined);
+  }
+
+  // R1：组内排序。默认（cut）直接用 payload 里服务端排好的顺序；
+  // 无 reviews 的「详情待补」不参与好评率排序，固定排组尾。
+  function sortGroupItems(group) {
+    var s = getSort(group.key);
+    if (s.mode === "cut") return group.items;
+    var arr = group.items.slice();
+    if (s.mode === "price") {
+      arr.sort(function (a, b) {
+        var pa = a.price_int == null ? Infinity : a.price_int;
+        var pb = b.price_int == null ? Infinity : b.price_int;
+        return pa - pb || String(a.title || "").localeCompare(String(b.title || ""));
+      });
+      return arr;
+    }
+    var withReviews = [], without = [];
+    arr.forEach(function (item) {
+      (hasReviews(item) ? withReviews : without).push(item);
+    });
+    withReviews.sort(function (a, b) {
+      return b.reviews.score - a.reviews.score
+        || (b.reviews.count || 0) - (a.reviews.count || 0)
+        || String(a.title || "").localeCompare(String(b.title || ""));
+    });
+    return withReviews.concat(without);
+  }
+
+  // R1：好评数量 chips 作用于当前组显示集合（只筛有 reviews 的条目；
+  // 「详情待补」不参与好评率维度，始终留在组尾）。
+  // 「仅新史低」chip：作用于当前组，只留 flag=N 的条目。
+  function filterGroupItems(group) {
+    var s = getSort(group.key);
+    var ordered = sortGroupItems(group);
+    if (s.newOnly) {
+      ordered = ordered.filter(function (item) { return item.flag === "N"; });
+    }
+    if (s.mode !== "score" || !s.min) return ordered;
+    return ordered.filter(function (item) {
+      return !hasReviews(item) || (item.reviews.count || 0) >= s.min;
+    });
+  }
+
   function buildCard(item) {
     var flagClass = item.flag === "N" ? "tag-new" : item.flag === "H" ? "tag-equal" : "tag-store";
     var tags = [tag("-" + (item.cut || 0) + "%", "tag-cut")];
@@ -53,39 +137,68 @@
     if (item.tier === "pending") tags.push(tag("详情待补", "tag-pending"));
     else tags.push(tag(item.tier_label));
 
+    // R4：Steam / 小黑盒链接前置到摘要的价格区之前，图标 + 文字 aria-label
+    var links = el("div", { class: "card-links" });
+    if (item.steam_url) links.appendChild(iconLink(item.steam_url, "Steam 商店页", ICONS.steam));
+    if (item.xiaoheihe_url) links.appendChild(iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe));
+
+    // R6：英文名始终显示在中文标题下方（灰色小字）。
+    // 没有英文名的卡也保留这一行（空文本 + CSS min-height），
+    // 保证双列网格里有/没有中文名的卡片高度对齐。
+    var titleEn = el("div", {
+      class: "card-title-en",
+      text: (item.title_zh && item.title && item.title_zh !== item.title) ? item.title : ""
+    });
+
     var summary = el("div", { class: "card-summary" }, [
       item.banner ? el("img", { class: "thumb", src: item.banner, alt: "", loading: "lazy" }) : null,
       el("div", { class: "card-main" }, [
         el("h3", { class: "card-title", text: item.title_zh || item.title || "(无标题)" }),
+        titleEn,
         el("div", { class: "card-sub", text: item.reviews_text || "详情待补" }),
         el("div", { class: "tags" }, tags)
       ]),
+      links,
       el("div", { class: "card-price" }, [
         el("div", { class: "price-now", text: item.price_text }),
         el("div", { class: "price-regular", text: item.regular_text })
       ])
     ]);
 
-    var links = el("div", { class: "detail-links" }, [
-      item.steam_url ? el("a", { href: item.steam_url, target: "_blank", rel: "noopener", text: "Steam 商店页" }) : null,
-      item.xiaoheihe_url ? el("a", { href: item.xiaoheihe_url, target: "_blank", rel: "noopener", text: "小黑盒" }) : null,
-      item.itad_url ? el("a", { href: item.itad_url, target: "_blank", rel: "noopener", text: "ITAD" }) : null
-    ]);
-
-    var compareRows = (item.compare || []).map(function (row) {
-      var text = row.price_text;
-      if (row.cny_text) text += " " + row.cny_text;
-      if (row.diff_text) text += "（" + row.diff_text + "）";
-      return detailRow(row.label, text);
-    });
-
-    var detail = el("div", { class: "card-detail" }, [
+    // R3：详情左右两栏 —— 左栏价格类，右栏时间 + 比价；窄屏由 CSS 堆叠
+    var leftCol = el("div", { class: "detail-col" }, [
       detailRow("Steam 史低", item.store_low_text),
       detailRow("全周期最低", item.history_low_text),
-      detailRow("近一年最低", item.history_low_1y_text),
+      detailRow("近一年最低", item.history_low_1y_text)
+    ]);
+
+    var rightRows = [
       detailRow("折扣开始", item.start_text),
       detailRow("折扣结束", item.expiry_text)
-    ].concat(compareRows, [links]));
+    ];
+    // 比价行：₴45 ≈ ¥6.75 -30%，±百分比带色（负=比国区便宜绿色，正=贵红色，0=同价）
+    (item.compare || []).forEach(function (row) {
+      var value = el("b", {});
+      value.appendChild(document.createTextNode(row.price_text));
+      if (row.cny_text) value.appendChild(document.createTextNode(" " + row.cny_text));
+      if (row.diff_pct !== null && row.diff_pct !== undefined) {
+        value.appendChild(document.createTextNode(" "));
+        value.appendChild(el("span", {
+          class: row.diff_pct < 0 ? "diff-cheap" : row.diff_pct > 0 ? "diff-dear" : "diff-same",
+          text: row.diff_pct < 0 ? "-" + Math.abs(row.diff_pct) + "%"
+            : row.diff_pct > 0 ? "+" + row.diff_pct + "%" : "±0%"
+        }));
+      }
+      rightRows.push(el("div", { class: "detail-row" }, [
+        el("span", { text: row.label }),
+        value
+      ]));
+    });
+    var rightCol = el("div", { class: "detail-col" }, rightRows);
+
+    var detail = el("div", { class: "card-detail" }, [
+      el("div", { class: "detail-cols" }, [leftCol, rightCol])
+    ]);
 
     var card = el("article", { class: "card" }, [summary, detail]);
     summary.addEventListener("click", function () {
@@ -104,10 +217,12 @@
     prev.disabled = current <= 1;
     next.disabled = current >= totalPages;
     prev.addEventListener("click", function () {
+      activeGroupKey = groupKey; // R7
       pages[groupKey] = current - 1;
       render();
     });
     next.addEventListener("click", function () {
+      activeGroupKey = groupKey; // R7
       pages[groupKey] = current + 1;
       render();
     });
@@ -118,9 +233,55 @@
     ]);
   }
 
+  // R1：组内排序工具条。切换排序 / 筛选后该组回到第 1 页。
+  function buildGroupToolbar(group, rerender) {
+    var s = getSort(group.key);
+    var bar = el("div", { class: "group-tools" });
+    SORT_MODES.forEach(function (mode) {
+      var b = el("button", {
+        type: "button", class: "filter sort-btn", text: mode.label,
+        onclick: function () {
+          if (getSort(group.key).mode === mode.key) return;
+          getSort(group.key).mode = mode.key;
+          pages[group.key] = 1;
+          rerender();
+        }
+      });
+      if (s.mode === mode.key) b.classList.add("active");
+      bar.appendChild(b);
+    });
+    var newOnlyBtn = el("button", {
+      type: "button", class: "filter chip", text: "仅新史低",
+      onclick: function () {
+        getSort(group.key).newOnly = !getSort(group.key).newOnly;
+        pages[group.key] = 1;
+        rerender();
+      }
+    });
+    if (s.newOnly) newOnlyBtn.classList.add("active");
+    bar.appendChild(newOnlyBtn);
+    if (s.mode === "score") {
+      REVIEW_CHIPS.forEach(function (chip) {
+        var b = el("button", {
+          type: "button", class: "filter chip", text: chip.label,
+          onclick: function () {
+            if (getSort(group.key).min === chip.min) return;
+            getSort(group.key).min = chip.min;
+            pages[group.key] = 1;
+            rerender();
+          }
+        });
+        if (s.min === chip.min) b.classList.add("active");
+        bar.appendChild(b);
+      });
+    }
+    return bar;
+  }
+
   function buildGroup(group) {
     var collapsed = group.collapsed;
     var cardsBox = el("div", { class: "cards" });
+    var toolsBox = el("div", { class: "group-tools-box" });
     var pagerBox = el("div", {});
     var arrow = el("span", { class: "arrow", text: "▼" });
     // 分组标题旁直接写上入组条件 —— 光看「好评达标」这类词分不清是什么门槛
@@ -130,28 +291,64 @@
       group.criteria ? el("span", { class: "group-criteria", text: group.criteria }) : null,
       el("span", { class: "count", text: group.count + " 条" })
     ]);
-    var section = el("section", { class: "group" }, [head, cardsBox, pagerBox]);
+    var section = el("section", { class: "group" }, [head, toolsBox, cardsBox, pagerBox]);
     if (collapsed) section.classList.add("collapsed");
 
     function render() {
+      var ordered = filterGroupItems(group);
       var page = pages[group.key] || 1;
-      var start = (page - 1) * pageSize;
+      var totalPages = Math.max(1, Math.ceil(ordered.length / pageSize));
+      pages[group.key] = Math.min(page, totalPages);
+      var start = (pages[group.key] - 1) * pageSize;
       cardsBox.textContent = "";
-      group.items.slice(start, start + pageSize).forEach(function (item) {
-        cardsBox.appendChild(buildCard(item));
+      ordered.slice(start, start + pageSize).forEach(function (item) {
+        var card = buildCard(item);
+        card.addEventListener("click", function () { activeGroupKey = group.key; }); // R7
+        cardsBox.appendChild(card);
       });
       pagerBox.textContent = "";
-      var pager = buildPager(group.key, group.items.length, render);
+      var pager = buildPager(group.key, ordered.length, render);
       if (pager) pagerBox.appendChild(pager);
+      toolsBox.textContent = "";
+      toolsBox.appendChild(buildGroupToolbar(group, render));
     }
 
     head.addEventListener("click", function () {
       section.classList.toggle("collapsed");
     });
-    renderers.push(render);
+    groupOrder.push(group.key);
+    groupsByKey[group.key] = group;
+    sectionsByKey[group.key] = section;
+    renderersByKey[group.key] = render;
     render();
     return section;
   }
+
+  // R7：←/→ 对「当前活动分组」翻页；无记录时用第一个未折叠分组
+  function activeOrFallbackKey() {
+    if (activeGroupKey && renderersByKey[activeGroupKey]) return activeGroupKey;
+    for (var i = 0; i < groupOrder.length; i++) {
+      var section = sectionsByKey[groupOrder[i]];
+      if (section && !section.classList.contains("collapsed")) return groupOrder[i];
+    }
+    return null;
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    var focused = document.activeElement;
+    if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return; // 防御性判断
+    var key = activeOrFallbackKey();
+    if (!key) return;
+    var ordered = filterGroupItems(groupsByKey[key]);
+    var totalPages = Math.max(1, Math.ceil(ordered.length / pageSize));
+    var current = pages[key] || 1;
+    var wanted = event.key === "ArrowRight" ? current + 1 : current - 1;
+    if (wanted < 1 || wanted > totalPages) return;
+    pages[key] = wanted;
+    activeGroupKey = key;
+    renderersByKey[key]();
+  });
 
   var listBox = document.getElementById("list");
   data.groups.forEach(function (group) {
@@ -165,7 +362,7 @@
   function onBreakpointChange() {
     pageSize = currentPageSize();
     pages = {};
-    renderers.forEach(function (fn) { fn(); });
+    groupOrder.forEach(function (key) { renderersByKey[key](); });
   }
   if (mq.addEventListener) mq.addEventListener("change", onBreakpointChange);
   else if (mq.addListener) mq.addListener(onBreakpointChange);

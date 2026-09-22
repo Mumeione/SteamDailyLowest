@@ -68,7 +68,7 @@ def main() -> int:
     for i in cmp_items[:SHOW]:
         rows = "；".join(
             f"{r['label']} {r['price_text']} {r.get('cny_text') or '-'}"
-            f" [{(r.get('diff_text') or '-')}]"
+            f" [{('%+d%%' % r['diff_pct']) if r.get('diff_pct') is not None else '-'}]"
             for r in i["compare"]
         )
         lines.append(f"    《{i.get('title_zh') or i['title']}》 国区 {i['price_text']} → {rows}")
@@ -81,6 +81,10 @@ def main() -> int:
     lines.append("")
     lines.append("--- 判定 ---")
     lines.append("  分组与卡片标签一致：" + ("是 ✓" if ok else "否 ✗"))
+    # R2 验收：payload 与卡片中无 itad_url
+    no_itad = all("itad_url" not in i for i in items)
+    ok = ok and no_itad
+    lines.append("  payload 无 itad_url：" + ("是 ✓" if no_itad else "否 ✗（R2 未生效）"))
     lines.append("  中文名覆盖率：" + (f"{len(zh)}/{len(items)}" if items else "无条目"))
     lines.append("  跨区比价覆盖率：" + (f"{len(cmp_items)}/{len(items)}" if items else "无条目"))
     OUT.write_text("\n".join(lines), encoding="utf-8")

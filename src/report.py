@@ -158,26 +158,18 @@ def compare_rows(entry: dict) -> list[dict]:
     """把 `entry["compare"]` 的原始数值格式化成卡片要显示的行（§7.2）。
 
     原始数据由 `src.enrich.enrich_steam` 填：`final` 是**原币种最小单位**，
-    `cny_minor` 是换算成人民币分，`diff_pct` 是相对国区的差价百分比。
+    `cny_minor` 是换算成人民币分，`diff_pct` 是相对国区的差价百分比
+    （负数 = 比国区便宜；正负号与红绿色由前端渲染）。
     """
     rows = []
     for item in entry.get("compare") or []:
         price_text = format_amount(item.get("final"), item.get("currency"))
         cny = item.get("cny_minor")
-        diff = item.get("diff_pct")
-        if diff is None:
-            diff_text = None
-        elif diff < 0:
-            diff_text = f"比国区便宜 {abs(diff)}%"
-        elif diff > 0:
-            diff_text = f"比国区贵 {diff}%"
-        else:
-            diff_text = "与国区同价"
         rows.append({
             "label": item.get("label") or item.get("cc"),
             "price_text": price_text,
             "cny_text": f"≈ {format_amount(cny, 'CNY')}" if cny is not None else None,
-            "diff_text": diff_text,
+            "diff_pct": item.get("diff_pct"),
         })
     return rows
 
@@ -205,9 +197,11 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         # Steam 偶尔会把本地化标题存成带尾随空格（例："时之刃 "），渲染前统一清掉
         "title_zh": (entry.get("title_zh") or "").strip() or None,
         "appid": appid,
-        "boxart": entry.get("boxart"),
-        "banner": entry.get("banner") or entry.get("boxart"),
+        # R8：卡片缩略图只有几十像素宽，用小图 boxart 即可；banner600/400 不再使用
+        "banner": entry.get("boxart") or entry.get("banner"),
         "price_text": format_amount(entry.get("price_int"), currency),
+        # R1：前端排序用数值，不用 price_text 字符串
+        "price_int": entry.get("price_int"),
         "regular_text": format_amount(entry.get("regular_int"), currency),
         "cut": entry.get("cut"),
         "flag": entry.get("flag"),
@@ -226,7 +220,7 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         "tier_label": label_map.get(tier, tier),
         "steam_url": f"https://store.steampowered.com/app/{appid}/" if appid else None,
         "xiaoheihe_url": f"https://www.xiaoheihe.cn/games/detail/{appid}" if appid else None,
-        "itad_url": entry.get("itad_url"),
+        # R2：itad_url 已删（302 直跳 Steam，信息冗余），卡片与 payload 均不再输出
     }
 
 
