@@ -105,8 +105,6 @@ def normalize_item(item: dict) -> dict:
         ),
         "shop_id": (deal.get("shop") or {}).get("id"),
         "boxart": assets.get("boxart"),
-        "banner": assets.get("banner600") or assets.get("banner400") or assets.get("boxart"),
-        "itad_url": deal.get("url"),
     }
 
 
@@ -118,11 +116,13 @@ def deal_key(game_id: str, price_int: int | None, expiry: str | None) -> str:
 #: 写进状态库时保留的字段（§5 的「精简落库」）。
 #:
 #: 实测原始 22 个字段共 5.09 MB，其中 `banner`(483KB) / `boxart`(467KB) /
-#: `itad_url`(348KB) / `slug`(111KB) 最占地方，而
-#: `banner` 与 `boxart` 重复（渲染时本来就会回落 boxart）、
+#: `slug`(111KB) 最占地方，而
+#: `banner` 与 `boxart` 重复（卡片封面只用小图 boxart，R8）、
 #: `shop_id` 恒 61、`type` 恒 `game`、`mature` 恒 False、`currency` 恒 CNY ——
 #: 这几个都是「存了也不会变」的常量，落库没有意义。
-#: 保留的 17 个字段覆盖：幂等键 / 报表卡片 / §4.6 全部五个视图窗口 / 留存清理。
+#: `itad_url` 一并砍掉（report-ui spec R2，用户实测 302 直跳 Steam，信息冗余；
+#: 旧 state.json 里已落的该字段留存不迁移，下次该条目更新时自然消失）。
+#: 保留的字段覆盖：幂等键 / 报表卡片 / §4.6 全部五个视图窗口 / 留存清理。
 SEEN_KEEP = (
     "game_id",
     "title",
@@ -137,7 +137,6 @@ SEEN_KEEP = (
     "history_low_int",
     "history_low_1y_int",
     "boxart",
-    "itad_url",
     "low_kind",
     "first_seen_at",
     "last_seen_at",

@@ -149,7 +149,7 @@ class CompareRowsTest(unittest.TestCase):
         self.assertEqual(rows[0]["label"], "乌克兰区")
         self.assertEqual(rows[0]["price_text"], "₴45")
         self.assertEqual(rows[0]["cny_text"], "≈ ¥6.74")
-        self.assertEqual(rows[0]["diff_text"], "比国区便宜 55%")
+        self.assertEqual(rows[0]["diff_pct"], -55)   # 正负号与颜色由前端渲染
 
     def test_expensive_and_same_and_unknown_diff(self):
         entry = {"compare": [
@@ -161,9 +161,9 @@ class CompareRowsTest(unittest.TestCase):
              "cny_minor": None, "diff_pct": None},
         ]}
         rows = report.compare_rows(entry)
-        self.assertEqual(rows[0]["diff_text"], "比国区贵 12%")
-        self.assertEqual(rows[1]["diff_text"], "与国区同价")
-        self.assertIsNone(rows[2]["diff_text"])       # 没汇率就不编差价
+        self.assertEqual(rows[0]["diff_pct"], 12)
+        self.assertEqual(rows[1]["diff_pct"], 0)
+        self.assertIsNone(rows[2]["diff_pct"])        # 没汇率就不编差价
         self.assertIsNone(rows[2]["cny_text"])
 
     def test_empty_compare(self):
@@ -203,6 +203,26 @@ class CardTest(unittest.TestCase):
         self.assertIsNone(card["steam_url"])
         self.assertIsNone(card["xiaoheihe_url"])
         self.assertEqual(card["compare"], [])
+
+    def test_card_drops_itad_url_and_keeps_price_int(self):
+        """R2：payload 不再输出 itad_url；R1：前端排序用的 price_int 直接透传。"""
+        entry = {"game_id": "u", "title": "X", "price_int": 14900, "currency": "CNY",
+                 "itad_url": "https://itad.link/x", "tier": classify.TIER_QUALITY}
+        card = report.build_card(entry, self.now)
+        self.assertNotIn("itad_url", card)
+        self.assertEqual(card["price_int"], 14900)
+
+    def test_card_banner_prefers_boxart(self):
+        """R8：缩略图只有几十像素宽，payload 封面优先用小图 boxart。"""
+        entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                 "boxart": "https://x/boxart.jpg", "banner": "https://x/banner600.jpg",
+                 "tier": classify.TIER_QUALITY}
+        card = report.build_card(entry, self.now)
+        self.assertEqual(card["banner"], "https://x/boxart.jpg")
+        # boxart 缺失时保持回落（前端另有无图模式兜底）
+        bare = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                "tier": classify.TIER_QUALITY}
+        self.assertIsNone(report.build_card(bare, self.now)["banner"])
 
 
 if __name__ == "__main__":
