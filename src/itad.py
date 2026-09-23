@@ -170,6 +170,41 @@ class ItadClient(BaseHttpClient):
             "type": data.get("type"),
         }
 
+    def fetch_storelow(self, country: str, game_ids: list[str],
+                       shops: int = STEAM_SHOP_ID, batch_size: int = 200) -> dict[str, str]:
+        """``POST /games/storelow/v2`` —— 批量取 Steam 店内史低的记录时间（§3.6）。
+
+        body 为 uuid 数组（实测 200 个/次），返回 ``{game_id: timestamp}``。
+        响应结构（2026-09-23 实测）：``[{"id", "lows": [{"shop", "price", "cut",
+        "timestamp"}]}]`` —— ``lows[].timestamp`` 是该最低价被记录的时间
+        （⚠️ 带混合时区偏移，如 ``+02:00``，与 ``deal.timestamp`` 同款坑）。
+        响应里缺的游戏不会出现在返回值中，由调用方决定要不要重试。
+        """
+        lows_map: dict[str, str] = {}
+        ids = [gid for gid in game_ids if gid]
+        batches = (len(ids) + batch_size - 1) // batch_size
+        for start in range(0, len(ids), batch_size):
+            data = self.request(
+                "POST", "/games/storelow/v2",
+                params={"country": country, "shops": shops},
+                json_body=ids[start:start + batch_size],
+            )
+            for row in data or []:
+                gid = row.get("id")
+                lows = row.get("lows") or []
+                if not gid or not lows:
+                    continue
+                pick = next(
+                    (low for low in lows if (low.get("shop") or {}).get("id") == shops),
+                    lows[0],
+                )
+                ts = (pick or {}).get("timestamp")
+                if ts:
+                    lows_map[gid] = ts
+        if ids:
+            self._log(f"[itad] storelow/v2 批量 {batches} 次，命中 {len(lows_map)}/{len(ids)}")
+        return lows_map
+
 
 __all__ = [
     "BASE",

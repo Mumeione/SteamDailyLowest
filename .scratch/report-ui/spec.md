@@ -113,6 +113,35 @@
 - Steam 侧请求额度宝贵（store host 有静默超时惩罚，见交接文档 §3），
   UI 迭代一律用这个脚本，别为看版式重跑全流程。
 
+### 批 C（2026-09-23，用户反馈五条，与 §3.6 storelow 同批落地）
+
+1. **手风琴展开**：同时最多展开一张卡片 —— 点开新卡先收起所有 `.card.open` 再开本卡（app.js buildCard）。
+2. **现价改促销红并加大加粗**：新增 `--price-now: #d92b2b`；`.price-now` 17px/700（用户反馈绿色不显眼）。
+   ⚠️ 只动现价：比价行的「便宜绿/贵红」（diff-cheap/diff-dear）是上一批验收过的语义色，保持不动；
+   折扣 % tag（tag-cut）也保持绿，避免与新史低红标混淆。
+3. **小黑盒图标**：原为手绘「机器人脸」与真 logo 不符（非链接/下载问题——R4 不下载 favicon）。
+   **用户已自行逐像素重绘**（官方 PNG→251px 实测顶点、两块 180° 对称 Z 形片、IoU 0.956；
+   追踪脚本 tools/heihe_*.py 属一次性工具未入库）。
+4. **链接图标对齐**：图标不再与折扣价格同行对齐（价格位数不一挤不出固定空位），
+   改 `align-self: flex-end` 沉到摘要底部、与「新史低/折扣%」tags 行底部对齐 → 跨卡横向对齐。
+5. **上次史低时间（§3.6 storelow/v2）**：用户确认显示规则 —— `N` 显示「本次刷新历史记录」、
+   `H/S` 显示「X 天前（YYYY-MM-DD）」，左栏价格类补行。实现见 DEVELOPMENT.md §3.6（数据侧）
+   与 run.py/report.py；卡片经 payload `last_low_text` 渲染，取不到不渲染该行。
+- 验收方式：本地 state 从 data 分支同步（`git show origin/data:data/state.json > data/state.json`）后
+  跑 `tools/render_report.py`，浏览器打开 output/index.html 检查。
+  ⚠️ 当日新增里 `last_low_at` 要等下次 Actions 主跑（含 storelow 步骤）才有数据，
+  本地预览时 H/S 行可能暂缺，属预期。
+
+### 批 C2（2026-09-23，预览后追加四条）
+
+1. **链接图标挪进档位标签行**：Steam/小黑盒图标放「好评达标」等档位标签**右侧同一行内**
+   （.tags 内 append）——同行天然对齐，替代批 C 的「沉底对齐」方案；iconLink 加
+   stopPropagation，点图标开新标签页不触发展开/收起。
+2. **无封面图保留占位空块**：`div.thumb.thumb-empty`（.thumb 自带浅灰底），双列网格不错位。
+3. **上次史低固定在左栏最末行**：三个价格（Steam 史低/全周期最低/近一年最低）下方。
+4. **档位「好评达标」标签改浅蓝**：Steam 品牌好评色 `#66c0f4` 专为深底设计，白底 11px
+   对比度 ~1.9:1 不可读 → 压深一档 `#1f96d2` + 底 `#e6f5fd`（tag-quality）。
+
 ### 代码审查记录（2026-09-22，双轴，针对 5dbc811 快照）
 
 - **已修**：app.js 文件头注释仍写「R5 密度切换」，与 Comments#3 的取消决定矛盾 → 已更正。

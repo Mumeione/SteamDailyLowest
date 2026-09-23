@@ -186,6 +186,18 @@ class State:
         self.game_meta[game_id] = entry
 
     # ------------------------------------------------------------------
+    # 上次史低时间（§3.6）：与 appid/reviews 同存 game_meta，但**无 TTL**——
+    # 每轮日常运行都会对「当日新增」整批重取（storelow/v2 批量、200 个/次），
+    # 保证游戏从新史低转平史低后，显示的「上次史低」仍是真正的记录时间
+    # ------------------------------------------------------------------
+    def set_last_low_at(self, game_id: str, ts: str) -> None:
+        if not ts or not game_id:
+            return
+        entry = self.game_meta.get(game_id) or {}
+        entry["last_low_at"] = ts
+        self.game_meta[game_id] = entry
+
+    # ------------------------------------------------------------------
     # run_log
     # ------------------------------------------------------------------
     @property
