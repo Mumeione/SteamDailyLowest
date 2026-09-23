@@ -939,8 +939,12 @@ SteamDailyLowest/
 
 - **公开仓库 + GitHub Pages**（免费账号 Actions 分钟数无限；私有仓库要 Pro 才能发 Pages）
 - key 放 repository secret `ITAD_API_KEY`，用环境变量注入
-- **定时**：`timezone: Asia/Shanghai`，主跑 `0 3 * * *`，补跑 `0 8 * * *`
-  （ITAD 数据非实时，故延到 3 点；补跑防 cron 在高峰期被延迟甚至丢弃）
+- **定时**（cron 一律 UTC，GitHub 不认 `timezone:` 字段；全部避开整点——官方文档明言
+  「整点是 Actions 高负载时刻，调度会被推迟甚至丢弃」，实测 `0 19 * * *` 排队 2h48m）：
+  主跑 `14 21 * * *`（05:14 CST，ITAD 数据非实时 + 美东临近下班）；
+  补跑 `14 1 * * *`（09:14 CST），`daily-guard` 检测过去 12 小时内已有成功的定时主跑则跳过
+  （⚠️ 不能按「UTC 当天」过滤——主跑创建于 UTC 前一天）；
+  预抓 `14 7 * * *`（15:14 CST，批 B）；orphan 清理 `14 7 2 * *`
 
 ### 三个必须处理的坑（都来自官方文档核实）
 
