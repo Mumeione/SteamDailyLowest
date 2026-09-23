@@ -1,10 +1,15 @@
 # 每日史低日报（对应 .scratch/deploy/spec.md 与 docs/DEVELOPMENT.md §8）
 #
 # 入口（cron 是 UTC，GitHub 不认 timezone 字段）：
-#   0 19 * * *   每日 03:00 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
-#   0 7 * * *    每日 15:00 Asia/Shanghai  预抓：run.py --prefetch，只补详情缓存、不出报表（批 B）
-#   0 7 2 * *    每月 2 日 15:00           orphan 清理：把 data 分支历史清零（只留当前一版）
+#   14 21 * * *  每日 05:14 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
+#   14 1 * * *   每日 09:14 Asia/Shanghai  补跑：daily-guard 检测到当天已有成功的定时主任务则跳过
+#   14 7 * * *   每日 15:14 Asia/Shanghai  预抓：run.py --prefetch，只补详情缓存、不出报表（批 B）
+#   14 7 2 * *   每月 2 日 15:14           orphan 清理：把 data 分支历史清零（只留当前一版）
 #   workflow_dispatch                    手动触发：主任务与预抓都跑（并发组串行排队）
+#
+# 定时全部避开整点：官方文档写明「整点是 Actions 高负载时刻，调度可能被推迟甚至丢弃」。
+# 实测 0 19 * * *（03:00 CST，美区下午峰顶）排队 2h48m；05:14 CST 美东临近下班、
+# 09:14/15:14 CST 落在全球低谷，靠补跑兜底主跑被丢弃的场次。
 #
 # §8 的四个坑在这里的处理方式：
 #   1. GITHUB_TOKEN 推的 commit 不触发 Pages 构建 → 发布用 deploy-pages 在同一次运行内完成
@@ -12,22 +17,24 @@
 #   3. runner 无持久磁盘 → 状态 JSON 提交回 data 分支
 #   4. main 的 .gitignore 直接整体忽略 data/（状态由 data 分支持有，不再依赖取反写法）
 #
-# 每月 2 日的 0 7 UTC，预抓与 orphan 清理会同时命中：二者都进 state-write 并发组串行排队，
+# 每月 2 日的 14 7 UTC，预抓与 orphan 清理会同时命中：二者都进 state-write 并发组串行排队，
 # 且 orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
 
 name: daily
 
 on:
   schedule:
-    - cron: "0 19 * * *"
-    - cron: "0 7 * * *"
-    - cron: "0 7 2 * *"
+    - cron: "14 21 * * *"
+    - cron: "14 1 * * *"
+    - cron: "14 7 * * *"
+    - cron: "14 7 2 * *"
   workflow_dispatch: {}
 
 permissions:
   contents: write
   pages: write
   id-token: write
+  actions: read
 
 # 主任务与预抓都写 data 分支，串行排队防并发写坏状态
 concurrency:
@@ -35,8 +42,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  daily-guard:
+    # 补跑守门：只在 09:14 的补跑触发时执行。当天已有一次成功的定时 daily
+    # （主跑或上一轮补跑）就跳过补跑 —— 状态库幂等不会坏，但能省一整轮
+    # 抓取（约 130 次 ITAD 请求 + Pages 发布）。
+    if: github.event.schedule == '14 1 * * *'
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # ⚠️ 不能按「UTC 当天」过滤：主跑 05:14 CST = 21:14 UTC（UTC 前一天），
+          # 补跑会看不到它。主跑 21:14 UTC 与补跑 01:14 UTC 相距 4 小时，
+          # 用 12 小时窗口既覆盖主跑、又不会把 24 小时前的上一轮补跑算进来。
+          since=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+          count=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow daily.yml \
+            --event schedule --status success --created ">=$since" \
+            --json databaseId --jq 'length')
+          echo "过去 12 小时（自 ${since}）已有 ${count} 次成功的定时 daily 运行"
+          if [ "$count" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   daily:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 19 * * *'
+    needs: daily-guard
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 21 * * *' || (github.event.schedule == '14 1 * * *' && needs.daily-guard.outputs.skip == 'false')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -104,7 +139,7 @@ jobs:
           fi
 
   cleanup-data-branch:
-    if: github.event.schedule == '0 7 2 * *'
+    if: github.event.schedule == '14 7 2 * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,9 +156,9 @@ jobs:
           git push origin HEAD:data --force
 
   prefetch:
-    # 批 B 预抓（.scratch/prefetch/spec.md R2）：15:00 Asia/Shanghai 补详情缓存，
+    # 批 B 预抓（.scratch/prefetch/spec.md R2）：15:14 Asia/Shanghai 补详情缓存，
     # 只写 state 不出报表；与主任务错开，防并发写坏 state.json
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 7 * * *'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 7 * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
