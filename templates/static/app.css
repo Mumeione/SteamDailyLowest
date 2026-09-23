@@ -9,6 +9,9 @@
   --equal-low: #e07b00;
   --store-low: #6b7280;
   --price: #0a7d33;
+  /* 现价用促销红（超市促销逻辑，用户反馈绿色不显眼）；
+     与比价的「便宜绿/贵红」语义色分开 —— diff-cheap 仍绿，避免贵贱分不清 */
+  --price-now: #d92b2b;
 }
 
 * { box-sizing: border-box; }
@@ -121,11 +124,12 @@ body.no-image .thumb { display: none; }
 .card-title { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-price { text-align: right; flex: 0 0 auto; }
-.price-now { color: var(--price); font-weight: 600; font-size: 15px; }
+.price-now { color: var(--price-now); font-weight: 700; font-size: 17px; }
 .price-regular { font-size: 12px; color: var(--muted); text-decoration: line-through; }
 
-/* R4：链接前置 —— 小图标排在价格区之前 */
-.card-links { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+/* 链接图标：并入档位标签行（.tags 内、紧跟「好评达标」等档位标签右侧）——
+   与标签同行天然对齐（批 C2，替代此前的「沉底对齐」方案） */
+.card-links { display: flex; align-items: center; gap: 6px; align-self: center; }
 .icon-link { display: inline-flex; color: var(--muted); }
 .icon-link:hover { color: var(--accent); }
 .icon-link svg { width: 16px; height: 16px; fill: currentColor; display: block; }
@@ -142,8 +146,14 @@ body.no-image .thumb { display: none; }
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
 .cards .card { margin-bottom: 0; }
 
+/* 无封面图：保留占位空块（.thumb 自带浅灰底），双列网格不错位，只是没有图片 */
+.thumb-empty { }
+
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #eef1f5; color: var(--muted); }
+/* 档位「好评达标」标签：Steam 好评浅蓝（品牌色 #66c0f4，专为深底设计），
+   白底 11px 小字用原色对比度只有 ~1.9:1，压深一档保证可读 */
+.tag-quality { background: #e6f5fd; color: #1f96d2; }
 .tag-new { background: #fdecec; color: var(--new-low); }
 .tag-equal { background: #fff3e0; color: var(--equal-low); }
 .tag-store { background: #eef1f5; color: var(--store-low); }

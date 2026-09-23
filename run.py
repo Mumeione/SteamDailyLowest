@@ -266,6 +266,31 @@ def fetch_details(client: ItadClient, state: State, candidates: list[dict], cfg:
     return fetched
 
 
+def fetch_last_low_times(client: ItadClient, state: State, candidates: list[dict],
+                         cfg: dict, now: datetime) -> int:
+    """批量补「上次史低时间」（§3.6，``storelow/v2``）：对象是**当日新增**。
+
+    ⚠️ 每轮对当日新增**整批重取**、不做缓存命中跳过 —— 这个字段必须反映
+    ITAD 当前记录的店内史低时间：游戏今天以新史低入榜（timestamp≈今天），
+    明天转成平史低时，「上次史低」显示的才是正确的记录时间；若永久缓存
+    第一次的值，之后再次新低时会拿到过期时间。
+    请求量：200 个/批，日常 1~4 次/天。失败不阻断（下次运行自动补）。
+    """
+    if not cfg.get("fetch_last_low_time", True) or not candidates:
+        return 0
+    ids = sorted({e.get("game_id") for e in candidates if e.get("game_id")})
+    if not ids:
+        return 0
+    try:
+        lows_map = client.fetch_storelow(cfg["country"], ids)
+    except ItadError as exc:
+        log(f"[warn] 上次史低时间抓取失败，本轮跳过（下次运行重取）：{exc}")
+        return 0
+    for gid, ts in lows_map.items():
+        state.set_last_low_at(gid, ts)
+    return len(lows_map)
+
+
 def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
     """把详情缓存合并进条目并分档（§3.5 / §7.2）。
 
@@ -281,6 +306,7 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         meta = state.meta(entry.get("game_id"))
         item = dict(entry)
         item["title_zh"] = meta.get("title_zh") if meta else None
+        item["last_low_at"] = meta.get("last_low_at") if meta else None
         if not meta or not meta.get("fetched_at"):
             item["appid"] = None
             item["reviews"] = None
@@ -490,6 +516,12 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个"
         f"（目标 {len(targets)} 个，其余命中缓存）；目录还差 {backlog} 条")
 
+    # ---- 上次史低时间（§3.6）：批量接口，当日新增每轮重取 ----
+    low_time_fetched = fetch_last_low_times(client, state, candidates, cfg, now)
+    if low_time_fetched:
+        state.save(now)
+    log(f"      上次史低时间：批量补 {low_time_fetched}/{len(candidates)} 条（storelow/v2）")
+
     def do_enrich(shown: list[dict], info: dict) -> dict:
         facts = enrich.enrich_steam(steam_client, state, shown, cfg, fx_rates, now, log)
         log(f"      中文名：新取 {facts['title_fetched']} 个 · 命中缓存 {facts['title_cached']} 个"
@@ -523,6 +555,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "detail_targets": len(targets),
             "detail_fetched": detail_fetched,
             "detail_backlog": backlog,
+            "last_low_fetched": low_time_fetched,
             "detail_pending": final["tier"].get(classify.TIER_PENDING, 0),
             "title_zh_fetched": (final.get("steam") or {}).get("title_fetched", 0),
             "title_zh_cached": (final.get("steam") or {}).get("title_cached", 0),

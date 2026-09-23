@@ -2,14 +2,15 @@
 #
 # 入口（cron 是 UTC，GitHub 不认 timezone 字段）：
 #   14 21 * * *  每日 05:14 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
-#   14 1 * * *   每日 09:14 Asia/Shanghai  补跑：daily-guard 检测到当天已有成功的定时主任务则跳过
+#   24 23 * * *  每日 07:24 Asia/Shanghai  补跑：daily-guard 检测到 12h 内已有成功的定时主任务则跳过
 #   14 7 * * *   每日 15:14 Asia/Shanghai  预抓：run.py --prefetch，只补详情缓存、不出报表（批 B）
 #   14 7 2 * *   每月 2 日 15:14           orphan 清理：把 data 分支历史清零（只留当前一版）
 #   workflow_dispatch                    手动触发：主任务与预抓都跑（并发组串行排队）
 #
 # 定时全部避开整点：官方文档写明「整点是 Actions 高负载时刻，调度可能被推迟甚至丢弃」。
 # 实测 0 19 * * *（03:00 CST，美区下午峰顶）排队 2h48m；05:14 CST 美东临近下班、
-# 09:14/15:14 CST 落在全球低谷，靠补跑兜底主跑被丢弃的场次。
+# 07:24/15:14 CST 落在全球低谷，靠补跑兜底主跑被丢弃的场次。
+# 补跑原定 09:14，用户嫌晚提前到 07:24（距主跑 2h10m，仍错开整点）。
 #
 # §8 的四个坑在这里的处理方式：
 #   1. GITHUB_TOKEN 推的 commit 不触发 Pages 构建 → 发布用 deploy-pages 在同一次运行内完成
@@ -25,7 +26,7 @@ name: daily
 on:
   schedule:
     - cron: "14 21 * * *"
-    - cron: "14 1 * * *"
+    - cron: "24 23 * * *"
     - cron: "14 7 * * *"
     - cron: "14 7 2 * *"
   workflow_dispatch: {}
@@ -43,10 +44,10 @@ concurrency:
 
 jobs:
   daily-guard:
-    # 补跑守门：只在 09:14 的补跑触发时执行。当天已有一次成功的定时 daily
+    # 补跑守门：只在 07:24 的补跑触发时执行。过去 12 小时内已有一次成功的定时 daily
     # （主跑或上一轮补跑）就跳过补跑 —— 状态库幂等不会坏，但能省一整轮
     # 抓取（约 130 次 ITAD 请求 + Pages 发布）。
-    if: github.event.schedule == '14 1 * * *'
+    if: github.event.schedule == '24 23 * * *'
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.check.outputs.skip }}
@@ -56,7 +57,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # ⚠️ 不能按「UTC 当天」过滤：主跑 05:14 CST = 21:14 UTC（UTC 前一天），
-          # 补跑会看不到它。主跑 21:14 UTC 与补跑 01:14 UTC 相距 4 小时，
+          # 补跑会看不到它。主跑 21:14 UTC 与补跑 23:24 UTC 相距 2h10m，
           # 用 12 小时窗口既覆盖主跑、又不会把 24 小时前的上一轮补跑算进来。
           since=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
           count=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow daily.yml \
@@ -71,7 +72,7 @@ jobs:
 
   daily:
     needs: daily-guard
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 21 * * *' || (github.event.schedule == '14 1 * * *' && needs.daily-guard.outputs.skip == 'false')
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 21 * * *' || (github.event.schedule == '24 23 * * *' && needs.daily-guard.outputs.skip == 'false')
     runs-on: ubuntu-latest
     environment:
       name: github-pages

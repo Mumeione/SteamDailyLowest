@@ -191,6 +191,21 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
     label_map = labels or tier_labels()
     start_dt = classify.parse_time(entry.get("start"), now.tzinfo)
     expiry_dt = classify.parse_time(entry.get("expiry"), now.tzinfo)
+    flag = entry.get("flag")
+    # §3.6 上次史低时间：新史低就是这次破的记录；平史低/店史低显示上一次
+    # 记录时间（storelow/v2 批量取，存 game_meta.last_low_at）。取不到就
+    # 不渲染这一行（detailRow 对空值自动跳过），不猜。
+    if flag == "N":
+        last_low_text = "本次刷新历史记录"
+    elif flag in ("H", "S"):
+        low_at = classify.parse_time(entry.get("last_low_at"), now.tzinfo)
+        if low_at is None:
+            last_low_text = None
+        else:
+            days = max(0, (now.date() - low_at.date()).days)
+            last_low_text = f"{days} 天前（{low_at.strftime('%Y-%m-%d')}）"
+    else:
+        last_low_text = None
     return {
         "game_id": entry.get("game_id"),
         "title": entry.get("title"),
@@ -207,6 +222,7 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         "flag": entry.get("flag"),
         "flag_label": classify.low_label(entry.get("flag")),
         "store_low_text": format_amount(entry.get("store_low_int"), currency),
+        "last_low_text": last_low_text,
         "history_low_text": format_amount(entry.get("history_low_int"), currency),
         "history_low_1y_text": format_amount(entry.get("history_low_1y_int"), currency),
         "compare": compare_rows(entry),

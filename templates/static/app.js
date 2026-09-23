@@ -30,7 +30,13 @@
   // 链接语义靠 aria-label / title 文字。
   var ICONS = {
     steam: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.454 1.012H7.54zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.663 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.253 0-2.265-1.014-2.265-2.265z"/></svg>',
-    heihe: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h14a3 3 0 0 1 3 3v14a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3zm3.25 5.25a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8zm7.5 0a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8zM6.2 14.1h11.6v2.3H6.2v-2.3z"/></svg>'
+    // 小黑盒：照官方 logo（cdn.max-c.com/heybox/logo/app_251.png）逐像素重绘。
+    // 实际构造不是「六边形挖 H」，而是两块 180° 旋转对称的 Z 形片拼成的棱角 H，
+    // 所有斜边均为 30°；顶点由 251px 原图实测推导（IoU 0.956，差异仅抗锯齿边缘）。
+    heihe: '<svg viewBox="0 0 24 24" aria-hidden="true">'
+      + '<path d="M10.1 0 L21.7 6.6 V17.6 L17.7 19.9 V8.8 L13.9 6.6 V10 H10.1 Z"/>'
+      + '<path d="M2.3 6.4 L6.3 4.2 V15.2 L10.1 17.4 V14 H13.9 V24 L2.3 17.4 Z"/>'
+      + '</svg>'
   };
 
   // R1：组内排序三维度 + 好评数量筛选 chips
@@ -78,6 +84,8 @@
     a.setAttribute("aria-label", label);
     a.title = label;
     a.innerHTML = svg; // 常量字符串，无用户输入
+    // 图标在卡片摘要内（标签行），点链接开新标签页时不要触发卡片的展开/收起
+    a.addEventListener("click", function (event) { event.stopPropagation(); });
     return a;
   }
 
@@ -136,9 +144,10 @@
     var tags = [tag("-" + (item.cut || 0) + "%", "tag-cut")];
     if (item.flag) tags.push(tag(item.flag_label, flagClass));
     if (item.tier === "pending") tags.push(tag("详情待补", "tag-pending"));
-    else tags.push(tag(item.tier_label));
+    else tags.push(tag(item.tier_label, item.tier === "quality" ? "tag-quality" : undefined));
 
-    // R4：Steam / 小黑盒链接前置到摘要的价格区之前，图标 + 文字 aria-label
+    // Steam / 小黑盒链接：放在**档位标签右侧、同一行内**（批 C2，原「前置到价格区之前」）——
+    // 与标签同行天然对齐，不受价格位数影响；点击图标不应触发展开/收起，iconLink 内阻断冒泡
     var links = el("div", { class: "card-links" });
     if (item.steam_url) links.appendChild(iconLink(item.steam_url, "Steam 商店页", ICONS.steam));
     if (item.xiaoheihe_url) links.appendChild(iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe));
@@ -151,26 +160,35 @@
       text: (item.title_zh && item.title && item.title_zh !== item.title) ? item.title : ""
     });
 
+    // 无封面图也保留占位空块（批 C2）：双列网格不错位，只是不显示图片
+    var thumb = item.banner
+      ? el("img", { class: "thumb", src: item.banner, alt: "", loading: "lazy" })
+      : el("div", { class: "thumb thumb-empty" });
+
+    var tagsEl = el("div", { class: "tags" }, tags);
+    tagsEl.appendChild(links);
+
     var summary = el("div", { class: "card-summary" }, [
-      item.banner ? el("img", { class: "thumb", src: item.banner, alt: "", loading: "lazy" }) : null,
+      thumb,
       el("div", { class: "card-main" }, [
         el("h3", { class: "card-title", text: item.title_zh || item.title || "(无标题)" }),
         titleEn,
         el("div", { class: "card-sub", text: item.reviews_text || "详情待补" }),
-        el("div", { class: "tags" }, tags)
+        tagsEl
       ]),
-      links,
       el("div", { class: "card-price" }, [
         el("div", { class: "price-now", text: item.price_text }),
         el("div", { class: "price-regular", text: item.regular_text })
       ])
     ]);
 
-    // R3：详情左右两栏 —— 左栏价格类，右栏时间 + 比价；窄屏由 CSS 堆叠
+    // R3：详情左右两栏 —— 左栏价格类（上次史低 §3.6 固定放**最下面一行**，批 C2），
+    // 右栏时间 + 比价；窄屏由 CSS 堆叠
     var leftCol = el("div", { class: "detail-col" }, [
       detailRow("Steam 史低", item.store_low_text),
       detailRow("全周期最低", item.history_low_text),
-      detailRow("近一年最低", item.history_low_1y_text)
+      detailRow("近一年最低", item.history_low_1y_text),
+      detailRow("上次史低", item.last_low_text)
     ]);
 
     var rightRows = [
@@ -203,7 +221,12 @@
 
     var card = el("article", { class: "card" }, [summary, detail]);
     summary.addEventListener("click", function () {
-      card.classList.toggle("open");
+      // 手风琴：同时最多展开一张 —— 点开新卡先收起其他已展开的，再切换本卡
+      var wasOpen = card.classList.contains("open");
+      document.querySelectorAll(".card.open").forEach(function (other) {
+        other.classList.remove("open");
+      });
+      if (!wasOpen) card.classList.add("open");
     });
     return card;
   }
