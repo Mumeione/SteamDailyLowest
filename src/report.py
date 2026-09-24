@@ -31,12 +31,13 @@ GROUP_COLLAPSED = {
 }
 
 #: 预留的其余视图（第一版不上线，数据先攒库）
+#: 批 F2：「已过期」已删除 —— 折扣过期后毫无价值（用户：过期折扣犹如砒霜），
+#: 不配占一个分类按钮的位置。相关数据仍照常入库，只是不上页面。
 VIEWS = [
     {"key": "new_today", "label": "当日新增", "enabled": True},
     {"key": "week", "label": "本周(14天)", "enabled": False},
     {"key": "active", "label": "折扣中", "enabled": False},
     {"key": "upcoming", "label": "即将过期", "enabled": False},
-    {"key": "expired", "label": "已过期", "enabled": False},
 ]
 
 
@@ -88,27 +89,9 @@ def fx_display(cfg: dict, fx: dict | None) -> dict | None:
     return {"base": fx.get("base") or "CNY", "date": fx.get("date"), "rates": picked}
 
 
-def conditions(cfg: dict) -> list[str]:
-    """页面上要注明的筛选条件（用户明确要求：把条件写出来）。
-
-    纯文本、不带 markdown 标记 —— 这些字符串会直接渲染进 HTML 与 `data.js`。
-    只写**判定口径**；运行统计（当日新增条数 / 抓取口径 / 详情补齐 / 汇率）
-    页脚已有，不在这里重复。
-    """
-    pct = int(round(float(cfg.get("min_positive_ratio", 0.7)) * 100))
-    min_count = int(cfg.get("min_review_count", 100))
-    notable = int(cfg.get("notable_review_count", 10000))
-    lines = [
-        "只收本体游戏，不收 DLC / 合集 / 原声带",
-        "只收史低：新史低 / 平史低 / 仅 Steam 店史低",
-        f"「好评达标」= 好评率 ≥ {pct}% 且 评价数 ≥ {min_count}",
-        f"「高热度 · 口碑不一」= 评价数 ≥ {notable:,}，默认收起",
-        f"评价数 < {min_count} 的冷门游戏不展示",
-    ]
-    absolute = cfg.get("absolute_min_positive_ratio")
-    if absolute is not None:
-        lines.append(f"好评率低于 {int(round(float(absolute) * 100))}% 一律不展示")
-    return lines
+# 批 F（2026-09-24）：页面上的「筛选条件」折叠框已删除 —— 判定口径属于文档，
+# 不该占手机屏幕高度。原本由 conditions() / conditions_digest() 生成的那几行
+# 现在写在 README 的「筛选条件」一节；改阈值时记得同步那里。
 
 
 CURRENCY_SYMBOLS = {
@@ -171,25 +154,29 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
     label_map = labels or tier_labels()
     start_dt = classify.parse_time(entry.get("start"), now.tzinfo)
     expiry_dt = classify.parse_time(entry.get("expiry"), now.tzinfo)
-    flag = entry.get("flag")
-    # §3.6 上次史低时间：新史低就是这次破的记录；平史低/店史低显示上一次
-    # 记录时间（storelow/v2 批量取，存 game_meta.last_low_at）。取不到就
-    # 不渲染这一行（detailRow 对空值自动跳过），不猜。
+    # 批 E spec E1：史低分类改用 Steam 口径，不再把 ITAD 的 flag 直接搬到页面上
+    low_class = classify.steam_low_class(entry, now.tzinfo)
+    # 「剩 X 天」按**日期差**算（10-02 结束、今天 09-24 → 剩 8 天），不用小时差：
+    # 用户要看的是「还剩几个日历天」这种粗粒度信息，精确时刻放在详情里（批 E spec E2）
+    days_left = None
+    if expiry_dt is not None:
+        days_left = max(0, (expiry_dt.astimezone(now.tzinfo).date() - now.date()).days)
+    # §3.6 史低天数（「距上次史低」那一行）：new = 这次就是新纪录（没有具体日期）；
+    # tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 game_meta.last_low_at）。
     # 主文本只放天数保证单行（日期太长会把整行挤成两排），具体日期由
-    # 前端悬停/点按显示（last_low_date），N=本次刷新历史记录 无日期不交互。
+    # 前端悬停/点按显示（last_low_date）。取不到就不渲染这一行（JS 对空值自动跳过），不猜。
     last_low_date = None
-    if flag == "N":
-        last_low_text = "本次刷新历史记录"
-    elif flag in ("H", "S"):
+    last_low_text = None
+    if low_class == classify.STEAM_LOW_NEW:
+        # 批 F5：文本由「本次刷新历史记录」改为「本次新史低」（用户定案：只改文本、标签仍为「距上次史低」）
+        last_low_text = "本次新史低"
+    elif low_class == classify.STEAM_LOW_TIE:
         low_at = classify.parse_time(entry.get("last_low_at"), now.tzinfo)
-        if low_at is None:
-            last_low_text = None
-        else:
-            days = max(0, (now.date() - low_at.date()).days)
-            last_low_text = f"{days} 天前"
+        if low_at is not None:
+            # 批 E 第二轮：主文本就是「N 天」（标签侧已改为「距上次史低」，
+            # 再写「N 天前」语义重复）；具体日期由前端悬停/点按显示
+            last_low_text = f"{max(0, (now.date() - low_at.date()).days)} 天"
             last_low_date = low_at.strftime("%Y-%m-%d")
-    else:
-        last_low_text = None
     return {
         "game_id": entry.get("game_id"),
         "title": entry.get("title"),
@@ -203,14 +190,16 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         "price_int": entry.get("price_int"),
         "regular_text": format_amount(entry.get("regular_int"), currency),
         "cut": entry.get("cut"),
-        "flag": entry.get("flag"),
-        "flag_label": classify.low_label(entry.get("flag")),
-        "store_low_text": format_amount(entry.get("store_low_int"), currency),
+        # 批 E spec E6：页面上的史低标签与色条都来自这两个字段（Steam 口径）
+        "low_class": low_class,
+        "low_label": classify.steam_low_label(low_class),
+        "days_left": days_left,
         "last_low_text": last_low_text,
-        # 有日期才渲染悬停/点按交互（N=新纪录没有具体日期）
+        # 有日期才渲染悬停/点按交互（new=新纪录没有具体日期）
         "last_low_date": last_low_date,
-        "history_low_text": format_amount(entry.get("history_low_int"), currency),
-        "history_low_1y_text": format_amount(entry.get("history_low_1y_int"), currency),
+        # 批 E spec E3：原来这三条删掉了 —— 进报表的前提就是正处史低、storeLow 又已含
+        # 本次折扣，所以「Steam 史低」在数学上恒等于现价（实测 50/51）；
+        # 「全周期 / 近一年最低」则是 ITAD 全商店口径，与「本报告只看 Steam」冲突。
         "compare": compare_rows(entry),
         "start_text": start_dt.astimezone(now.tzinfo).strftime("%Y-%m-%d %H:%M") if start_dt else None,
         "expiry_text": expiry_dt.astimezone(now.tzinfo).strftime("%Y-%m-%d %H:%M") if expiry_dt else None,
@@ -234,6 +223,10 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
         if not group_items:
             continue
         group_items.sort(key=lambda i: (-(i["cut"] or 0), i["title"] or ""))
+        # 批 E spec E5：全组「折扣开始」相同时上提到分组头，卡片里不再每行重复
+        # （实测当日新增 51/51 是同一时刻；不一致时保持每张卡各自行）
+        starts = {item["start_text"] for item in group_items if item.get("start_text")}
+        group_start = starts.pop() if len(starts) == 1 else None
         groups.append(
             {
                 "key": spec["key"],
@@ -241,6 +234,7 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
                 "criteria": spec["criteria"],
                 "collapsed": spec["collapsed"],
                 "count": len(group_items),
+                "start_text": group_start,
                 "items": group_items,
             }
         )
@@ -267,15 +261,23 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         item["count"] = len(items) if view["enabled"] else None
         views.append(item)
 
+    # 批 E spec E4：概览的「史低构成」色点 —— 直接数 cards，
+    # 保证色点之和 == 进列表条数（不可能出现对不上的情况）
+    low_points = {classify.STEAM_LOW_NEW: 0, classify.STEAM_LOW_TIE: 0,
+                  classify.STEAM_LOW_UNKNOWN: 0}
+    for item in items:
+        key = item.get("low_class") or classify.STEAM_LOW_UNKNOWN
+        low_points[key] = low_points.get(key, 0) + 1
+
     payload = {
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_text": now.strftime("%Y-%m-%d %H:%M"),
         "stale_banner_hours": int(cfg.get("stale_banner_hours", 36)),
         "sweep": stats.get("sweep"),
         "overview": stats,
+        "low_points": low_points,
         "views": views,
         "groups": groups,
-        "conditions": conditions(cfg),
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
         #: 断点必须与 app.css 的 @media 一致，否则「布局按手机、每页按桌面」会错位
@@ -301,7 +303,8 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
                 "title": item["title"],
                 "title_zh": item["title_zh"],
                 "appid": item["appid"],
-                "flag": item["flag"],
+                "low_class": item["low_class"],
+                "low_label": item["low_label"],
                 "price_text": item["price_text"],
                 "tier": item["tier"],
             }
@@ -326,10 +329,10 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         views=views,
         overview=stats,
         fx=payload["fx"],
+        low_points=low_points,
         generated_at_text=payload["generated_at_text"],
         stale_banner_hours=payload["stale_banner_hours"],
         notice=payload["notice"],
-        conditions=payload["conditions"],
     )
     (output_dir / "index.html").write_text(html, encoding="utf-8")
 

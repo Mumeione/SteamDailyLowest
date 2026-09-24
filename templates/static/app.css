@@ -6,7 +6,6 @@
   --muted: #6b7280;
   --accent: #2563eb;
   --new-low: #d92b2b;
-  --equal-low: #e07b00;
   --store-low: #6b7280;
   --price: #0a7d33;
   /* 现价用促销红（超市促销逻辑，用户反馈绿色不显眼）；
@@ -41,24 +40,67 @@ html, body {
   font-size: 13px;
 }
 
-/* 概览：数值与标签横排，框体压矮 */
+/* 批 F3：顶部概览 —— **手机两行、电脑一行**，各自写死，不靠 nth-child 猜。
+   ⚠️ 两个踩过的坑：
+   1) flex-wrap 在「刚好塞下 4 个」时排出 4+1（手机实测）；
+   2) `grid-column: span 3 / span 2` 是**无效写法** —— 简写里 start 的 span 会覆盖
+      line 值，若 end 也是 span 且导致 start 变成 span(count+1) 就是循环依赖，
+      浏览器直接丢弃整条声明（截图里每框独占一行就是这么来的）。
+      正确写法见下面第 2 排的 `nth-child(n+4)` 规则。
+   —— 手机（≤768px）3 列 2 行（3 + 2），平板/电脑 5 列 1 行。 */
 .overview {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   margin: 12px 0;
 }
-.stat {
+.stat-box {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 5px 4px;
-  text-align: center;
-  display: flex; align-items: baseline; justify-content: center; gap: 4px;
+  padding: 7px 10px;
   min-width: 0;
 }
-.stat-value { font-size: 16px; font-weight: 600; }
-.stat-label { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 平板起（>768px）：固定 5 列，一行放下。
+   罕见情况下会多出第 6 个框（「史低待确认」，只在 ITAD 缺 storeLow 时出现）——
+   让它独占第 2 行会很突兀，所以让它**跨满整行**。 */
+@media (min-width: 769px) {
+  .overview { grid-template-columns: repeat(5, 1fr); }
+  .overview > .stat-box:nth-child(6) { grid-column: 1 / -1; }
+}
+/* 手机（≤768px）：**两行**，每行按框数等分铺满，写死跨格数不靠 nth-child 猜。
+   - 5 个框（常态，无「待确认」）：3 + 2  → 第 1 排各占 1/3，第 2 排各占 1/2
+   - 6 个框（有「待确认」）：3 + 3 → 两排都是 3 个，各占 1/3
+   基准列数取 6 的公倍数，用 span 2（1/3）与 span 3（1/2）拼出来，两种都是整数格 */
+@media (max-width: 768px) {
+  .overview { grid-template-columns: repeat(6, 1fr); gap: 6px; }
+  /* 第 1 排固定 3 个，各占 2 格（= 总宽 1/3） */
+  .overview > .stat-box:nth-child(-n+3) { grid-column: span 2; }
+  /* 第 2 排：常态只剩 2 个 → 各占 3 格（= 总宽 1/2），两个正好铺满。
+     有第 6 个框时，第 4~6 个各占 2 格，与第 1 排同款 3 列 */
+  .overview > .stat-box:nth-child(n+4) { grid-column: span 3; }
+  .overview:has(> .stat-box:nth-child(6)) > .stat-box:nth-child(n+4) {
+    grid-column: span 2;
+  }
+}
+.stat-label {
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.stat-value { font-size: 20px; font-weight: 600; line-height: 1.3; }
+.stat-unit { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 2px; }
+/* 史低构成沿用色点语义：新=红 / 平=灰 / 待确认=灰
+   （批 F5：待确认数字原为紫 #5b4bd6，与 .point-unknown 及卡片灰虚线色条不一致，统一为灰） */
+.stat-value.stat-new { color: var(--new-low); }
+.stat-value.stat-tie { color: var(--store-low); }
+.stat-value.stat-unknown { color: var(--store-low); }
+.point { display: inline-flex; align-items: center; gap: 5px; }
+.point::before {
+  content: ""; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--line);
+}
+.point-new::before { background: var(--new-low); }
+.point-tie::before { background: var(--store-low); }
+.point-unknown::before { background: var(--store-low); }
 
 /* 筛选栏 */
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
@@ -79,33 +121,26 @@ html, body {
 
 .toggle { margin-left: auto; font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
 
-/* 筛选条件说明（页面上要注明判定口径）：卡片化，与概览/卡片风格统一 */
-.criteria-box {
-  margin: 0 0 12px; font-size: 12px; color: var(--muted);
-  background: var(--card); border: 1px solid var(--line); border-radius: 8px;
-}
-.criteria-box summary {
-  cursor: pointer; padding: 7px 10px; color: var(--text); font-weight: 500;
-  list-style: none; display: flex; align-items: center; gap: 6px;
-}
-.criteria-box summary::-webkit-details-marker { display: none; }
-.criteria-box summary::before {
-  content: "▸"; color: var(--muted); display: inline-block;
-  transition: transform .15s ease;
-}
-.criteria-box[open] summary::before { transform: rotate(90deg); }
-.criteria-box[open] summary { border-bottom: 1px dashed var(--line); }
-.criteria-box ul { margin: 0; padding: 6px 10px 8px 26px; }
-.criteria-box li { margin: 2px 0; line-height: 1.55; }
+/* 批 F：页面上不再有「筛选条件」折叠框 —— 判定口径全部写进 README 的
+   「筛选条件」一节（属于文档，不占手机屏幕高度）。
+   `.point` 色点样式保留：分组头在多组时仍用它显示新/平构成 */
 
 /* 分组 */
 .group { margin-bottom: 14px; }
+/* 批 F2：分组头默认**一行**（电脑端）；手机端（见媒体查询）改成两行 ——
+   一行放「箭头 + 分组名 + 条数」，一行放「好评率 ≥70% 且评价数 ≥100」，
+   否则那一长串入组条件会把标题挤得转行、整块挤成一团 */
 .group-head {
   display: flex; align-items: center; gap: 8px;
   font-size: 14px; font-weight: 600;
   padding: 6px 2px; cursor: pointer; user-select: none;
 }
+.group-head .group-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.group-head .group-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* count 自动右靠：后面的「折扣开始」和史低构成跟着排到同一侧（批 E spec E5） */
 .group-head .count { font-weight: 400; color: var(--muted); font-size: 12px; }
+.group-head .group-start { font-weight: 400; font-size: 11px; color: var(--muted); }
+.group-head .low-points { margin-top: 0; gap: 10px; font-size: 11px; }
 /* 分组标题旁的入组条件：让「好评达标」这类标签不靠猜 */
 .group-head .group-criteria {
   font-weight: 400; font-size: 11px; color: var(--muted);
@@ -129,6 +164,12 @@ html, body {
   margin-bottom: 8px;
   overflow: hidden;
 }
+/* 批 E spec E2：左侧色条 = 史低类型，页面的**主视觉锚点** ——
+   N/H/S 原本只体现在 11px 小标签的字体色上，几乎看不出来 */
+.card { border-left: 4px solid var(--line); }
+.card.low-new { border-left-color: var(--new-low); }
+.card.low-tie { border-left-color: var(--store-low); }
+.card.low-unknown { border-left: 4px dashed var(--store-low); }
 .card-summary { display: flex; gap: 10px; padding: 8px; align-items: center; cursor: pointer; }
 /* boxart 是 2:3 竖图，框跟着竖过来，不再裁切（卡片随之变高一点） */
 .thumb { width: 44px; height: 66px; flex: 0 0 44px; object-fit: cover; border-radius: 6px; background: #eceff3; }
@@ -139,6 +180,9 @@ body.no-image .thumb { display: none; }
 .card-price { text-align: right; flex: 0 0 auto; }
 .price-now { color: var(--price-now); font-weight: 700; font-size: 17px; }
 .price-regular { font-size: 12px; color: var(--muted); text-decoration: line-through; }
+/* 批 F：改回 11px —— 批 E 第三轮把它提到 13px 近黑，用户反馈太大，
+   价格区三行（现价 / 原价 / 剩 X 天）里它不该抢现价的视觉 */
+.days-left { font-size: 11px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
 
 /* 链接图标：并入档位标签行（.tags 内、紧跟「好评达标」等档位标签右侧）——
    与标签同行天然对齐（批 C2，替代此前的「沉底对齐」方案） */
@@ -164,14 +208,26 @@ body.no-image .thumb { display: none; }
 
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #eef1f5; color: var(--muted); }
-/* 档位「好评达标」标签：Steam 好评浅蓝（品牌色 #66c0f4，专为深底设计），
-   白底 11px 小字用原色对比度只有 ~1.9:1，压深一档保证可读 */
-.tag-quality { background: #e6f5fd; color: #1f96d2; }
-.tag-new { background: #fdecec; color: var(--new-low); }
-.tag-equal { background: #fff3e0; color: var(--equal-low); }
-.tag-store { background: #eef1f5; color: var(--store-low); }
-.tag-cut { background: #e8f5ec; color: var(--price); }
+/* 批 E：卡片不再放档位标签（同组内必然相同，分组头已写明），原 .tag-quality 已删 */
+/* 史低类型（批 E spec E1/E2）：只剩「新 / 平」两档 —— 「店史低」退役，
+   本页全是 Steam 店史低，用它会产生「那别家呢」的误读 */
+.tag-low-new { background: #fdecec; color: var(--new-low); }
+.tag-low-tie { background: #eef1f5; color: var(--store-low); }
+.tag-low-unknown { background: #eef1f5; color: var(--store-low); }
 .tag-pending { background: #f1f0ff; color: #5b4bd6; }
+
+/* 折扣力度条（批 E spec E2）：填充宽 = cut%，颜色沿用原有的折扣绿，
+   取代原来那个和 N/H/S 抢注意力的绿色 -XX% pill。
+   位置在**链接图标之后**（第二轮调整），宽度给足让它真正能当「力度」读 */
+.cut-bar {
+  display: inline-block; width: 96px; height: 5px; vertical-align: middle;
+  border-radius: 3px; background: #eceff3; overflow: hidden;
+}
+.cut-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--price); }
+/* 折扣百分比跟力度条同一个信息块：同色、同档次的存在感。
+   字号沿革：11px → 批 E 放大到 13px → 批 F 撤回 11px → 用户手动定 12px */
+.cut-num { font-size: 12px; color: var(--price); font-weight: 700; }
+.cut-wrap { display: inline-flex; align-items: center; gap: 4px; }
 
 .card-detail { border-top: 1px dashed var(--line); padding: 8px 10px 10px; font-size: 13px; display: none; }
 .card.open .card-detail { display: block; }
@@ -180,7 +236,9 @@ body.no-image .thumb { display: none; }
 /* 上次史低：有日期可悬停/点按的值加虚线下划线提示可交互 */
 .detail-row b.has-alt { cursor: pointer; border-bottom: 1px dashed var(--muted); }
 
-/* R3：详情左右两栏 + 竖向分隔线；窄屏（≤断点）由下方媒体查询堆叠 */
+/* 批 E spec E3（用户第二轮改回）：详情左右两栏 ——
+   左栏 = 史低天数 + 折扣结束；右栏 = 跨区比价。
+   没有比价行时右栏为空，前端回落单栏（避免出现半张空表格）；窄屏堆叠 */
 .detail-cols { display: flex; gap: 10px; }
 .detail-col { flex: 1; min-width: 0; }
 .detail-col + .detail-col { border-left: 1px dashed var(--line); padding-left: 10px; }
@@ -204,17 +262,26 @@ body.no-image .thumb { display: none; }
 /* 断点必须与 app.js 的 data.page_size.breakpoint 一致（默认 768px） */
 @media (max-width: 768px) {
   .topbar h1 { font-size: 15px; }
-  /* 手机两排、每排两框（共 4 个） */
-  .overview { grid-template-columns: repeat(2, 1fr); }
-  .stat-value { font-size: 14px; }
+  /* 批 F3：概览的列数/跨格规则已提到上面专门的媒体查询块里（与平板那档对照着看更清楚），
+     这里只留尺寸微调 */
+  .stat-value { font-size: 18px; }
+  .stat-label { font-size: 11px; }
+  /* 批 F2：分组头改两行 —— 第一行「箭头 + 组名 + 条数」，
+     第二行「入组条件 + 折扣开始」，否则条件文案把标题挤得转行 */
+  .group-head { flex-wrap: wrap; row-gap: 3px; align-items: baseline; }
+  .group-head .group-title { flex: 1 1 auto; }
+  .group-head .group-meta { flex: 1 1 100%; margin-left: 18px; }
+  .group-head .group-criteria { white-space: normal; }
   .thumb { width: 40px; height: 60px; flex-basis: 40px; }
   .card-title { font-size: 13px; }
+  /* 单列时横向空间反而更宽，但力度条也别长到挤掉标题 */
+  .cut-bar { width: 80px; }
 
   /* 布局收单列 = 每页条数切到手机档，两者永远同断点（§7.3） */
   .cards { grid-template-columns: 1fr; }
   .cards .card { margin-bottom: 0; }
 
-  /* R3：窄屏详情回落单栏纵向堆叠，分隔线改横向 */
+  /* 窄屏详情回落单栏纵向堆叠，分隔线改横向 */
   .detail-cols { flex-direction: column; gap: 0; }
   .detail-col + .detail-col {
     border-left: 0; padding-left: 0;

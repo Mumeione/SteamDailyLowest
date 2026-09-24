@@ -4,7 +4,7 @@
 不发任何网络请求：解析层用桩替换 ``ItadClient.request``，
 编排层与渲染层注入假客户端 / 直接构造条目。
 覆盖：批量分批与解析（取 Steam 店 low、混合时区偏移时间戳）、
-state 写入、build_card 显示规则（N=本次刷新历史记录 / H/S=X 天前 / 缺数据不渲染）、
+state 写入、build_card 显示规则（N=本次新史低 / H/S=X 天 / 缺数据不渲染）、
 失败不阻断。
 """
 from __future__ import annotations
@@ -123,18 +123,21 @@ class FetchLastLowTimes(unittest.TestCase):
 
 class BuildCardLastLowText(unittest.TestCase):
     def entry(self, flag: str, last_low_at: str | None) -> dict:
+        # store_low_int 必须给：状态库条目里一定有它（SEEN_KEEP），缺了会被判成 unknown
         return {"game_id": "g", "title": "T", "flag": flag,
-                "last_low_at": last_low_at, "price_int": 1000, "currency": "CNY"}
+                "last_low_at": last_low_at, "price_int": 1000,
+                "store_low_int": 1000, "currency": "CNY"}
 
-    def test_new_low_shows_record_text(self):
+    def test_new_low_shows_new_text(self):
         card = build_card(self.entry("N", "2021-06-24T21:52:22+02:00"), NOW)
-        self.assertEqual(card["last_low_text"], "本次刷新历史记录")
+        self.assertEqual(card["last_low_text"], "本次新史低")
         self.assertIsNone(card["last_low_date"])
 
     def test_equal_low_shows_days_and_date(self):
         card = build_card(self.entry("H", "2026-02-21T10:00:00+08:00"), NOW)
-        # 2026-02-21 → 2026-09-23 = 214 天；主文本只有天数，日期单独给前端做悬停/点按
-        self.assertEqual(card["last_low_text"], "214 天前")
+        # 2026-02-21 → 2026-09-23 = 214 天；主文本只有天数（标签侧写「距上次史低」，
+        # 再写「天前」语义重复），日期单独给前端做悬停/点按
+        self.assertEqual(card["last_low_text"], "214 天")
         self.assertEqual(card["last_low_date"], "2026-02-21")
 
     def test_missing_data_renders_none(self):

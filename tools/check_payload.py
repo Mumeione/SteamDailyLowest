@@ -3,7 +3,7 @@
 
 用途：改了渲染逻辑之后不想重跑整条流水线，用它快速核对：
 分组标题与卡片标签是否一致、中文名有没有用上、跨区比价算得对不对、
-「筛选条件」块有没有把阈值写全。
+判定口径字段有没有彻底从 payload 里清掉（批 F 后口径只在 README）。
 
 用法：`python tools/check_payload.py` → 结果落 data/probe/report_check.txt
 """
@@ -74,9 +74,48 @@ def main() -> int:
         lines.append(f"    《{i.get('title_zh') or i['title']}》 国区 {i['price_text']} → {rows}")
 
     lines.append("")
-    lines.append("--- 筛选条件块 ---")
-    for line in payload.get("conditions") or []:
-        lines.append("  - " + line)
+    lines.append("--- 筛选条件 ---")
+    # 批 F（2026-09-24）：页面上的「筛选条件」折叠框已删，判定口径全部搬到
+    # README「筛选条件」一节；payload 里不再有 conditions / criteria_digest 字段
+    leaks = [f for f in ("conditions", "criteria_digest") if f in payload]
+    lines.append("  payload 已无 conditions / criteria_digest："
+                 + ("是 ✓" if not leaks else f"否 ✗ 残留 {leaks}"))
+
+    lines.append("")
+    lines.append("--- 史低分类（批 E spec E1：Steam 口径的新 / 平）---")
+    for c in ("new", "tie", "unknown"):
+        lines.append(f"  {c}: {sum(1 for i in items if i.get('low_class') == c)}")
+    bad_class = [i.get("low_class") for i in items
+                 if i.get("low_class") not in ("new", "tie", "unknown")]
+    expect_label = {"new": "新史低", "tie": "平史低", "unknown": "史低待确认"}
+    bad_pair = [(i.get("low_class"), i.get("low_label")) for i in items
+                if expect_label.get(i.get("low_class")) != i.get("low_label")]
+    lines.append(f"  取值非法：{len(bad_class)} 条"
+                 + ("" if not bad_class else f" → {sorted(set(bad_class))}"))
+    lines.append(f"  class 与标签不对应：{len(bad_pair)} 条"
+                 + ("" if not bad_pair else f" → {sorted(set(bad_pair))}"))
+
+    lines.append("")
+    lines.append("--- 概览色点 vs 分组明细（必须自洽）---")
+    points = payload.get("low_points") or {}
+    lines.append("  low_points: " + json.dumps(points, ensure_ascii=False))
+    points_sum = sum(int(v) for v in points.values())
+    lines.append(f"  色点合计 {points_sum} / 进列表 {len(items)}"
+                 f" -> {'一致' if points_sum == len(items) else '★不一致★'}")
+
+    lines.append("")
+    lines.append("--- 「剩 X 天」---")
+    noDays = [i for i in items if i.get("days_left") is None]
+    lines.append(f"  无 days_left {len(noDays)}/{len(items)}（expiry 缺失才有，属异常）")
+    days = sorted({i["days_left"] for i in items if i.get("days_left") is not None})
+    lines.append(f"  取值分布: {days}")
+
+    lines.append("")
+    lines.append("--- 分组「折扣开始」上提（批 E spec E5）---")
+    for g in groups:
+        uniform = len({i.get("start_text") for i in g["items"]}) == 1
+        lines.append(f"  {g['label']}: 全组一致={uniform} · group.start_text="
+                     f"{g.get('start_text')}")
 
     lines.append("")
     lines.append("--- 判定 ---")
@@ -87,6 +126,13 @@ def main() -> int:
     lines.append("  payload 无 itad_url：" + ("是 ✓" if no_itad else "否 ✗（R2 未生效）"))
     lines.append("  中文名覆盖率：" + (f"{len(zh)}/{len(items)}" if items else "无条目"))
     lines.append("  跨区比价覆盖率：" + (f"{len(cmp_items)}/{len(items)}" if items else "无条目"))
+    # 批 E spec E6：删掉的字段不能还留在 payload 里
+    removed = ("flag", "flag_label", "store_low_text",
+               "history_low_text", "history_low_1y_text")
+    left = [f for f in removed if any(f in i for i in items)]
+    lines.append("  已删字段无残留：" + ("是 ✓" if not left else f"否 ✗ {left}"))
+    ok = (ok and not left and not bad_class and not bad_pair
+          and points_sum == len(items) and not leaks)
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"结果已写入 {OUT}")
     return 0 if ok else 2

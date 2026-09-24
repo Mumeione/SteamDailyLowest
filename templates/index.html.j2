@@ -20,23 +20,36 @@
 </div>
 
 <main class="wrap">
+  <!-- 批 F：概览改成多个独立小框，窄屏自动换行铺满整行 ——
+       比原来的「左大框 + 右 40% 筛选条件框」在手机上更好读（不再挤成一条）。
+       筛选条件框已删除，判定口径全部写进 README「筛选条件」一节 -->
   <section class="overview">
-    <div class="stat">
-      <span class="stat-value">{{ overview.new_today_shown }}</span>
-      <span class="stat-label">进列表</span>
+    <div class="stat-box">
+      <div class="stat-label">今日新增 Steam 史低</div>
+      <div class="stat-value">{{ overview.new_today_shown }}<span class="stat-unit">款</span></div>
     </div>
-    <div class="stat">
-      <span class="stat-value">{{ overview.new_today_raw }}</span>
-      <span class="stat-label">当日新增</span>
+    <div class="stat-box">
+      <div class="stat-label">当日新增</div>
+      <div class="stat-value">{{ overview.new_today_raw }}<span class="stat-unit">款</span></div>
     </div>
-    <div class="stat">
-      <span class="stat-value">{{ overview.hist_low_total }}</span>
-      <span class="stat-label">史低总数</span>
+    <div class="stat-box">
+      <div class="stat-label">未进列表</div>
+      <div class="stat-value">{{ overview.new_today_raw - overview.new_today_shown }}<span class="stat-unit">款</span></div>
     </div>
-    <div class="stat">
-      <span class="stat-value">{{ overview.deals_fetched }}</span>
-      <span class="stat-label">抓取总数</span>
+    <div class="stat-box">
+      <div class="stat-label">新史低</div>
+      <div class="stat-value stat-new">{{ low_points["new"] }}<span class="stat-unit">款</span></div>
     </div>
+    <div class="stat-box">
+      <div class="stat-label">平史低</div>
+      <div class="stat-value stat-tie">{{ low_points["tie"] }}<span class="stat-unit">款</span></div>
+    </div>
+    {% if low_points["unknown"] %}
+    <div class="stat-box">
+      <div class="stat-label">史低待确认</div>
+      <div class="stat-value stat-unknown">{{ low_points["unknown"] }}<span class="stat-unit">款</span></div>
+    </div>
+    {% endif %}
   </section>
 
   <nav class="filters" id="filters">
@@ -55,17 +68,6 @@
 
   <p class="notice">{{ notice }}</p>
 
-  {% if conditions %}
-  <details class="criteria-box">
-    <summary>筛选条件（判定口径）</summary>
-    <ul>
-      {% for line in conditions %}
-      <li>{{ line }}</li>
-      {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-
   <div id="list" class="list"></div>
 
   <p id="empty" class="empty" hidden>今天没有符合条件的史低新增。</p>
@@ -77,6 +79,9 @@
     抓取口径：{{ overview.sweep }} ·
     详情：本轮抓 {{ overview.detail_fetched }} 条{% if overview.detail_backlog is not none %}，目录还差 {{ overview.detail_backlog }} 条{% endif %} ·
     状态库最近一次运行：{{ overview.last_run_at or '—' }}
+  </p>
+  <p>
+    本轮抓取 {{ overview.deals_fetched }} 条折扣 · 其中史低 {{ overview.hist_low_total }} 条
   </p>
   {% if fx %}
   <p>

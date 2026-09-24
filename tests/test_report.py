@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """报表展示层的单元测试（§3.5 / §7.2 / §7.4 / §7.1）。
 
-重点钉住两件用户明确要求的事：
+重点钉住三件用户明确要求的事：
 
 1. **分组标签是中性描述 + 条件写在旁边**（「优质」这种评价性词会误导 ——
    70% 好评率本来就不等于优质），而且条件文案要**跟着配置变**；
-2. **页面必须注明筛选条件**（`conditions()` 的输出要包含真实阈值）。
+2. **筛选条件只在 README**：页面上那个折叠框已删（批 F），
+   口径字段不该再出现在 payload / HTML 里；
+3. 概览是多框铺满的响应式布局，不再是并排大框。
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from datetime import datetime
@@ -32,6 +35,28 @@ CFG = {
     "output_dir": "output",
     "sweep_mode": "low_only",
 }
+
+#: 渲染用的最小统计块（模板会做算术，概览/页脚读到的字段都要给全）
+_STATS = {
+    "sweep": "low_only", "new_today_raw": 1, "new_today_shown": 1,
+    "deals_fetched": 0, "hist_low_total": 1,
+    "detail_fetched": 1, "detail_backlog": 0, "detail_targets": 1,
+    "last_run_at": None,
+}
+
+
+def _render(items: list[dict], now: datetime) -> Path:
+    """用临时 output_dir 跑一次真实渲染，返回输出目录（测试用）。"""
+    import tempfile
+
+    out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+    report.render(dict(CFG, output_dir=str(out)), items, _STATS, now)
+    return out
+
+
+def _load_payload(out: Path) -> dict:
+    text = (out / "data.js").read_text(encoding="utf-8")
+    return json.loads(text.split("=", 1)[1].rstrip().rstrip(";"))
 
 
 class GroupSpecsTest(unittest.TestCase):
@@ -98,36 +123,23 @@ class GroupSpecsTest(unittest.TestCase):
 
 
 class ConditionsTest(unittest.TestCase):
-    def test_states_real_thresholds(self):
-        text = "\n".join(report.conditions(CFG))
-        self.assertIn("好评率 ≥ 70%", text)
-        self.assertIn("评价数 ≥ 100", text)
-        self.assertIn("10,000", text)
-        self.assertIn("冷门", text)
+    """批 F（2026-09-24）：页面上的「筛选条件」折叠框已删除，判定口径搬到
+    README「筛选条件」一节 —— 这里钉住「别又跑回 payload / 页面里」。"""
 
-    def test_run_stats_not_repeated(self):
-        """运行统计（抓取口径/详情补齐/当日新增条数）页脚已有，口径区不重复。"""
-        text = "\n".join(report.conditions(CFG))
-        self.assertNotIn("low_only", text)
-        self.assertNotIn("增量补齐", text)
-        self.assertNotIn("本轮", text)
+    def test_conditions_helpers_are_gone(self):
+        self.assertFalse(hasattr(report, "conditions"))
+        self.assertFalse(hasattr(report, "conditions_digest"))
 
-    def test_absolute_floor_only_when_enabled(self):
-        self.assertNotIn("绝对下限", "\n".join(report.conditions(CFG)))
-        cfg = dict(CFG, absolute_min_positive_ratio=0.4)
-        self.assertIn("好评率低于 40%", "\n".join(report.conditions(cfg)))
-
-    def test_no_markdown_markup(self):
-        """这些字符串直接进 HTML，不能带 markdown 标记。"""
-        text = "\n".join(report.conditions(CFG))
-        self.assertNotIn("**", text)
-        self.assertNotIn("`", text)
-
-    def test_no_hardcoded_page_counts(self):
-        """页数会随销售节奏变（实测 20~27 页），写死在文案里迟早是错的。"""
-        text = "\n".join(report.conditions(CFG))
-        self.assertNotIn("27 页", text)
-        self.assertNotIn("162 页", text)
+    def test_payload_has_no_criteria_fields(self):
+        items = [{"title": "A", "title_zh": None, "appid": 1, "cut": 90,
+                  "price_text": "¥10", "low_class": "new", "low_label": "新史低",
+                  "tier": classify.TIER_QUALITY}]
+        now = datetime(2026, 9, 24, 10, 0, tzinfo=classify.zone("Asia/Shanghai"))
+        out = _render(items, now)
+        payload = _load_payload(out)
+        for field in ("conditions", "criteria_digest"):
+            self.assertNotIn(field, payload)
+        self.assertNotIn("criteria-box", (out / "index.html").read_text(encoding="utf-8"))
 
     def test_title_zh_is_stripped(self):
         """Steam 偶尔把本地化标题存成带尾随空格（例："时之刃 "）。"""
@@ -183,7 +195,9 @@ class CardTest(unittest.TestCase):
                  "expiry": "2026-09-28T10:00:00+08:00", "tier": classify.TIER_QUALITY}
         card = report.build_card(entry, self.now)
         self.assertEqual(card["title_zh"], "赛博朋克 2077")
-        self.assertEqual(card["flag_label"], "新史低")
+        # 批 E spec E1/E6：卡片标签改用 Steam 口径的 low_class / low_label
+        self.assertEqual(card["low_class"], "new")
+        self.assertEqual(card["low_label"], "新史低")
         self.assertEqual(card["price_text"], "¥149")
         self.assertEqual(card["steam_url"], "https://store.steampowered.com/app/1091500/")
         self.assertEqual(card["xiaoheihe_url"], "https://www.xiaoheihe.cn/games/detail/1091500")
