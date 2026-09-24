@@ -11,10 +11,15 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src import classify  # noqa: E402
+
 OUT = ROOT / "data" / "probe" / "report_check.txt"
 SHOW = 8
 
@@ -96,6 +101,33 @@ def main() -> int:
                  + ("" if not bad_pair else f" → {sorted(set(bad_pair))}"))
 
     lines.append("")
+    lines.append("--- low_class 字面量 vs classify 常量（步骤 5.1）---")
+    # low_class 的三个取值在 Python（classify 常量）与 JS（app.js 手写的字面量）各存一份，
+    # 两边没有机制保证一致 —— Python 改名后前端会**静默失配**：页面不报错，
+    # 只是标签与色条全错。这条校验把「静默错」变成「跑一次就红」。
+    valid = {classify.STEAM_LOW_NEW, classify.STEAM_LOW_TIE, classify.STEAM_LOW_UNKNOWN}
+    js_path = ROOT / "output" / "static" / "app.js"
+    js = js_path.read_text(encoding="utf-8") if js_path.exists() else ""
+    # 方向一（主）：每个 Python 常量都要以**完整引号字面量**出现在 app.js。
+    # 必须用完整字面量而非子串 —— 否则 "new" 会被 "tag-low-new" 这类 CSS 类名假命中。
+    not_in_js = [c for c in sorted(valid)
+                 if f'"{c}"' not in js and f"'{c}'" not in js]
+    # 方向二（辅）：与 low_class 比较、或取其兜底默认值的字面量，必须都在常量集内。
+    # 只覆盖 `low_class === "x"` 与 `low_class || "x"` 两种写法；前端若换写法会漏，
+    # 属已知局限（届时把新写法补进这里）。
+    # ⚠️ `low_?[Cc]lass` 才是「low_class 或 lowClass」—— 写成 `low[Cc]lass` 会漏掉带下划线的
+    # 那一种（`low_class || "unknown"` 就是这么被漏掉的，实测过）。
+    used = set(re.findall(r'low_?[Cc]lass\s*[!=]==?\s*"([^"]*)"', js))
+    used |= set(re.findall(r'low_?[Cc]lass\s*\|\|\s*"([^"]*)"', js))
+    strange = sorted(used - valid)
+    lines.append(f"  classify 常量: {sorted(valid)}")
+    lines.append(f"  app.js 里比较/兜底用的: {sorted(used)}")
+    lines.append("  常量都在 app.js 里出现："
+                 + ("是 ✓" if not not_in_js else f"否 ✗ 缺 {not_in_js}"))
+    lines.append("  没有 Python 不认识的取值："
+                 + ("是 ✓" if not strange else f"否 ✗ 多出 {strange}"))
+
+    lines.append("")
     lines.append("--- 概览色点 vs 分组明细（必须自洽）---")
     points = payload.get("low_points") or {}
     lines.append("  low_points: " + json.dumps(points, ensure_ascii=False))
@@ -132,7 +164,8 @@ def main() -> int:
     left = [f for f in removed if any(f in i for i in items)]
     lines.append("  已删字段无残留：" + ("是 ✓" if not left else f"否 ✗ {left}"))
     ok = (ok and not left and not bad_class and not bad_pair
-          and points_sum == len(items) and not leaks)
+          and points_sum == len(items) and not leaks
+          and not not_in_js and not strange)
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"结果已写入 {OUT}")
     return 0 if ok else 2

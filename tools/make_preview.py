@@ -28,6 +28,16 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def load_breakpoint(data_js: str, fallback: int = 768) -> int:
+    """断点从**渲染出的 payload** 读（config.json → report.py → page_size.breakpoint）。
+
+    不在这里再写死一份 768 —— 否则「布局按一套、量尺按一套、预览按一套」，
+    改断点时漏掉哪个就各说各话（批 F3 排错时正是这么踩的，见 fix-round1 步骤 5.2）。
+    """
+    m = re.search(r'"breakpoint"\s*:\s*(\d+)', data_js)
+    return int(m.group(1)) if m else fallback
+
+
 def build_single(index_html: str, css: str, js: str, data_js: str) -> str:
     """把外链的 css / js / data.js 内联进 HTML。"""
     # <link rel="stylesheet" href="static/app.css?v=...">  → <style>
@@ -82,10 +92,10 @@ FRAMES_TMPL = """<!DOCTYPE html>
 """
 
 
-def build_frames(widths: list[int]) -> str:
+def build_frames(widths: list[int], breakpoint: int) -> str:
     blocks = []
     for w in widths:
-        tag = "手机" if w <= 768 else "平板/桌面"
+        tag = "手机" if w <= breakpoint else "平板/桌面"
         blocks.append(
             f'  <div class="frame" style="width:{w}px">\n'
             f'    <div class="cap">{w}px · {tag}</div>\n'
@@ -114,16 +124,19 @@ def main() -> int:
         print(f"[错误] 缺少产物：{', '.join(missing)}；请先跑 tools/render_report.py", file=sys.stderr)
         return 1
 
-    single = build_single(
-        _read(index_path), _read(css_path), _read(js_path), _read(data_path)
-    )
+    data_js = _read(data_path)
+    single = build_single(_read(index_path), _read(css_path), _read(js_path), data_js)
     (OUTPUT / "preview_single.html").write_text(single, encoding="utf-8")
 
+    breakpoint = load_breakpoint(data_js)
     widths = [int(x) for x in args.widths.split(",") if x.strip()]
-    (OUTPUT / "preview_frames.html").write_text(build_frames(widths), encoding="utf-8")
+    (OUTPUT / "preview_frames.html").write_text(
+        build_frames(widths, breakpoint), encoding="utf-8"
+    )
 
     print(f"单文件预览：{OUTPUT / 'preview_single.html'}")
-    print(f"宽度对照：  {OUTPUT / 'preview_frames.html'}（{', '.join(str(w) for w in widths)}px）")
+    print(f"宽度对照：  {OUTPUT / 'preview_frames.html'}"
+          f"（{', '.join(str(w) for w in widths)}px；手机/桌面按 payload 断点 {breakpoint}px 划分）")
     return 0
 
 
