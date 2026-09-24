@@ -79,6 +79,25 @@
     ]);
   }
 
+  // 上次史低（§3.6）：主文本只显示「N 天前」保证单行；带日期时加虚线
+  // 下划线标记可交互 —— 桌面悬停（title）看日期，手机点按切换天数/日期。
+  function lastLowRow(text, date) {
+    if (!text) return null;
+    var b = el("b", { text: text });
+    if (!date) return el("div", { class: "detail-row" }, [el("span", { text: "上次史低" }), b]);
+    b.classList.add("has-alt");
+    b.title = date;
+    var row = el("div", { class: "detail-row" }, [el("span", { text: "上次史低" }), b]);
+    b.addEventListener("click", function (e) {
+      e.stopPropagation();  // 别触发卡片手风琴
+      var showingDate = b.textContent === date;
+      b.textContent = showingDate ? text : date;
+      // 悬停永远提示「另一种」信息：切到哪边，title 就是另一边
+      b.title = showingDate ? date : text;
+    });
+    return row;
+  }
+
   function iconLink(href, label, svg) {
     var a = el("a", { class: "icon-link", href: href, target: "_blank", rel: "noopener" });
     a.setAttribute("aria-label", label);
@@ -188,7 +207,7 @@
       detailRow("Steam 史低", item.store_low_text),
       detailRow("全周期最低", item.history_low_text),
       detailRow("近一年最低", item.history_low_1y_text),
-      detailRow("上次史低", item.last_low_text)
+      lastLowRow(item.last_low_text, item.last_low_date)
     ]);
 
     var rightRows = [

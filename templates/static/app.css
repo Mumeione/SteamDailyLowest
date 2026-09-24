@@ -79,10 +79,23 @@ html, body {
 
 .toggle { margin-left: auto; font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
 
-/* 筛选条件说明（页面上要注明判定口径） */
-.criteria-box { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
-.criteria-box summary { cursor: pointer; padding: 4px 0; color: var(--accent); }
-.criteria-box ul { margin: 4px 0 0; padding-left: 18px; }
+/* 筛选条件说明（页面上要注明判定口径）：卡片化，与概览/卡片风格统一 */
+.criteria-box {
+  margin: 0 0 12px; font-size: 12px; color: var(--muted);
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+}
+.criteria-box summary {
+  cursor: pointer; padding: 7px 10px; color: var(--text); font-weight: 500;
+  list-style: none; display: flex; align-items: center; gap: 6px;
+}
+.criteria-box summary::-webkit-details-marker { display: none; }
+.criteria-box summary::before {
+  content: "▸"; color: var(--muted); display: inline-block;
+  transition: transform .15s ease;
+}
+.criteria-box[open] summary::before { transform: rotate(90deg); }
+.criteria-box[open] summary { border-bottom: 1px dashed var(--line); }
+.criteria-box ul { margin: 0; padding: 6px 10px 8px 26px; }
 .criteria-box li { margin: 2px 0; line-height: 1.55; }
 
 /* 分组 */
@@ -164,6 +177,8 @@ body.no-image .thumb { display: none; }
 .card.open .card-detail { display: block; }
 .detail-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--muted); }
 .detail-row b { color: var(--text); font-weight: 500; }
+/* 上次史低：有日期可悬停/点按的值加虚线下划线提示可交互 */
+.detail-row b.has-alt { cursor: pointer; border-bottom: 1px dashed var(--muted); }
 
 /* R3：详情左右两栏 + 竖向分隔线；窄屏（≤断点）由下方媒体查询堆叠 */
 .detail-cols { display: flex; gap: 10px; }

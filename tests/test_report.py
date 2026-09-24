@@ -85,47 +85,47 @@ class GroupSpecsTest(unittest.TestCase):
         self.assertEqual(groups[0]["count"], 1)
         self.assertEqual(groups[0]["criteria"], "好评率 ≥ 70% 且 评价数 ≥ 100")
 
+    def test_build_groups_notable_first(self):
+        """「高热度 · 口碑不一」排在页面最上面（默认收起），好评达标随后。"""
+        items = [
+            {"tier": classify.TIER_QUALITY, "cut": 90, "title": "A"},
+            {"tier": classify.TIER_NOTABLE, "cut": 50, "title": "N"},
+        ]
+        groups = report.build_groups(items, CFG)
+        self.assertEqual([g["key"] for g in groups],
+                         [classify.TIER_NOTABLE, classify.TIER_QUALITY])
+        self.assertTrue(groups[0]["collapsed"])
+
 
 class ConditionsTest(unittest.TestCase):
-    stats = {"sweep": "low_only", "new_today_raw": 105, "new_today_shown": 20,
-             "detail_fetched": 300, "detail_backlog": 1800}
-
     def test_states_real_thresholds(self):
-        text = "\n".join(report.conditions(CFG, self.stats))
+        text = "\n".join(report.conditions(CFG))
         self.assertIn("好评率 ≥ 70%", text)
         self.assertIn("评价数 ≥ 100", text)
         self.assertIn("10,000", text)
         self.assertIn("冷门", text)
 
-    def test_states_sweep_and_backlog(self):
-        text = "\n".join(report.conditions(CFG, self.stats))
-        self.assertIn("low_only", text)
-        self.assertIn("105", text)
-        self.assertIn("1800", text)      # 详情还差多少条要写出来
+    def test_run_stats_not_repeated(self):
+        """运行统计（抓取口径/详情补齐/当日新增条数）页脚已有，口径区不重复。"""
+        text = "\n".join(report.conditions(CFG))
+        self.assertNotIn("low_only", text)
+        self.assertNotIn("增量补齐", text)
+        self.assertNotIn("本轮", text)
 
     def test_absolute_floor_only_when_enabled(self):
-        self.assertNotIn("绝对下限", "\n".join(report.conditions(CFG, self.stats)))
+        self.assertNotIn("绝对下限", "\n".join(report.conditions(CFG)))
         cfg = dict(CFG, absolute_min_positive_ratio=0.4)
-        self.assertIn("好评率低于 40%", "\n".join(report.conditions(cfg, self.stats)))
-
-    def test_fx_line_mentions_date_and_rates(self):
-        fx = {"base": "CNY", "date": "2026-09-21",
-              "rates": {"UAH": 6.67391, "INR": 14.303287, "USD": 0.149149}}
-        text = "\n".join(report.conditions(CFG, self.stats, fx))
-        self.assertIn("2026-09-21", text)
-        self.assertIn("UAH", text)
-        self.assertIn("仅供比价参考", text)
-        self.assertIn("以 Steam 实际结算为准", text)
+        self.assertIn("好评率低于 40%", "\n".join(report.conditions(cfg)))
 
     def test_no_markdown_markup(self):
         """这些字符串直接进 HTML，不能带 markdown 标记。"""
-        text = "\n".join(report.conditions(CFG, self.stats))
+        text = "\n".join(report.conditions(CFG))
         self.assertNotIn("**", text)
         self.assertNotIn("`", text)
 
     def test_no_hardcoded_page_counts(self):
         """页数会随销售节奏变（实测 20~27 页），写死在文案里迟早是错的。"""
-        text = "\n".join(report.conditions(CFG, self.stats))
+        text = "\n".join(report.conditions(CFG))
         self.assertNotIn("27 页", text)
         self.assertNotIn("162 页", text)
 

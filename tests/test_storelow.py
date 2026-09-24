@@ -129,16 +129,20 @@ class BuildCardLastLowText(unittest.TestCase):
     def test_new_low_shows_record_text(self):
         card = build_card(self.entry("N", "2021-06-24T21:52:22+02:00"), NOW)
         self.assertEqual(card["last_low_text"], "本次刷新历史记录")
+        self.assertIsNone(card["last_low_date"])
 
     def test_equal_low_shows_days_and_date(self):
         card = build_card(self.entry("H", "2026-02-21T10:00:00+08:00"), NOW)
-        # 2026-02-21 → 2026-09-23 = 214 天
-        self.assertEqual(card["last_low_text"], "214 天前（2026-02-21）")
+        # 2026-02-21 → 2026-09-23 = 214 天；主文本只有天数，日期单独给前端做悬停/点按
+        self.assertEqual(card["last_low_text"], "214 天前")
+        self.assertEqual(card["last_low_date"], "2026-02-21")
 
     def test_missing_data_renders_none(self):
         for entry in (self.entry("H", None), self.entry("S", ""),
                       self.entry(None, "2026-02-21T10:00:00+08:00")):
-            self.assertIsNone(build_card(entry, NOW)["last_low_text"])
+            card = build_card(entry, NOW)
+            self.assertIsNone(card["last_low_text"])
+            self.assertIsNone(card["last_low_date"])
 
 
 if __name__ == "__main__":
