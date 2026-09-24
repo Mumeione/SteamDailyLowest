@@ -51,16 +51,16 @@ def group_specs(cfg: dict) -> list[dict]:
     notable = int(cfg.get("notable_review_count", 10000))
     return [
         {
-            "key": classify.TIER_QUALITY,
-            "label": "好评达标",
-            "criteria": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}",
-            "collapsed": GROUP_COLLAPSED[classify.TIER_QUALITY],
-        },
-        {
             "key": classify.TIER_NOTABLE,
             "label": "高热度 · 口碑不一",
             "criteria": f"评价数 ≥ {notable:,}，不看好评率",
             "collapsed": GROUP_COLLAPSED[classify.TIER_NOTABLE],
+        },
+        {
+            "key": classify.TIER_QUALITY,
+            "label": "好评达标",
+            "criteria": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}",
+            "collapsed": GROUP_COLLAPSED[classify.TIER_QUALITY],
         },
         {
             "key": classify.TIER_PENDING,
@@ -88,46 +88,26 @@ def fx_display(cfg: dict, fx: dict | None) -> dict | None:
     return {"base": fx.get("base") or "CNY", "date": fx.get("date"), "rates": picked}
 
 
-def conditions(cfg: dict, stats: dict, fx: dict | None = None) -> list[str]:
+def conditions(cfg: dict) -> list[str]:
     """页面上要注明的筛选条件（用户明确要求：把条件写出来）。
 
     纯文本、不带 markdown 标记 —— 这些字符串会直接渲染进 HTML 与 `data.js`。
+    只写**判定口径**；运行统计（当日新增条数 / 抓取口径 / 详情补齐 / 汇率）
+    页脚已有，不在这里重复。
     """
     pct = int(round(float(cfg.get("min_positive_ratio", 0.7)) * 100))
     min_count = int(cfg.get("min_review_count", 100))
     notable = int(cfg.get("notable_review_count", 10000))
     lines = [
-        "只收本体游戏（ITAD type=game）；DLC、合集包、原声带一律不收",
-        "只收史低：ITAD 官方 flag 为 N（新史低）/ H（平史低）/ S（仅 Steam 店史低）",
+        "只收本体游戏，不收 DLC / 合集 / 原声带",
+        "只收史低：新史低 / 平史低 / 仅 Steam 店史低",
         f"「好评达标」= 好评率 ≥ {pct}% 且 评价数 ≥ {min_count}",
-        f"「高热度 · 口碑不一」= 评价数 ≥ {notable:,}，不看好评率（单独分组、默认收起）",
-        f"评价数 < {min_count} 的冷门游戏不展示（样本太小，没有参考价值）",
+        f"「高热度 · 口碑不一」= 评价数 ≥ {notable:,}，默认收起",
+        f"评价数 < {min_count} 的冷门游戏不展示",
     ]
     absolute = cfg.get("absolute_min_positive_ratio")
     if absolute is not None:
-        lines.append(f"绝对下限：好评率低于 {int(round(float(absolute) * 100))}% 一律不展示")
-    if stats.get("new_today_raw") is not None:
-        lines.append(
-            f"当日新增按折扣开始时间（ITAD timestamp）判定："
-            f"本轮 {stats.get('new_today_raw')} 条，进列表 {stats.get('new_today_shown')} 条"
-        )
-    sweep = stats.get("sweep")
-    if sweep == "low_only":
-        lines.append("本轮抓取口径 low_only：服务端已按「本体游戏 + 史低」过滤")
-    elif sweep:
-        lines.append("本轮抓取口径 full：无服务端过滤的全量抓取（体检用）")
-    backlog = stats.get("detail_backlog")
-    if backlog is not None:
-        lines.append(
-            f"详情（好评率）是增量补齐的：本轮抓了 {stats.get('detail_fetched')} 条，"
-            f"目录里还有 {backlog} 条待补（下次运行继续）"
-        )
-    if fx and fx.get("date"):
-        rates = fx.get("rates") or {}
-        parts = "、".join(f"1 {fx.get('base', 'CNY')} = {rates[k]:.4g} {k}"
-                        for k in sorted(rates) if k in ("UAH", "INR", "USD"))
-        lines.append(f"汇率取数日期 {fx['date']}（{parts}）；区域价格仅供比价参考，"
-                     f"以 Steam 实际结算为准")
+        lines.append(f"好评率低于 {int(round(float(absolute) * 100))}% 一律不展示")
     return lines
 
 
@@ -195,6 +175,9 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
     # §3.6 上次史低时间：新史低就是这次破的记录；平史低/店史低显示上一次
     # 记录时间（storelow/v2 批量取，存 game_meta.last_low_at）。取不到就
     # 不渲染这一行（detailRow 对空值自动跳过），不猜。
+    # 主文本只放天数保证单行（日期太长会把整行挤成两排），具体日期由
+    # 前端悬停/点按显示（last_low_date），N=本次刷新历史记录 无日期不交互。
+    last_low_date = None
     if flag == "N":
         last_low_text = "本次刷新历史记录"
     elif flag in ("H", "S"):
@@ -203,7 +186,8 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
             last_low_text = None
         else:
             days = max(0, (now.date() - low_at.date()).days)
-            last_low_text = f"{days} 天前（{low_at.strftime('%Y-%m-%d')}）"
+            last_low_text = f"{days} 天前"
+            last_low_date = low_at.strftime("%Y-%m-%d")
     else:
         last_low_text = None
     return {
@@ -223,6 +207,8 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         "flag_label": classify.low_label(entry.get("flag")),
         "store_low_text": format_amount(entry.get("store_low_int"), currency),
         "last_low_text": last_low_text,
+        # 有日期才渲染悬停/点按交互（N=新纪录没有具体日期）
+        "last_low_date": last_low_date,
         "history_low_text": format_amount(entry.get("history_low_int"), currency),
         "history_low_1y_text": format_amount(entry.get("history_low_1y_int"), currency),
         "compare": compare_rows(entry),
@@ -289,7 +275,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "overview": stats,
         "views": views,
         "groups": groups,
-        "conditions": conditions(cfg, stats, fx),
+        "conditions": conditions(cfg),
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
         #: 断点必须与 app.css 的 @media 一致，否则「布局按手机、每页按桌面」会错位
