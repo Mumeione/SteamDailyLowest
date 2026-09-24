@@ -10,6 +10,18 @@ const PREVIEW = path.resolve('output/preview_single.html');
 const WIDTHS = [360, 390, 430, 540, 768, 820, 1024, 1440];
 const OUT = path.resolve('data/probe/layout_measure.json');
 
+// 断点取**渲染出的 payload**（config.json → report.py → page_size.breakpoint），
+// 不在这里再写死 768 —— 否则「布局按一套、量尺按一套」会各说各话（fix-round1 步骤 5.2）
+const DATA_JS = path.resolve('output/data.js');
+let BREAKPOINT = 768;
+if (fs.existsSync(DATA_JS)) {
+  const m = /"breakpoint"\s*:\s*(\d+)/.exec(fs.readFileSync(DATA_JS, 'utf-8'));
+  if (m) BREAKPOINT = Number(m[1]);
+} else {
+  console.warn('未找到 output/data.js，断点回落 768 —— 先跑 tools/render_report.py');
+}
+console.log('断点 =', BREAKPOINT, '（读自 output/data.js，不是写死的）');
+
 // 起一个极简静态服务器（file:// 下 headless 截图/脚本注入有限制，用 http 更稳）
 const server = http.createServer((req, res) => {
   const p = decodeURIComponent(req.url.split('?')[0]);
@@ -79,7 +91,7 @@ function cdp(wsUrl, width) {
         await send('Page.enable');
         await send('Runtime.enable');
         await send('Emulation.setDeviceMetricsOverride', {
-          width, height: 900, deviceScaleFactor: 1, mobile: width <= 768
+          width, height: 900, deviceScaleFactor: 1, mobile: width <= BREAKPOINT
         });
         await send('Page.navigate', { url: 'http://127.0.0.1:' + PORT + '/' });
         await new Promise(r => setTimeout(r, 1200));

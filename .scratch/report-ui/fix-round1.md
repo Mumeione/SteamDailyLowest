@@ -130,18 +130,31 @@ Python 测试全过（测试读常量），但前端会**静默失配** ——
 **成本**：中。**建议：不做** —— `ui_probe.py` 删掉后只剩 2 处，且都是本地排查工具，
 坏了立刻能看出来，不值得为它引入共享模块。
 
-### 结论与时机
+### 结论与结果（2026-09-24：5.1 / 5.2 已实施，5.3 不做）
 
-| 条 | 建议 |
-| --- | --- |
-| 5.1 low_class 字面量校验 | **值得做** —— 唯一能防「静默错」的 |
-| 5.2 两个工具脚本改读断点 | **值得做**，但因你保留预览脚本才成立 |
-| 5.3 data.js 解析抽公共函数 | **建议不做** |
+**5.1 已做** —— `check_payload.py` 新增两个方向的校验：
 
-**时机**：本批（步骤 1~4）提交后单独一批。本批是纯修复、diff 干净；
-混入重构后就说不清哪部分改了行为。
-**前置**：5.1 只动 `tools/check_payload.py`，可直接做；若要动生产接口
-（例如让 payload 下发枚举），按仓库惯例先在 `.scratch/<slug>/` 立 spec。
+- 主：每个 classify 常量都要以**完整引号字面量**出现在 app.js
+  （不能查子串 —— `"new"` 会被 `tag-low-new` 这类 CSS 类名假命中）
+- 辅：与 `low_class` 比较、或取其兜底默认值的字面量必须 ⊆ 常量集
+- **负向实测**：把 `output/static/app.js` 的 `=== "tie"` 改成 `=== "equal"`
+  → 两个方向都报 ✗、脚本退出码 2
+- ⚠️ 实施中抓到一个真 bug：正则写成 `low[Cc]lass` 只匹配 `lowClass`，
+  **漏掉带下划线的 `low_class`**（`low_class || "unknown"` 那处因此没被检出）→ 已改 `low_?[Cc]lass`
+
+**5.2 已做** —— 两个脚本改为从**渲染出的 payload** 读 `page_size.breakpoint`。
+读 payload 而不是 config.json：页面才是被量的对象，若配置改了却没重渲染，读数应跟页面走。
+
+- `make_preview.py`：新增 `load_breakpoint()`，`build_frames(widths, breakpoint)`，打印断点来源
+- `measure_layout.js`：启动时解析 `output/data.js`，并打印「断点 = N（读自 output/data.js，不是写死的）」
+- **实测**：把 `output/data.js` 临时改成 `"breakpoint": 600` → make_preview 打印
+  「按 payload 断点 600px 划分」、768px 帧标签变「平板/桌面」；measure_layout 打印「断点 = 600」
+- **端到端**：`node tools/measure_layout.js` 8 档全部量出
+  （≤768 → 3+2、≥820 → 一行 5 个），与批 F3 结论一致
+
+**5.3 不做** —— 维持原判断（只剩 2 处、都是本地排查工具，不值得抽公共模块）。
+
+**状态**：步骤 1~4 已在本地提交 `85e9745`（未推送）；5.1 / 5.2 是其后的独立改动，**尚未提交**。
 
 ---
 
