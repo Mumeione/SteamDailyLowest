@@ -72,7 +72,18 @@ jobs:
 
   daily:
     needs: daily-guard
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 21 * * *' || (github.event.schedule == '24 23 * * *' && needs.daily-guard.outputs.skip == 'false')
+    # needs 的 job 因 if 为假被 skip 时，依赖它的 job 会被连带 skip（GitHub 规则）。
+    # guard 的 if 只在补跑 cron 时为真，主跑/手动触发下 guard 必被跳过，
+    # 故必须用 always() 解耦，否则主跑永远被连坐杀掉（2026-09-24 实锤过一次）。
+    # 补跑路径仍要求 guard 真实执行过（result == 'success'）且未判 skip。
+    if: >-
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.schedule == '14 21 * * *' ||
+        (github.event.schedule == '24 23 * * *' &&
+          needs.daily-guard.result == 'success' &&
+          needs.daily-guard.outputs.skip == 'false')
+      )
     runs-on: ubuntu-latest
     environment:
       name: github-pages
