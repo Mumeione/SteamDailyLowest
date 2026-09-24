@@ -58,6 +58,60 @@ class FlagTest(unittest.TestCase):
         self.assertFalse(classify.flag_price_mismatch(deal(flag="N", price_int=995, store_low_int=995)))
 
 
+class SteamLowClassTest(unittest.TestCase):
+    """Steam 口径的史低分类（批 E spec E1）。
+
+    依据 data/steam_flag_probe.txt 的实测形态：N 的 last_low_at 与 start 间隔为 0，
+    H/S 至少 37 天，中间没有模糊地带。
+    """
+
+    START = "2026-09-24T01:18:00+08:00"
+
+    def deal(self, **kwargs):
+        return deal(start=self.START, **kwargs)
+
+    def test_flag_n_is_new_without_timestamps(self):
+        # flag=N 是「全网首次」⇒ 必定 Steam 首次，不必比时间、不依赖 last_low_at
+        self.assertEqual(classify.steam_low_class(self.deal(flag="N")), "new")
+
+    def test_last_low_at_equals_start_is_new(self):
+        """ITAD 记本次折扣为店内史低 ⇒ 这个 Steam 纪录就是这次创下的（哪怕 flag 是 S）。"""
+        d = self.deal(flag="S", last_low_at="2026-09-24T01:26:00+08:00")
+        self.assertEqual(classify.steam_low_class(d), "new")
+
+    def test_old_last_low_at_is_tie(self):
+        for flag in ("H", "S"):
+            d = self.deal(flag=flag, last_low_at="2025-09-29T21:34:00+08:00")  # 359 天前
+            self.assertEqual(classify.steam_low_class(d), "tie", flag)
+
+    def test_missing_times_falls_back_to_tie(self):
+        # 取不到 last_low_at（接口失败）→ 回落 ITAD flag，H/S 都算平
+        d = self.deal(flag="H")
+        self.assertEqual(classify.steam_low_class(d), "tie")
+
+    def test_missing_store_low_is_unknown_not_guessed(self):
+        d = self.deal(flag=None, store_low_int=None)
+        self.assertEqual(classify.steam_low_class(d), "unknown")
+
+    def test_not_low_stays_none(self):
+        # 不是史低 → 不进报表，不因为加了 Steam 口径就把普通折扣放进来
+        self.assertIsNone(classify.steam_low_class(self.deal(flag=None, price_int=1200)))
+
+    def test_window_boundary_is_fixed_at_24h(self):
+        """容差是常量 24h（批 F5 起不再可调）：恰好 24h 算 new，超出 1 小时就回落 tie。
+        真数据里间隔非 0 即 ≥37 天，边界只能在这里手工构造。"""
+        just_in = self.deal(flag="H", last_low_at="2026-09-23T01:18:00+08:00")  # 恰好 24h
+        self.assertEqual(classify.steam_low_class(just_in), "new")
+        just_out = self.deal(flag="H", last_low_at="2026-09-23T00:18:00+08:00")  # 25h
+        self.assertEqual(classify.steam_low_class(just_out), "tie")
+
+    def test_labels(self):
+        self.assertEqual(classify.steam_low_label("new"), "新史低")
+        self.assertEqual(classify.steam_low_label("tie"), "平史低")
+        self.assertEqual(classify.steam_low_label("unknown"), "史低待确认")
+        self.assertEqual(classify.steam_low_label(None), "—")
+
+
 class NormalizeTest(unittest.TestCase):
     def test_amount_int_preferred_and_fallback(self):
         item = {
@@ -219,7 +273,14 @@ class ViewWindowTest(unittest.TestCase):
         self.assertTrue(classify.in_view("week", low, self.now, cfg))
         self.assertTrue(classify.in_view("active", low, self.now, cfg))
         self.assertTrue(classify.in_view("upcoming", low, self.now, cfg))
-        self.assertFalse(classify.in_view("expired", low, self.now, cfg))
+
+    def test_expired_view_is_gone(self):
+        """批 F2：「已过期」不再是视图 —— 过期折扣没有浏览价值。
+        `is_expired()` 本身保留（留存清理还在用）。"""
+        self.assertNotIn("expired", classify.VIEW_KEYS)
+        with self.assertRaises(ValueError):
+            classify.in_view("expired", {"flag": "N"}, self.now, {})
+        self.assertTrue(classify.is_expired("2026-09-20T12:00:00+08:00", self.now))
 
     def test_in_view_rejects_unknown(self):
         with self.assertRaises(ValueError):

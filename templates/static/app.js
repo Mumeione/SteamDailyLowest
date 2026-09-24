@@ -1,7 +1,15 @@
 /* 报表前端：分组 + 手翻分页 + 卡片折叠（对应 docs/DEVELOPMENT.md §7.2 / §7.3）。
- * report-ui spec：R1 组内排序 / R3 详情两栏 / R4 图标链接前置 / R6 英文名 /
- * R7 方向键翻页。R2（去 ITAD 链接）与 R8（boxart 小图）在 payload 侧完成；
- * R5 密度切换已取消 —— 默认双列、≤768px 收单列，由 app.css 直接实现。 */
+ * report-ui spec：R1 组内排序 / R4 图标链接前置 / R6 英文名 / R7 方向键翻页。
+ * R2（去 ITAD 链接）与 R8（boxart 小图）在 payload 侧完成；
+ * R5 密度切换已取消 —— 默认双列、≤768px 收单列，由 app.css 直接实现。
+ * ⚠️ R3（详情左右两栏）经批 E 覆盖后仍是**两栏**：左「距上次史低 / 折扣结束」、
+ * 右「比价」；无比价数据时回落单栏（E3）。
+ *
+ * 批 E（2026-09-24）：左侧史低色条 / 折扣力度条 / 「剩 X 天」/
+ * 概览改单行漏斗 + 史低构成色点 / 详情删三行重复史低 —— 详见 .scratch/report-ui/spec.md。
+ * 批 F（2026-09-24）：删页面「筛选条件」框（口径移入 README）/ 概览改多框 3 列 grid；
+ * 批 F2：分组头拆 title+meta 两段（手机折两行）/ 手机端翻页后滚回列表顶部。
+ */
 (function () {
   "use strict";
 
@@ -79,15 +87,39 @@
     ]);
   }
 
-  // 上次史低（§3.6）：主文本只显示「N 天前」保证单行；带日期时加虚线
-  // 下划线标记可交互 —— 桌面悬停（title）看日期，手机点按切换天数/日期。
+  // 批 E spec E2：折扣力度条 —— cut 10% 与 90% 原本长得一模一样，
+  // 这里补一条横向条做视觉编码，旁边的小数字才是精确值
+  function cutBar(cut) {
+    var pct = Math.max(0, Math.min(100, cut || 0));
+    var fill = el("i", {});
+    fill.style.width = pct + "%";
+    return el("span", { class: "cut-wrap" }, [
+      el("span", { class: "cut-bar" }, [fill]),
+      el("span", { class: "cut-num", text: "-" + (cut || 0) + "%" })
+    ]);
+  }
+
+  // 批 E spec E2：「剩 X 天」—— 中性灰，是信息不是告警；
+  // 真到临期（≤48h）由「即将过期」视图接管，本页不会出现需要变红的情况
+  function daysLeftRow(days) {
+    if (days === null || days === undefined) return null;
+    return el("div", {
+      class: "days-left",
+      text: days <= 0 ? "今天结束" : "剩 " + days + " 天"
+    });
+  }
+
+  // 史低天数（§3.6）：主文本就是「N 天」，有具体日期时加虚线下划线标记可交互 ——
+  // 桌面悬停（title）看日期，手机点按在天数与日期之间切换。
+  // 标签叫「距上次史低」而不是「上次史低」：前者才是这一行的真实含义，
+  // 后者会让人以为这行要给的是上次的价格或日期（第二轮修正）。
   function lastLowRow(text, date) {
     if (!text) return null;
     var b = el("b", { text: text });
-    if (!date) return el("div", { class: "detail-row" }, [el("span", { text: "上次史低" }), b]);
+    if (!date) return el("div", { class: "detail-row" }, [el("span", { text: "距上次史低" }), b]);
     b.classList.add("has-alt");
     b.title = date;
-    var row = el("div", { class: "detail-row" }, [el("span", { text: "上次史低" }), b]);
+    var row = el("div", { class: "detail-row" }, [el("span", { text: "距上次史低" }), b]);
     b.addEventListener("click", function (e) {
       e.stopPropagation();  // 别触发卡片手风琴
       var showingDate = b.textContent === date;
@@ -145,12 +177,12 @@
 
   // R1：好评数量 chips 作用于当前组显示集合（只筛有 reviews 的条目；
   // 「详情待补」不参与好评率维度，始终留在组尾）。
-  // 「仅新史低」chip：作用于当前组，只留 flag=N 的条目。
+  // 「仅新史低」chip：作用于当前组，只留 low_class === "new" 的条目（Steam 口径，非 ITAD flag）。
   function filterGroupItems(group) {
     var s = getSort(group.key);
     var ordered = sortGroupItems(group);
     if (s.newOnly) {
-      ordered = ordered.filter(function (item) { return item.flag === "N"; });
+      ordered = ordered.filter(function (item) { return item.low_class === "new"; });
     }
     if (s.mode !== "score" || !s.min) return ordered;
     return ordered.filter(function (item) {
@@ -158,12 +190,16 @@
     });
   }
 
-  function buildCard(item) {
-    var flagClass = item.flag === "N" ? "tag-new" : item.flag === "H" ? "tag-equal" : "tag-store";
-    var tags = [tag("-" + (item.cut || 0) + "%", "tag-cut")];
-    if (item.flag) tags.push(tag(item.flag_label, flagClass));
+  function buildCard(item, group) {
+    // 批 E spec E1：史低类型只有「新 / 平」两档（Steam 口径），
+    // 「店史低」已退役 —— 本页全是 Steam 店史低，用它会产生「那别家呢」的误读
+    var lowClass = item.low_class || "unknown";
+    var lowTagClass = lowClass === "new" ? "tag-low-new"
+      : lowClass === "tie" ? "tag-low-tie" : "tag-low-unknown";
+    // 卡片标签里**不再放档位名**（好评达标）：同一分组内必然相同，
+    // 分组头已经写明入组条件（批 E spec E2）
+    var tags = [tag(item.low_label, lowTagClass)];
     if (item.tier === "pending") tags.push(tag("详情待补", "tag-pending"));
-    else tags.push(tag(item.tier_label, item.tier === "quality" ? "tag-quality" : undefined));
 
     // Steam / 小黑盒链接：放在**档位标签右侧、同一行内**（批 C2，原「前置到价格区之前」）——
     // 与标签同行天然对齐，不受价格位数影响；点击图标不应触发展开/收起，iconLink 内阻断冒泡
@@ -184,8 +220,12 @@
       ? el("img", { class: "thumb", src: item.banner, alt: "", loading: "lazy" })
       : el("div", { class: "thumb thumb-empty" });
 
+    // 标签行顺序（第二轮调整）：史低 pill → 链接图标 → **折扣力度条**。
+    // 力度条挪到链接之后、并加长到 96px：它是「折扣强度」的量化视觉，
+    // 挤在 pill 旁边时容易被当成又一个标签
     var tagsEl = el("div", { class: "tags" }, tags);
     tagsEl.appendChild(links);
+    tagsEl.appendChild(cutBar(item.cut));
 
     var summary = el("div", { class: "card-summary" }, [
       thumb,
@@ -197,24 +237,26 @@
       ]),
       el("div", { class: "card-price" }, [
         el("div", { class: "price-now", text: item.price_text }),
-        el("div", { class: "price-regular", text: item.regular_text })
+        el("div", { class: "price-regular", text: item.regular_text }),
+        daysLeftRow(item.days_left)
       ])
     ]);
 
-    // R3：详情左右两栏 —— 左栏价格类（上次史低 §3.6 固定放**最下面一行**，批 C2），
-    // 右栏时间 + 比价；窄屏由 CSS 堆叠
+    // 批 E spec E3（第二轮改回两栏）：
+    // 左栏 = 史低天数（距上次史低多久）+ 折扣结束；右栏 = 跨区比价。
+    // 「折扣开始」在全组相同时由分组头承载；右栏没有比价行时不分栏，避免半张空表格
     var leftCol = el("div", { class: "detail-col" }, [
-      detailRow("Steam 史低", item.store_low_text),
-      detailRow("全周期最低", item.history_low_text),
-      detailRow("近一年最低", item.history_low_1y_text),
-      lastLowRow(item.last_low_text, item.last_low_date)
-    ]);
-
-    var rightRows = [
-      detailRow("折扣开始", item.start_text),
+      lastLowRow(item.last_low_text, item.last_low_date),
       detailRow("折扣结束", item.expiry_text)
-    ];
-    // 比价行：₴45 ≈ ¥6.75 -30%，±百分比带色（负=比国区便宜绿色，正=贵红色，0=同价）
+    ]);
+    if (!(group && group.start_text)) {
+      // detailRow 在值为空时返回 null，而 insertBefore(null, …) 会抛异常 —— 先判再插
+      var startRow = detailRow("折扣开始", item.start_text);
+      if (startRow) leftCol.insertBefore(startRow, leftCol.firstChild);
+    }
+
+    // 比价行：₴45 ≈ ¥6.75 -30%，±百分比带色（便宜绿 / 贵红 / 同价灰）
+    var rightRows = [];
     (item.compare || []).forEach(function (row) {
       var value = el("b", {});
       value.appendChild(document.createTextNode(row.price_text));
@@ -232,13 +274,14 @@
         value
       ]));
     });
-    var rightCol = el("div", { class: "detail-col" }, rightRows);
+    var detail = el("div", { class: "card-detail" },
+      rightRows.length
+        ? [el("div", { class: "detail-cols" }, [
+            leftCol, el("div", { class: "detail-col" }, rightRows)
+          ])]
+        : [leftCol]);
 
-    var detail = el("div", { class: "card-detail" }, [
-      el("div", { class: "detail-cols" }, [leftCol, rightCol])
-    ]);
-
-    var card = el("article", { class: "card" }, [summary, detail]);
+    var card = el("article", { class: "card low-" + lowClass }, [summary, detail]);
     summary.addEventListener("click", function () {
       // 手风琴：同时最多展开一张 —— 点开新卡先收起其他已展开的，再切换本卡
       var wasOpen = card.classList.contains("open");
@@ -248,6 +291,17 @@
       if (!wasOpen) card.classList.add("open");
     });
     return card;
+  }
+
+  // 翻页后回到列表顶部 —— 一页放不下就得翻好几屏，翻完停在页尾，
+  // 得自己往上滑一大段才看得到第 1 张卡。
+  // mobileOnly=true 时只在手机断点触发（键盘方向键用，用户要求保持不变）。
+  function scrollListTop(mobileOnly) {
+    if (mobileOnly && !mq.matches) return;
+    var list = document.getElementById("list");
+    if (!list) return;
+    var top = list.getBoundingClientRect().top + window.pageYOffset - 8;
+    window.scrollTo({ top: top, behavior: "smooth" });
   }
 
   function buildPager(groupKey, total, render) {
@@ -263,11 +317,13 @@
       activeGroupKey = groupKey; // R7
       pages[groupKey] = current - 1;
       render();
+      scrollListTop(false); // 手动翻页：手机 + PC 都回到第一张卡
     });
     next.addEventListener("click", function () {
       activeGroupKey = groupKey; // R7
       pages[groupKey] = current + 1;
       render();
+      scrollListTop(false); // 手动翻页：手机 + PC 都回到第一张卡
     });
     return el("div", { class: "pager" }, [
       prev,
@@ -321,19 +377,50 @@
     return bar;
   }
 
+  // 批 E spec E4：史低构成色点。概览用完整文案，分组头（多组时）用短文案
+  function lowPointsNode(items, shortForm) {
+    var counts = { new: 0, tie: 0, unknown: 0 };
+    (items || []).forEach(function (item) {
+      var key = item.low_class || "unknown";
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    var box = el("span", { class: "low-points" });
+    var newLabel = shortForm ? "新 " + counts.new : "新史低 " + counts.new;
+    var tieLabel = shortForm ? "平 " + counts.tie : "平史低 " + counts.tie;
+    if (counts.new) box.appendChild(el("span", { class: "point point-new", text: newLabel }));
+    if (counts.tie) box.appendChild(el("span", { class: "point point-tie", text: tieLabel }));
+    if (counts.unknown) {
+      box.appendChild(el("span", {
+        class: "point point-unknown",
+        text: shortForm ? "待确认 " + counts.unknown : "待确认 " + counts.unknown
+      }));
+    }
+    return box;
+  }
+
   function buildGroup(group) {
     var collapsed = group.collapsed;
     var cardsBox = el("div", { class: "cards" });
     var toolsBox = el("div", { class: "group-tools-box" });
     var pagerBox = el("div", {});
     var arrow = el("span", { class: "arrow", text: "▼" });
-    // 分组标题旁直接写上入组条件 —— 光看「好评达标」这类词分不清是什么门槛
-    var head = el("div", { class: "group-head" }, [
+    // 分组标题旁直接写上入组条件 —— 光看「好评达标」这类词分不清是什么门槛。
+    // 批 E spec E5：全组「折扣开始」相同时上提到这里（卡片里不再每行重复）；
+    // 新/平构成只在**多组**时显示 —— 单组时的数字与概览色点完全一样
+    // 批 F2：拆成 .group-title（箭头+组名+条件）与 .group-meta（条数+开始+构成）两段，
+    // 手机端靠这两段把分组头折成两行，电脑端仍是同一行
+    var titleBox = el("span", { class: "group-title" }, [
       arrow,
       el("span", { class: "group-label", text: group.label }),
-      group.criteria ? el("span", { class: "group-criteria", text: group.criteria }) : null,
-      el("span", { class: "count", text: group.count + " 条" })
+      group.criteria ? el("span", { class: "group-criteria", text: group.criteria }) : null
     ]);
+    var metaBox = el("span", { class: "group-meta" }, [
+      el("span", { class: "count", text: group.count + " 条" }),
+      group.start_text
+        ? el("span", { class: "group-start", text: "折扣开始 " + group.start_text }) : null,
+      data.groups.length > 1 ? lowPointsNode(group.items, true) : null
+    ]);
+    var head = el("div", { class: "group-head" }, [titleBox, metaBox]);
     var section = el("section", { class: "group" }, [head, toolsBox, cardsBox, pagerBox]);
     if (collapsed) section.classList.add("collapsed");
 
@@ -345,7 +432,7 @@
       var start = (pages[group.key] - 1) * pageSize;
       cardsBox.textContent = "";
       ordered.slice(start, start + pageSize).forEach(function (item) {
-        var card = buildCard(item);
+        var card = buildCard(item, group);
         card.addEventListener("click", function () { activeGroupKey = group.key; }); // R7
         cardsBox.appendChild(card);
       });
@@ -391,6 +478,7 @@
     pages[key] = wanted;
     activeGroupKey = key;
     renderersByKey[key]();
+    scrollListTop(true); // 键盘方向键：只在手机端回顶（PC 保持不动）
   });
 
   var listBox = document.getElementById("list");

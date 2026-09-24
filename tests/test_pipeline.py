@@ -145,16 +145,22 @@ class RenderPassTest(unittest.TestCase):
         good = next(i for i in items if i["game_id"] == "g-good")
         self.assertEqual(good["title_zh"], "好游戏")
 
-    def test_title_zh_and_conditions_in_payload(self):
+    def test_no_conditions_block_in_payload_or_html(self):
+        """批 F：筛选条件框已从页面删除，判定口径只在 README —— 别又跑回来。"""
         _, payload = self._run()
-        self.assertIn("好评率 ≥ 70%", "\n".join(payload["conditions"]))
+        self.assertNotIn("conditions", payload)
+        self.assertNotIn("criteria_digest", payload)
+        html = (self.out / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("criteria-box", html)
         self.assertEqual(payload["page_size"]["breakpoint"], 768)
 
-    def test_html_rendered_with_criteria_block(self):
+    def test_overview_renders_as_stat_boxes(self):
+        """批 F：顶部概览是多个独立小框（窄屏自动换行），不再是并排大框。"""
         self._run()
         html = (self.out / "index.html").read_text(encoding="utf-8")
-        self.assertIn("筛选条件", html)
-        self.assertIn("好评率 ≥ 70%", html)
+        self.assertIn("stat-box", html)
+        self.assertIn("今日新增 Steam 史低", html)
+        self.assertNotIn("top-row", html)
 
     def test_pending_group_when_details_missing(self):
         """没抓到详情的条目要进「详情待补」，而不是被丢掉（§3.3）。"""
@@ -163,7 +169,10 @@ class RenderPassTest(unittest.TestCase):
 
         def stats_of(info):
             stats_holder.update(info)
-            return {"sweep": "low_only", "new_today_shown": info["shown"],
+            # 模板会做算术（未进列表 = raw - shown），概览与页脚用到的字段都要给全
+            return {"sweep": "low_only", "new_today_raw": 1,
+                    "new_today_shown": info["shown"],
+                    "deals_fetched": 0, "hist_low_total": 0,
                     "detail_pending": info["tier"].get(classify.TIER_PENDING, 0),
                     "detail_backlog": 1}
 

@@ -17,6 +17,34 @@ except ImportError:  # pragma: no cover
 FLAG_LABELS = {"N": "新史低", "H": "平史低", "S": "店史低"}
 FLAG_ORDER = ("N", "H", "S")
 
+#: Steam 口径的史低分类（批 E spec E1）—— 报表页面**只展示这两个**，与此处的
+#: ITAD `flag` 是两套东西，别混用：
+#: - `new` = Steam 首次到达该价
+#: - `tie` = Steam 以前到过该价（**含 ITAD 的 H 与 S**）
+#: - `unknown` = storeLow 缺失，与 §4.1 的 `low_kind` 同义，如实标记
+#:
+#: 为什么要多这一层：`deal.flag` 是**全商店口径**，存在「Steam 首次到某价、
+#: 别家更早更便宜过」的条目被 ITAD 标成 H/S，而对只看 Steam 的买家那是新史低。
+#: 判定依据来自 `storelow/v2` 的「Steam 店内史低被记录的时间」（§3.6）——
+#: 若它与本次折扣开始时刻重合，说明这个 Steam 史低就是这次创下的。
+#: 该接口批量且每天已在跑，**不新增任何请求**。
+STEAM_LOW_NEW = "new"
+STEAM_LOW_TIE = "tie"
+STEAM_LOW_UNKNOWN = "unknown"
+
+#: 判定窗口（小时）。24 小时是给 ITAD 的记录延迟留余量 —— 实测 51 条里
+#: `last_low_at` 与 `start` 的间隔**非 0 即 ≥37 天**，取 1h~72h 结果完全一致，
+#: 这里不存在调参问题（依据 data/steam_flag_probe.txt）。
+#: 批 F5：定为**常量**、不再暴露 `window_hours` 参数 —— 24h 容错已经很宽，
+#: 再放大会把「其实不是本次创下」的旧纪录误判成新史低。
+STEAM_LOW_WINDOW_HOURS = 24
+
+STEAM_LOW_LABELS = {
+    STEAM_LOW_NEW: "新史低",
+    STEAM_LOW_TIE: "平史低",
+    STEAM_LOW_UNKNOWN: "史低待确认",
+}
+
 #: 好评分档（§3.5）
 TIER_QUALITY = "quality"        # 优质：好评率 ≥70% 且评价数 ≥100
 TIER_NOTABLE = "notable"        # 热门·褒贬不一：评价数 ≥10000
@@ -158,7 +186,7 @@ def low_kind(deal: dict) -> str | None:
     ``storeLow`` 缺失时返回 ``"unknown"``（如实记录，不静默当成非史低，§10）。
     """
     if deal.get("store_low_int") is None:
-        return "unknown"
+        return STEAM_LOW_UNKNOWN
     flag = deal.get("flag")
     if flag in FLAG_ORDER:
         return flag
@@ -167,6 +195,33 @@ def low_kind(deal: dict) -> str | None:
 
 def low_label(kind: str | None) -> str:
     return FLAG_LABELS.get(kind or "", "—")
+
+
+def steam_low_class(deal: dict, tz: tzinfo | None = None) -> str | None:
+    """史低分类的 **Steam 口径**（批 E spec E1）。
+
+    返回 ``"new"`` / ``"tie"`` / ``"unknown"``；不是史低返回 ``None``。
+
+    ``low_kind()``（ITAD 口径）负责兜住「是不是史低」这道门，本函数只在其之上
+    再判「新还是平」，两者职责不重叠。
+
+    时间容差固定为 :data:`STEAM_LOW_WINDOW_HOURS`（批 F5 起不再可传参）。
+    """
+    kind = low_kind(deal)
+    if kind is None or kind == STEAM_LOW_UNKNOWN:
+        return kind
+    if deal.get("flag") == "N":
+        return STEAM_LOW_NEW  # 全网首次 ⇒ 必定 Steam 首次，不必比时间
+    start = parse_time(deal.get("start"), tz)
+    last = parse_time(deal.get("last_low_at"), tz)
+    if start is None or last is None:
+        return STEAM_LOW_TIE  # 取不到时间 ⇒ 回落 ITAD flag（走到这里的只剩 H/S）
+    delta = abs((last - start).total_seconds())
+    return STEAM_LOW_NEW if delta <= STEAM_LOW_WINDOW_HOURS * 3600 else STEAM_LOW_TIE
+
+
+def steam_low_label(cls: str | None) -> str:
+    return STEAM_LOW_LABELS.get(cls or "", "—")
 
 
 def flag_price_mismatch(deal: dict) -> bool:
@@ -316,7 +371,9 @@ def is_expired(expiry: str | None, now: datetime) -> bool:
 
 
 #: 视图键（与 `report.VIEWS` 的 key 一一对应）
-VIEW_KEYS = ("new_today", "week", "active", "upcoming", "expired")
+#: 批 F2：`expired` 已移出 —— 折扣过期后对买家没有意义，不再作为一个视图
+#: （`is_expired()` 保留：留存清理与判定仍要它）
+VIEW_KEYS = ("new_today", "week", "active", "upcoming")
 
 
 def in_view(view: str, deal: dict, now: datetime, cfg: dict) -> bool:
@@ -335,6 +392,4 @@ def in_view(view: str, deal: dict, now: datetime, cfg: dict) -> bool:
         return is_active(deal.get("expiry"), now)
     if view == "upcoming":
         return is_upcoming(deal.get("expiry"), now, int(cfg.get("upcoming_expiry_hours", 48)))
-    if view == "expired":
-        return is_expired(deal.get("expiry"), now)
     raise ValueError(f"未知视图 {view!r}，可选 {VIEW_KEYS}")
