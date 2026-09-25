@@ -190,7 +190,7 @@
     });
   }
 
-  function buildCard(item, group) {
+  function buildCard(item) {
     // 批 E spec E1：史低类型只有「新 / 平」两档（Steam 口径），
     // 「店史低」已退役 —— 本页全是 Steam 店史低，用它会产生「那别家呢」的误读
     var lowClass = item.low_class || "unknown";
@@ -244,16 +244,12 @@
 
     // 批 E spec E3（第二轮改回两栏）：
     // 左栏 = 史低天数（距上次史低多久）+ 折扣结束；右栏 = 跨区比价。
-    // 「折扣开始」在全组相同时由分组头承载；右栏没有比价行时不分栏，避免半张空表格
+    // 「折扣开始」一律由分组头（多数派）承载，卡片里不再渲染 —— 少数派也用组头那个值，
+    // 这样详情区恒定两栏。右栏没有比价行时不分栏，避免半张空表格
     var leftCol = el("div", { class: "detail-col" }, [
       lastLowRow(item.last_low_text, item.last_low_date),
       detailRow("折扣结束", item.expiry_text)
     ]);
-    if (!(group && group.start_text)) {
-      // detailRow 在值为空时返回 null，而 insertBefore(null, …) 会抛异常 —— 先判再插
-      var startRow = detailRow("折扣开始", item.start_text);
-      if (startRow) leftCol.insertBefore(startRow, leftCol.firstChild);
-    }
 
     // 比价行：₴45 ≈ ¥6.75 -30%，±百分比带色（便宜绿 / 贵红 / 同价灰）
     var rightRows = [];
@@ -404,20 +400,19 @@
     var toolsBox = el("div", { class: "group-tools-box" });
     var pagerBox = el("div", {});
     var arrow = el("span", { class: "arrow", text: "▼" });
-    // 分组标题旁直接写上入组条件 —— 光看「好评达标」这类词分不清是什么门槛。
-    // 批 E spec E5：全组「折扣开始」相同时上提到这里（卡片里不再每行重复）；
+    // 批 E spec E5：组内「折扣开始」按多数派上提到这里（卡片里一律不再渲染该行）；
     // 新/平构成只在**多组**时显示 —— 单组时的数字与概览色点完全一样
-    // 批 F2：拆成 .group-title（箭头+组名+条件）与 .group-meta（条数+开始+构成）两段，
+    // 批 F2：拆成 .group-title（箭头+组名+条件+开始时刻）与 .group-meta（条数+构成）两段，
     // 手机端靠这两段把分组头折成两行，电脑端仍是同一行
     var titleBox = el("span", { class: "group-title" }, [
       arrow,
       el("span", { class: "group-label", text: group.label }),
-      group.criteria ? el("span", { class: "group-criteria", text: group.criteria }) : null
+      group.criteria ? el("span", { class: "group-criteria", text: group.criteria }) : null,
+      group.start_text
+        ? el("span", { class: "group-start", text: "折扣开始 " + group.start_text }) : null
     ]);
     var metaBox = el("span", { class: "group-meta" }, [
       el("span", { class: "count", text: group.count + " 条" }),
-      group.start_text
-        ? el("span", { class: "group-start", text: "折扣开始 " + group.start_text }) : null,
       data.groups.length > 1 ? lowPointsNode(group.items, true) : null
     ]);
     var head = el("div", { class: "group-head" }, [titleBox, metaBox]);
@@ -432,7 +427,7 @@
       var start = (pages[group.key] - 1) * pageSize;
       cardsBox.textContent = "";
       ordered.slice(start, start + pageSize).forEach(function (item) {
-        var card = buildCard(item, group);
+        var card = buildCard(item);
         card.addEventListener("click", function () { activeGroupKey = group.key; }); // R7
         cardsBox.appendChild(card);
       });

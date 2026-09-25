@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -109,11 +110,19 @@ CURRENCY_SYMBOLS = {
 
 
 def format_amount(amount_int: int | None, currency: str | None) -> str:
-    """把「分」格式化成展示金额。"""
+    """把「分」格式化成展示金额。
+
+    **整元才省小数**：12700 分 → `¥127`、1200 分 → `¥12`；非整元保留两位
+    （1270 分 → `¥12.70`）。原先统一 `rstrip("0")` 会把 12.70 砍成 12.7，
+    不符合金额两位小数的惯例（2026-09-25 检查报告问题 3）。
+    """
     if amount_int is None:
         return "—"
     symbol = CURRENCY_SYMBOLS.get(currency or "", "")
-    text = f"{amount_int / 100:,.2f}".rstrip("0").rstrip(".")
+    if amount_int % 100 == 0:
+        text = f"{amount_int // 100:,}"
+    else:
+        text = f"{amount_int / 100:,.2f}"
     return f"{symbol}{text}"
 
 
@@ -223,10 +232,16 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
         if not group_items:
             continue
         group_items.sort(key=lambda i: (-(i["cut"] or 0), i["title"] or ""))
-        # 批 E spec E5：全组「折扣开始」相同时上提到分组头，卡片里不再每行重复
-        # （实测当日新增 51/51 是同一时刻；不一致时保持每张卡各自行）
-        starts = {item["start_text"] for item in group_items if item.get("start_text")}
-        group_start = starts.pop() if len(starts) == 1 else None
+        # 批 E spec E5：全组「折扣开始」相同时上提到分组头，卡片里不再每行重复；
+        # 2026-09-25 起改为**按多数派**上提（卡片一律不渲染该行）—— 实测 quality 组
+        # 121 张里 113 张同是 01:20，另 8 张真的不同；若坚持「唯一才上提」，整组会退回
+        # null，前端给每张卡插一行「折扣开始」，详情区从两栏变三栏。
+        # 用户口径：开始时刻只看个大概（知道是当天的新折扣），精确与否不重要，结束时刻才重要。
+        starts = [item["start_text"] for item in group_items if item.get("start_text")]
+        # 并列时取较晚的那个，保证组头不会显示得比实际更早
+        # （比较的是 strftime("%Y-%m-%d %H:%M") 定宽字符串，字典序即时序）
+        counts = Counter(starts)
+        group_start = max(counts, key=lambda text: (counts[text], text)) if counts else None
         groups.append(
             {
                 "key": spec["key"],

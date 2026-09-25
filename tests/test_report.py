@@ -121,6 +121,64 @@ class GroupSpecsTest(unittest.TestCase):
                          [classify.TIER_NOTABLE, classify.TIER_QUALITY])
         self.assertTrue(groups[0]["collapsed"])
 
+    def test_group_start_uses_the_majority_time(self):
+        """组内开始时刻不一致时按**多数派**上提。
+
+        2026-09-25 实测：quality 组 121 张卡里 113 张同是 01:20，另有 01:21/01:03/00:49/
+        00:15/06:16 共 8 张真的不同。原先「唯一才上提」会让整组退回 null，
+        前端就给每张卡插一行「折扣开始」，详情区从两栏变三栏。
+        """
+        items = (
+            [{"tier": classify.TIER_QUALITY, "cut": 90, "title": f"A{i}",
+              "start_text": "2026-09-25 01:20"} for i in range(5)]
+            + [{"tier": classify.TIER_QUALITY, "cut": 10, "title": "B",
+                "start_text": "2026-09-25 06:16"}]
+        )
+
+        groups = report.build_groups(items, CFG)
+
+        self.assertEqual(groups[0]["start_text"], "2026-09-25 01:20")
+
+    def test_group_start_none_when_no_card_has_a_time(self):
+        items = [{"tier": classify.TIER_QUALITY, "cut": 90, "title": "A"}]
+
+        groups = report.build_groups(items, CFG)
+
+        self.assertIsNone(groups[0]["start_text"])
+
+    def test_group_start_breaks_tie_toward_the_later_time(self):
+        """多数派并列时取较晚的那个 —— 组头不会显示得比实际更早。
+
+        比较的是 `%Y-%m-%d %H:%M` 字符串（定宽，故字典序即时序）。
+        """
+        items = [
+            {"tier": classify.TIER_QUALITY, "cut": 90, "title": "A",
+             "start_text": "2026-09-25 03:40"},
+            {"tier": classify.TIER_QUALITY, "cut": 80, "title": "B",
+             "start_text": "2026-09-25 01:20"},
+        ]
+
+        groups = report.build_groups(items, CFG)
+
+        self.assertEqual(groups[0]["start_text"], "2026-09-25 03:40")
+
+
+class FormatAmountTest(unittest.TestCase):
+    """金额展示（2026-09-25 检查报告问题 3）：原来用 rstrip("0") 砍尾零，
+    1270 分会显示成 `¥12.7`，破坏金额两位小数的惯例。"""
+
+    def test_keeps_two_decimals_when_cents_nonzero(self):
+        self.assertEqual(report.format_amount(1270, "CNY"), "¥12.70")
+        self.assertEqual(report.format_amount(12050, "CNY"), "¥120.50")
+        self.assertEqual(report.format_amount(3976, "CNY"), "¥39.76")
+
+    def test_drops_decimals_only_when_whole_yuan(self):
+        self.assertEqual(report.format_amount(1200, "CNY"), "¥12")
+        self.assertEqual(report.format_amount(12700, "CNY"), "¥127")
+
+    def test_missing_amount_stays_dash(self):
+        self.assertEqual(report.format_amount(None, "CNY"), "—")
+
 
 class ConditionsTest(unittest.TestCase):
     """批 F（2026-09-24）：页面上的「筛选条件」折叠框已删除，判定口径搬到

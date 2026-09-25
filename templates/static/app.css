@@ -137,7 +137,8 @@ html, body {
 }
 .group-head .group-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .group-head .group-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-/* count 自动右靠：后面的「折扣开始」和史低构成跟着排到同一侧（批 E spec E5） */
+/* count 自动右靠：后面的史低构成跟着排到同一侧（批 E spec E5）——
+   批 G（2026-09-25）起「折扣开始」已挪进 .group-title，不再在这一侧 */
 .group-head .count { font-weight: 400; color: var(--muted); font-size: 12px; }
 .group-head .group-start { font-weight: 400; font-size: 11px; color: var(--muted); }
 .group-head .low-points { margin-top: 0; gap: 10px; font-size: 11px; }
@@ -266,8 +267,9 @@ body.no-image .thumb { display: none; }
      这里只留尺寸微调 */
   .stat-value { font-size: 18px; }
   .stat-label { font-size: 11px; }
-  /* 批 F2：分组头改两行 —— 第一行「箭头 + 组名 + 条数」，
-     第二行「入组条件 + 折扣开始」，否则条件文案把标题挤得转行 */
+  /* 批 F2：分组头改两行 —— 第一行「箭头 + 组名 + 入组条件 + 折扣开始」
+     （= 整个 .group-title），第二行「条数 + 新/平构成」（= .group-meta），
+     否则条件文案把标题挤得转行。批 G（2026-09-25）把「折扣开始」从后者挪进前者 */
   .group-head { flex-wrap: wrap; row-gap: 3px; align-items: baseline; }
   .group-head .group-title { flex: 1 1 auto; }
   .group-head .group-meta { flex: 1 1 100%; margin-left: 18px; }

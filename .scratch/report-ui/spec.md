@@ -306,6 +306,11 @@ last_low_at 或 start 缺失     -> "tie"      # 取不到时间，回落 ITAD f
 - 新/平构成：**只在 ≥2 个分组时**显示在分组头 —— 单组时与概览色点完全重复
   （草案图也因此没画）。
 
+> ⚠️ **上面第一条已被批 G（2026-09-25）覆盖**（第二条不变）：实测组内并非「全相同」——
+> `quality` 组 121 张里 113 张同为 `01:20`，另 8 张是真的不同时刻。按「唯一才上提」整组会
+> 退回 `null`，前端就给每张卡插一行，详情区变三栏。现改为**按多数派上提 + 卡片一律不渲染
+> 该行**，并把时刻挪到入组条件旁边。见文末「批 G」。
+
 #### E6 payload 字段变更
 
 | 字段 | 变更 | 去向 |
@@ -315,9 +320,9 @@ last_low_at 或 start 缺失     -> "tie"      # 取不到时间，回落 ITAD f
 | `days_left` | 新增 int | 价格区「剩 X 天」 |
 | `flag` / `flag_label` | **删除**（改用前两个） | — |
 | `store_low_text` / `history_low_text` / `history_low_1y_text` | **删除**（E3） | — |
-| `group.start_text` | 新增（全组统一时才有值） | 分组头 |
+| `group.start_text` | 新增（批 G 起 = 组内**多数派**时刻，不再是「全组唯一时才有值」） | 分组头 |
 | `payload.low_points` | 新增 `{new, tie, unknown}` | 概览色点 |
-| `start_text` / `expiry_text` | 保留（非统一分组时仍要用） | 卡片详情 |
+| `start_text` / `expiry_text` | 保留：`start_text` 是多数派计算的输入（批 G 起前端已不渲染该行）；`expiry_text` 仍显在卡片左栏 | 卡片详情 |
 
 #### E7 验收
 
@@ -336,7 +341,7 @@ last_low_at 或 start 缺失     -> "tie"      # 取不到时间，回落 ITAD f
       - [ ] 展开详情为**两栏**：左「距上次史低 / 折扣结束」，右「比价」；
             无比价数据时回落单栏（本地预览就是这个形态）
       - [ ] 「距上次史低」点按/悬停仍能切到具体日期
-      - [ ] 分组头显示统一「折扣开始」，卡片里不再重复
+      - [ ] 分组头显示统一「折扣开始」（按**多数派**），卡片里不再重复
       - [ ] 768px 断点两侧：力度条收窄到 80px、详情由两栏堆叠为单栏、
             顶部两块由并排改为上下堆叠
       - [ ] 「仅新史低」chip 与三个排序仍生效
@@ -382,7 +387,8 @@ last_low_at 或 start 缺失     -> "tie"      # 取不到时间，回落 ITAD f
    测试：`test_classify.py` 的 `test_active_and_expired` 断言改为
    `test_expired_view_is_gone`（视图没了、函数还在）。
 3. **分组头手机端折两行**：JS 把 `.group-head` 拆成 `.group-title`
-   （箭头 + 组名 + 入组条件）与 `.group-meta`（条数 + 折扣开始 + 新/平构成）两段；
+   （箭头 + 组名 + 入组条件）与 `.group-meta`（条数 + 新/平构成）两段；
+   ⚠️ 「折扣开始」原在 `.group-meta`，批 G（2026-09-25）按用户要求挪进了 `.group-title`；
    媒体查询里 `.group-meta { flex: 1 1 100%; margin-left: 18px }` → 手机自动换行，
    **电脑端不加这条规则，保持一行**。点击折叠的范围仍是整个 `.group-head`。
 4. **手机端翻页后滚回列表顶部**：新增 `scrollListTopOnMobile()`，
@@ -462,3 +468,69 @@ Node 22 内置 WebSocket，零依赖）实测每个 `.stat-box` 的 boundingRect
    参数（用户：24h 容错已经很宽，再放大就不准确了）。原「窗口取 1h~72h 结果一致」
    的测试换成**边界测试**：恰好 24h → `new`、25h → `tie`（该边界此前从未被测过）。
    「实测非 0 即 ≥37 天、不存在调参问题」的结论仍由 `tools/steam_flag_probe.py` 留档。
+
+---
+
+## 批 G（2026-09-25，检查报告问题 2 / 3）
+
+> 来源：`.scratch/appid-redirect/debug_2026_09_25.md`（当日检查报告）问题 2（详情区显示三栏）与问题 3（金额砍尾零）。
+> 用户裁决见下面第 2 条 —— **推翻批 E spec E5 的原文口径**。
+
+1. **卡片详情区恒定两栏**（问题 2）。报告当时抽到 `quality` 组只有 `01:20` / `01:21`
+   两种时刻、判定为「分钟级抖动」，据此提出「按 10 分钟粒度归一后再判唯一」的方案。
+   **实测推翻了这个诊断**：用最新 state 重渲染后该组实际有 6 种时刻 ——
+
+   | 开始时刻 | 张数 |
+   | --- | --- |
+   | `2026-09-25 01:20` | **113**（ITAD 一批更新） |
+   | `2026-09-25 01:21` | 3（Warhammer 40,000: Rogue Trader / 小女巫幸存者 / 诈欺谜案） |
+   | `2026-09-25 00:15` | 2（Toy Smash Kaboom! / Warhounds） |
+   | `2026-09-25 01:03` / `00:49` / `06:16` | 各 1（Mars Attracts / 御姐初长成 / Rooftops & Alleys） |
+
+   按 10 分钟分桶仍是 3 桶以上 → 组级 `start_text` 仍为 `null` → 方案无效。
+   而且 `app.js` 的约定是「组级有值就一律不渲染卡片行」，所以「多数票 + 少数派保留自己
+   那行」还需要额外改前端，否则那 8 张会被静默错标成多数派的值。
+
+2. **用户裁决**：「不需要显示，都知道是今天开始折扣，管他什么时候开始的，只要知道什么
+   时候结束就行了，按多数派显示在分类好评筛选条件旁边。」落到三处：
+
+   - `report.py::build_groups`：不再要求「唯一」，改**按多数派**取值
+     （`Counter` 取频次最高；并列时取较晚的那个，保证组头不会比实际更早）。
+   - `app.js`：**删掉**卡片内「折扣开始」行（原 `if (!(group && group.start_text))` 分支
+     变成死代码）。卡片左栏只剩「距上次史低」+「折扣结束」→ 恒定两栏。
+   - `app.js`：`.group-start` 从 `.group-meta` 挪进 `.group-title`，紧跟 `.group-criteria`。
+     CSS 选择器 `.group-head .group-start` 与两段结构都不用改；手机端断点规则不受影响。
+
+   设计取舍要如实记：**少数派（8 张）看到的是多数派的时刻**，不是自己的。这是用户明确
+   接受的（开始时刻只要个大概），换来的是 121 张卡布局 100% 一致。
+
+3. **金额尾零**（问题 3）。`format_amount` 原用 `f"{…:,.2f}".rstrip("0").rstrip(".")`，
+   把 `1270` 分显示成 `¥12.7`、`1200` 分显示成 `¥12`。改为**整元才省小数**：
+   `amount_int % 100 == 0` → `¥127` / `¥12`；否则保留两位 → `¥12.70` / `¥120.50`。
+   比价行的 `≈ ¥x.xx` 同源修复。
+
+**验证**：单测 **120 → 126**（固定点 `b73d4e2` 是 120 —— 批 F5 记的 118 加上 P0 的 2 条）。
+净增 6 条：`test_group_start_uses_the_majority_time`、`test_group_start_none_when_no_card_has_a_time`、
+`test_group_start_breaks_tie_toward_the_later_time`（覆盖并列取较晚那个分支）、
+`FormatAmountTest` 3 条。开发过程中另有 2 条按旧口径写的用例（`…tolerates_minute_jitter`、
+`…stays_null_when_times_really_differ`）被改写成上面前两条 —— 它们只在工作区里存在过，
+从未进入任何提交，所以 `git diff` 上看不到删除行。
+`node --check app.js` 通过。用 `origin/data` 最新 state 走
+`tools/render_report.py` 重渲染核对：`check_payload.py` 报 `好评达标` 组
+`group.start_text=2026-09-25 01:20` 且等于组内多数派（分布 `113 / 3 / 2 / 1 / 1 / 1`），
+金额显示 `¥12.70` / `¥32.50` / `¥238.40`。**用户已浏览器验收**（桌面 + 手机两档）。
+
+**连带同步**（第一批只改了 `report.py` / `app.js` / 单测，文档与工具是审查后补的）：
+`docs/DEVELOPMENT.md` §7.2 与 §7.2.1、`templates/static/app.css` 两处注释、
+`tools/check_payload.py` 的分组「折扣开始」验收（原来按「全组一致」判断，多数派口径下会输出
+误导结论）；`app.js::buildCard` 删掉已无引用的 `group` 参数。
+
+**审查后未采纳两点**（供后人别重复提）：
+
+- **不删 payload 的 `item.start_text`**：审查说它「已无前端消费者，成死字段」，
+  但它仍是 `build_groups` 计算多数派的**输入**（`build_groups` 在 `build_card` 之后跑），
+  删了要改数据流。前端不渲染 ≠ 死字段。
+- **不改 `check_payload.py` 的通过/失败语义**：只把那条误导输出改成准确输出，
+  不给多数派一致性新加 ✗ 判据（避免验收脚本因口径调整而整轮变红）。
+
+**配套**：`.scratch/appid-redirect/fix-round1.md` 记录本轮全部改动与探针证据。

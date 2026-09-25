@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -143,11 +144,13 @@ def main() -> int:
     lines.append(f"  取值分布: {days}")
 
     lines.append("")
-    lines.append("--- 分组「折扣开始」上提（批 E spec E5）---")
+    lines.append("--- 分组「折扣开始」（批 E spec E5 → 批 G：按组内多数派上提）---")
     for g in groups:
-        uniform = len({i.get("start_text") for i in g["items"]}) == 1
-        lines.append(f"  {g['label']}: 全组一致={uniform} · group.start_text="
-                     f"{g.get('start_text')}")
+        counts = Counter(i.get("start_text") for i in g["items"] if i.get("start_text"))
+        # 与 src/report.py::build_groups 同一口径：取频次最高，并列时取较晚的那个
+        majority = max(counts, key=lambda text: (counts[text], text)) if counts else None
+        lines.append(f"  {g['label']}: group.start_text={g.get('start_text')}"
+                     f" · 组内多数派={majority} · 分布={dict(counts)}")
 
     lines.append("")
     lines.append("--- 判定 ---")
