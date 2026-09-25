@@ -17,6 +17,20 @@
 早前文档写的「`appdetails` 批量能同时给中文名与各区价格」是**错的**
 （那次验证用的是单 appid）。见 `data/probe/summary27_steam_batch.txt`。
 
+## ⚠️ 实测出来的 appid 重定向（2026-09-25）
+
+单 appid 且 `filters` 含 `basic` 时，**响应的 key 是「店铺页 id」，不是 appid** ——
+实测 412020 → 1952352（Metro Exodus）、1091500 → 2441600（Cyberpunk 2077），
+而该 key 直接请求会 `success: false`（它不是 appid）。
+
+与区域、语言都无关：`cc` 换成 us / ua 同样是 1952352，`l=english` 也同样是，
+变的只是 `name`。**只由 `filters` 决定** —— 只要 `price_overview`（单请求或批量）就按
+请求的 appid 原样返回、且与请求同序。而 `name` 只有 `basic` 能给 → **重定向不可回避**，
+所以 :meth:`SteamClient.info` 取「响应里的唯一值」而不是按 key 查。
+`basic` 响应里的 `data.steam_appid` 等于请求的 appid（`price_overview` 下不带该字段），
+可用来确认「仍是同一个游戏」。详见 `docs/DEVELOPMENT.md` §2.2 与
+`.scratch/appid-redirect/fix-round1.md`。
+
 `name` 是否中文只取决于 `l=schinese` 与「Steam 上这个游戏**有没有**中文标题」——
 没有中文标题的游戏返回英文名，属正常，不能当失败（§11「Steam 没中文名的回落英文名」）。
 """
@@ -79,7 +93,12 @@ class SteamClient(BaseHttpClient):
     # 底层：appdetails
     # ------------------------------------------------------------------
     def _appdetails(self, appids: list[int], cc: str, filters: str) -> dict[int, dict]:
-        """调一次 `appdetails`，返回 ``{appid: data}``（拿不到的不在字典里）。"""
+        """调一次 `appdetails`，返回 ``{appid: data}``（拿不到的不在字典里）。
+
+        ⚠️ 带 `basic` 时（= 要 `name` 时）**key 是店铺页 id，不是 appid**，见模块 docstring。
+        本方法的批量路径用的是 `price_overview`，实测按请求的 appid 原样返回且同序，
+        所以 :meth:`prices` 的调用方按请求 appid 查表是安全的。
+        """
         params = {
             "appids": ",".join(str(a) for a in appids),
             "cc": cc.lower(),
@@ -114,9 +133,10 @@ class SteamClient(BaseHttpClient):
         拿不到返回 None。
         """
         data = self._appdetails([appid], cc, SINGLE_FILTERS)
-        payload = data.get(appid)
-        if not payload:
+        if not data:
             return None
+        # 单 appid 请求：Steam 可能重定向成店铺页 id，响应里至多一个条目，取唯一值即可
+        payload = next(iter(data.values()))
         price = payload.get("price_overview")
         return {
             "name": payload.get("name"),
