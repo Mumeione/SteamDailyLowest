@@ -220,6 +220,30 @@ GET https://store.steampowered.com/api/appdetails
   所以中文名要逐游戏取 —— **必须缓存**，见 §2.5。
 - 永久免费游戏（CS2 / Dota2 / TF2）返回 `data: []`，属正常（客户端已跳过并计数）
 
+#### ⚠️ appid 重定向：带 `basic` 时响应的 key 不是 appid（2026-09-25，共 41 次请求）
+
+单 appid 且 `filters` 含 `basic` 时，**响应的 key 是「店铺页 id」**，与请求的 appid 不同：
+
+| 请求 | 返回 key |
+| --- | --- |
+| 单 + 不带 `filters` ／ `basic` ／ `basic,price_overview` | **店铺页 id** ★（412020 → 1952352、1091500 → 2441600、597820 → 1549560） |
+| 单 + `price_overview` | 请求的 appid（412020） |
+| 多 + `price_overview` | 与请求**等值且同序** |
+
+- 该 key **不是 appid**：直接请求 1952352 会 `success: false`、没有 `data`。
+- 与区域、语言**都无关**：`cc` 换 us / ua、`l` 换 english，返回 key 都不变（只有 `name` 变）。
+  即中文名只取决于 `l=schinese` —— 不存在「全球 id 没中文名、国区 id 才有」这回事。
+- `basic` 响应里的 `data.steam_appid` 等于请求的 appid（`price_overview` 下不带该字段）
+  → 是同一个游戏，不是「另一个版本」。
+- ⚠️ **`name` 只有 `basic` 能给，所以重定向不可回避**。客户端 :meth:`SteamClient.info`
+  取「响应里的唯一值」而不是按 key 查 —— 曾经的 `data.get(appid)` 写法会静默拿不到名字，
+  导致大量中文名丢失（2026-09-25 修复）。
+- ✅ **批量价格路径不受影响**（曾经担心的错配已证伪）：`price_overview` 批量返回的 key
+  与请求等值同序，`src/enrich.py` 按请求 appid 查表是安全的。
+- 影响面：`title_zh=None` 的条目里约 **45%** 是重定向导致的丢失，但抽 20 条实测只有
+  **30%** 能补出中文名 —— 其余 Steam 上本就只有英文名（属 §11 的正常回落）。
+  详见 `.scratch/appid-redirect/fix-round1.md`。
+
 #### ⚠️ 探针也不能突发打 Steam（第 27\~28 轮的教训）
 
 无间隔地连打约 40 次 `store.steampowered.com` 之后，
