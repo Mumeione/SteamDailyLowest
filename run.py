@@ -268,26 +268,40 @@ def fetch_details(client: ItadClient, state: State, candidates: list[dict], cfg:
 
 def fetch_last_low_times(client: ItadClient, state: State, candidates: list[dict],
                          cfg: dict, now: datetime) -> int:
-    """批量补「上次史低时间」（§3.6，``storelow/v2``）：对象是**当日新增**。
+    """批量补「上次史低时间」（§3.6，``storelow/v2``）：当日新增 + 即将过期。
 
-    ⚠️ 每轮对当日新增**整批重取**、不做缓存命中跳过 —— 这个字段必须反映
+    ⚠️ 每轮**整批重取**、不做缓存命中跳过 —— 这个字段必须反映
     ITAD 当前记录的店内史低时间：游戏今天以新史低入榜（timestamp≈今天），
     明天转成平史低时，「上次史低」显示的才是正确的记录时间；若永久缓存
     第一次的值，之后再次新低时会拿到过期时间。
-    请求量：200 个/批，日常 1~4 次/天。失败不阻断（下次运行自动补）。
+
+    即将过期条目大多**从未当过当日新增**（几天前就开始的折扣），
+    meta 里没有 last_low_at，报表的「距上次史低」行会整行缺失 ——
+    2026-09-27 起并入每轮重取（ITAD 批量接口 200 个/批，+几批/天，成本低）。
+    请求量：200 个/批，日常约 1~10 次/天。失败不阻断（下次运行自动补）。
     """
     if not cfg.get("fetch_last_low_time", True) or not candidates:
         return 0
     ids = sorted({e.get("game_id") for e in candidates if e.get("game_id")})
     if not ids:
         return 0
+    # 同一 game_id 可能有多版本折扣（不同 expiry），各折扣期分别落暂存
+    expiries_by_gid: dict[str, list[str | None]] = {}
+    for e in candidates:
+        gid = e.get("game_id")
+        if not gid:
+            continue
+        bucket = expiries_by_gid.setdefault(gid, [])
+        if e.get("expiry") not in bucket:
+            bucket.append(e.get("expiry"))
     try:
         lows_map = client.fetch_storelow(cfg["country"], ids)
     except ItadError as exc:
         log(f"[warn] 上次史低时间抓取失败，本轮跳过（下次运行重取）：{exc}")
         return 0
     for gid, ts in lows_map.items():
-        state.set_last_low_at(gid, ts)
+        for expiry in expiries_by_gid.get(gid, []):
+            state.set_last_low_at(gid, expiry, ts)
     return len(lows_map)
 
 
@@ -300,13 +314,15 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
     中文名也在这里合并 —— 它是 `game_meta` 里的一等缓存字段，
     **不能只在 enrich 阶段才读**：首版渲染不跑 enrich（那时大多还没有 appid），
     漏掉这一步就会让已经有中文名的游戏在首版退化成英文名。
+    「上次史低时间」同样在这里合并，但它走的是折扣期暂存
+    ``low_time_cache``（§3.6，键 ``game_id|expiry``），不属于 game_meta。
     """
     merged: list[dict] = []
     for entry in entries:
         meta = state.meta(entry.get("game_id"))
         item = dict(entry)
         item["title_zh"] = meta.get("title_zh") if meta else None
-        item["last_low_at"] = meta.get("last_low_at") if meta else None
+        item["last_low_at"] = state.last_low_at(entry.get("game_id"), entry.get("expiry"))
         if not meta or not meta.get("fetched_at"):
             item["appid"] = None
             item["reviews"] = None
@@ -321,8 +337,9 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
 
 def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
                 stats_of: Callable[[dict], dict], *, announce_merges: bool,
-                enrich_hook: Callable[[list[dict], dict], dict] | None = None,
-                fx: dict | None = None) -> dict:
+                enrich_hook: Callable[[list[dict], list[dict], dict], dict] | None = None,
+                fx: dict | None = None,
+                upcoming: list[dict] | None = None) -> dict:
     """合并缓存 → 多版本去重 → 分档 →（补 Steam 展示数据）→ 出报表。**可以调用多次**。
 
     第一次调用发生在详情还没抓的时候（缺的标「详情待补」，页面立刻可看），
@@ -332,35 +349,51 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     这样「概览」里的分档条数与实际渲染出来的分组一定是同一份数据。
 
     ``enrich_hook`` 只在**最后一版**传（首版里的条目大多还没有 appid，
-    补不出东西，白白发 Steam 请求）。
+    补不出东西，白白发 Steam 请求）；接收 ``(当日新增, 即将过期, info)``
+    两个集合，跨区比价在两者间合并 appid 去重并走 `appid|expiry` 缓存
+    （2026-09-27 方案 B：同一折扣期内不重拉外区价）。
+
+    ``upcoming``：「即将过期」视图的候选条目（调用方按
+    :func:`classify.in_view` 筛好）；``None`` = 本轮不产出该视图。
     """
-    merged = merge_details(state, candidates, cfg)
-    kept, deduped = classify.dedupe_by_appid(merged)
+    def build_view(entries: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+        merged = merge_details(state, entries, cfg)
+        kept, deduped = classify.dedupe_by_appid(merged)
+        shown = [entry for entry in kept if classify.is_shown(entry["tier"])]
+        return kept, deduped, shown
+
+    kept, deduped, shown = build_view(candidates)
     if announce_merges:
         for record in deduped:
             losers = "、".join(f"《{d['title']}》{d['price_int']}" for d in record["dropped"])
             log(f"      多版本合并：appid={record['appid']} 保留《{record['kept']}》"
                 f"（{record['kept_price_int']}），合并掉 {losers}")
 
+    # upcoming 的 None（不产出该视图）与 []（产出但为空）是两种不同语义，不能混
+    has_upcoming = upcoming is not None
+    upcoming_shown: list[dict] = []
+    if has_upcoming:
+        _, _, upcoming_shown = build_view(upcoming)
+
     tier_counts = {tier: 0 for tier in classify.TIER_LABELS}
-    shown: list[dict] = []
     for entry in kept:
         tier_counts[entry["tier"]] += 1
-        if classify.is_shown(entry["tier"]):
-            shown.append(entry)
 
     info = {
         "tier": tier_counts,
         "shown": len(shown),
         "deduped": deduped,
         "kept": len(kept),
+        "upcoming_shown": len(upcoming_shown),
     }
     if enrich_hook:
-        info["steam"] = enrich_hook(shown, info)
+        info["steam"] = enrich_hook(shown, upcoming_shown, info)
     stats = stats_of(info)
     labels = report.tier_labels(cfg)
     cards = [report.build_card(entry, now, labels) for entry in shown]
-    info["paths"] = report.render(cfg, cards, stats, now, fx=fx, steam=info.get("steam"))
+    upcoming_cards = [report.build_card(entry, now, labels) for entry in upcoming_shown]
+    info["paths"] = report.render(cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
+                                  upcoming_items=upcoming_cards if has_upcoming else None)
     return info
 
 
@@ -479,6 +512,13 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"[4/{total_steps}] 当日新增候选：{len(candidates)} 条"
         f"（timestamp 命中 {by_reason['timestamp']}，首次见到兜底 {by_reason['first_seen']}）")
 
+    # 「即将过期」视图候选：还在折扣期内、48h 内到期的史低（§4.6）。
+    # 折扣没结束就必然还在本轮 deals 列表里，所以直接从 hist_low 筛，不必翻 seen_deal。
+    upcoming_entries = [
+        e for e in hist_low if classify.in_view("upcoming", e, now, cfg)
+    ]
+    log(f"      即将过期候选（{cfg.get('upcoming_expiry_hours', 48)}h 内到期）：{len(upcoming_entries)} 条")
+
     # 状态库按完整结构写：所有史低都攒库（其余视图以后再开，§1.1）
     for entry in hist_low:
         state.record_seen(entry, now)
@@ -505,7 +545,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
 
     # ---- 首版报表：不等详情（§3.3）----
     first = render_pass(state, candidates, cfg, now, stats_of(0, count_backlog(hist_low, state, cfg, now)),
-                        announce_merges=False, fx=fx_rates)
+                        announce_merges=False, fx=fx_rates, upcoming=upcoming_entries)
     log(f"[5/{total_steps}] 首版报表已生成（缺详情的标「详情待补」，页面立刻可看）："
         f"{first['paths']['index']}")
 
@@ -516,16 +556,20 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个"
         f"（目标 {len(targets)} 个，其余命中缓存）；目录还差 {backlog} 条")
 
-    # ---- 上次史低时间（§3.6）：批量接口，当日新增每轮重取 ----
-    low_time_fetched = fetch_last_low_times(client, state, candidates, cfg, now)
+    # ---- 上次史低时间（§3.6）：批量接口，当日新增 + 即将过期每轮重取 ----
+    low_time_fetched = fetch_last_low_times(client, state, candidates + upcoming_entries, cfg, now)
     if low_time_fetched:
         state.save(now)
-    log(f"      上次史低时间：批量补 {low_time_fetched}/{len(candidates)} 条（storelow/v2）")
+    total_low_ids = len({e.get("game_id") for e in candidates + upcoming_entries if e.get("game_id")})
+    log(f"      上次史低时间：批量补 {low_time_fetched}/{total_low_ids} 条"
+        f"（当日新增 {len(candidates)} + 即将过期 {len(upcoming_entries)}，storelow/v2）")
 
-    def do_enrich(shown: list[dict], info: dict) -> dict:
-        facts = enrich.enrich_steam(steam_client, state, shown, cfg, fx_rates, now, log)
+    def do_enrich(shown: list[dict], upcoming_shown: list[dict], info: dict) -> dict:
+        facts = enrich.enrich_steam(steam_client, state, shown, cfg, fx_rates, now, log,
+                                    upcoming=upcoming_shown)
         log(f"      中文名：新取 {facts['title_fetched']} 个 · 命中缓存 {facts['title_cached']} 个"
             f"；跨区比价批量 {facts['compare_batches']} 次"
+            f"（缓存命中 {facts['compare_cache_hits']} · 新拉 {facts['compare_fetched']}）"
             + (f"；Steam 请求合计 {steam_client.calls} 次" if steam_client.calls else ""))
         if facts["price_mismatch"]:
             for item in facts["price_mismatch"]:
@@ -534,8 +578,10 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         return facts
 
     final = render_pass(state, candidates, cfg, now, stats_of(detail_fetched, backlog),
-                        announce_merges=True, enrich_hook=do_enrich, fx=fx_rates)
-    log(f"[7/{total_steps}] 完整版报表已覆盖：进列表 {final['shown']} 条（分档 {final['tier']}）")
+                        announce_merges=True, enrich_hook=do_enrich, fx=fx_rates,
+                        upcoming=upcoming_entries)
+    log(f"[7/{total_steps}] 完整版报表已覆盖：进列表 {final['shown']} 条（分档 {final['tier']}）"
+        f"；即将过期进列表 {final['upcoming_shown']} 条")
 
     errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
     state.add_run_log(
@@ -550,6 +596,8 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "new_by_reason": by_reason,
             "new_today_raw": len(candidates),
             "new_today_shown": final["shown"],
+            "upcoming_raw": len(upcoming_entries),
+            "upcoming_shown": final["upcoming_shown"],
             "detail_scope": target_info["scope"],
             "detail_daily_budget": target_info["budget"],
             "detail_targets": len(targets),
@@ -559,6 +607,8 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "detail_pending": final["tier"].get(classify.TIER_PENDING, 0),
             "title_zh_fetched": (final.get("steam") or {}).get("title_fetched", 0),
             "title_zh_cached": (final.get("steam") or {}).get("title_cached", 0),
+            "compare_cache_hits": (final.get("steam") or {}).get("compare_cache_hits", 0),
+            "compare_fetched": (final.get("steam") or {}).get("compare_fetched", 0),
             "price_mismatch": (final.get("steam") or {}).get("price_mismatch") or [],
             "deduped_versions": len(final["deduped"]),
             "tier": final["tier"],

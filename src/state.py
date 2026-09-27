@@ -27,6 +27,8 @@ class State:
             "updated_at": None,
             "seen_deal": {},
             "game_meta": {},
+            "compare_cache": {},
+            "low_time_cache": {},
             "run_log": [],
         }
 
@@ -47,6 +49,10 @@ class State:
                 raw[key] = {}
         if not isinstance(raw.get("run_log"), list):
             raw["run_log"] = []
+        if not isinstance(raw.get("compare_cache"), dict):
+            raw["compare_cache"] = {}
+        if not isinstance(raw.get("low_time_cache"), dict):
+            raw["low_time_cache"] = {}
         raw.setdefault("version", STATE_VERSION)
         raw.setdefault("updated_at", None)
         self.data = raw
@@ -110,7 +116,11 @@ class State:
         return key, False
 
     def cleanup_expired(self, now: datetime, retention_days: int) -> int:
-        """删除 expiry 已超过保留期的条目（§5 留存清理）。"""
+        """删除 expiry 已超过保留期的条目（§5 留存清理）。
+
+        「折扣期暂存」的两块缓存（比价 / 上次史低时间，键都含 expiry）
+        随 seen_deal 同一保留期一起清理，不单独设 TTL。
+        """
         deadline = now - timedelta(days=retention_days)
         drop: list[str] = []
         for key, entry in self.seen_deal.items():
@@ -119,7 +129,26 @@ class State:
                 drop.append(key)
         for key in drop:
             del self.seen_deal[key]
+        self._cleanup_expiry_keyed(self.compare_cache, deadline)
+        self._cleanup_expiry_keyed(self.low_time_cache, deadline)
         return len(drop)
+
+    @staticmethod
+    def _cleanup_expiry_keyed(cache: dict, deadline: datetime) -> int:
+        """清掉缓存键里 expiry 早于 deadline 的条目（键格式 ``<id>|<expiry>``）。
+
+        expiry 缺失或解析不了的键无法与折扣期绑定，一并清掉 —— 暂存可重建，
+        留着只会缓慢积累。
+        """
+        stale: list[str] = []
+        for key in cache:
+            expiry = classify.parse_time(key.rsplit("|", 1)[1], deadline.tzinfo) \
+                if "|" in key else None
+            if expiry is None or expiry < deadline:
+                stale.append(key)
+        for key in stale:
+            del cache[key]
+        return len(stale)
 
     # ------------------------------------------------------------------
     # game_meta：详情缓存（appid 永久有效 / reviews TTL 7 天）
@@ -186,16 +215,61 @@ class State:
         self.game_meta[game_id] = entry
 
     # ------------------------------------------------------------------
-    # 上次史低时间（§3.6）：与 appid/reviews 同存 game_meta，但**无 TTL**——
-    # 每轮日常运行都会对「当日新增」整批重取（storelow/v2 批量、200 个/次），
-    # 保证游戏从新史低转平史低后，显示的「上次史低」仍是真正的记录时间
+    # 上次史低时间（§3.6）：**折扣期暂存**（2026-09-27 起不再放 game_meta）。
+    # 键 ``<game_id>|<expiry>`` —— 与比价缓存同一套「折扣期暂存」模式：
+    # 每轮日常运行对「当日新增 + 即将过期」整批重取覆盖，条目过期后随
+    # :meth:`cleanup_expired` 一起清掉，不永久积累。
+    # 旧 state.json 里 game_meta.last_low_at 的存量字段留存不迁移（读不到
+    # 就等下一轮 storelow 重取补上，一天内自愈）。
     # ------------------------------------------------------------------
-    def set_last_low_at(self, game_id: str, ts: str) -> None:
+    @property
+    def low_time_cache(self) -> dict:
+        return self.data["low_time_cache"]
+
+    @staticmethod
+    def low_time_key(game_id: str, expiry: str | None) -> str:
+        return f"{game_id}|{expiry or ''}"
+
+    def last_low_at(self, game_id: str, expiry: str | None) -> str | None:
+        return self.low_time_cache.get(self.low_time_key(game_id, expiry))
+
+    def set_last_low_at(self, game_id: str, expiry: str | None, ts: str) -> None:
         if not ts or not game_id:
             return
-        entry = self.game_meta.get(game_id) or {}
-        entry["last_low_at"] = ts
-        self.game_meta[game_id] = entry
+        self.low_time_cache[self.low_time_key(game_id, expiry)] = ts
+
+    # ------------------------------------------------------------------
+    # 比价缓存（2026-09-27，方案 B）：键 ``<appid>|<expiry>`` —— 同一折扣期内
+    # 不重拉外区价（48h 窗口里的条目每天重复拉是纯浪费）。
+    # ⚠️ 只缓存**原币种**数据（cc/label/currency/final）；``cny_minor`` 与
+    # ``diff_pct`` 依赖当天汇率，渲染时现算 —— 汇率债不进缓存。
+    # 拉取失败（rows 为空）不落缓存，下轮自然重试（宁可留空不猜）。
+    # 过期清理跟随 :meth:`cleanup_expired`（与 seen_deal 同一保留期）。
+    # ------------------------------------------------------------------
+    @property
+    def compare_cache(self) -> dict:
+        return self.data["compare_cache"]
+
+    @staticmethod
+    def compare_key(appid: int, expiry: str | None) -> str:
+        return f"{appid}|{expiry or ''}"
+
+    def compare_cached(self, appid: int, expiry: str | None) -> list[dict] | None:
+        """命中返回缓存的原始比价行（不含换算字段），未命中返回 None。"""
+        entry = self.compare_cache.get(self.compare_key(appid, expiry))
+        return entry.get("rows") if entry else None
+
+    def set_compare(self, appid: int, expiry: str | None, rows: list[dict],
+                    now: datetime) -> None:
+        if not appid or not rows:
+            return
+        self.compare_cache[self.compare_key(appid, expiry)] = {
+            "rows": [
+                {k: row[k] for k in ("cc", "label", "currency", "final") if k in row}
+                for row in rows
+            ],
+            "fetched_at": now.isoformat(timespec="seconds"),
+        }
 
     # ------------------------------------------------------------------
     # run_log

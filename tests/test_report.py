@@ -268,6 +268,32 @@ class CardTest(unittest.TestCase):
         card = report.build_card(entry, self.now, report.tier_labels(CFG))
         self.assertEqual(card["tier_label"], "好评达标")
 
+    def test_days_left_calendar_diff(self):
+        """「剩 X 天」按日历天差：09-21 中午看 09-28 上午结束 → 剩 7 天。"""
+        entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                 "expiry": "2026-09-28T10:00:00+08:00", "tier": classify.TIER_QUALITY}
+        self.assertEqual(report.build_card(entry, self.now)["days_left"], 7)
+
+    def test_days_left_early_morning_expiry_counts_as_previous_day(self):
+        """凌晨收摊宽容（2026-09-27 定案，阈值 3:00）：明早 01:00 过期 = 「今天结束」
+        （剩 0 天），不能显示成「剩 1 天」。03:00 起主跑已进新一天，不再宽容。"""
+        for hour, expected in ((1, 0), (2, 0)):
+            entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                     "expiry": f"2026-09-22T0{hour}:00:00+08:00", "tier": classify.TIER_QUALITY}
+            self.assertEqual(report.build_card(entry, self.now)["days_left"], expected,
+                             f"明天 0{hour}:00 过期应为 {expected} 天")
+        # 03:00 起不再宽容：明天 05:00 / 10:00 过期就是正经「剩 1 天」
+        for hour in ("05", "10"):
+            entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                     "expiry": f"2026-09-22T{hour}:00:00+08:00", "tier": classify.TIER_QUALITY}
+            self.assertEqual(report.build_card(entry, self.now)["days_left"], 1)
+
+    def test_days_left_never_negative(self):
+        """expiry 已过（清理边缘/时钟漂移）时至少是 0，不出现负数。"""
+        entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                 "expiry": "2026-09-21T01:00:00+08:00", "tier": classify.TIER_QUALITY}
+        self.assertEqual(report.build_card(entry, self.now)["days_left"], 0)
+
     def test_card_without_appid_has_no_links(self):
         entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
                  "tier": classify.TIER_PENDING}

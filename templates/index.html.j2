@@ -25,11 +25,11 @@
        筛选条件框已删除，判定口径全部写进 README「筛选条件」一节 -->
   <section class="overview">
     <div class="stat-box">
-      <div class="stat-label">今日新增 Steam 史低</div>
+      <div class="stat-label">今日列表新增</div>
       <div class="stat-value">{{ overview.new_today_shown }}<span class="stat-unit">款</span></div>
     </div>
     <div class="stat-box">
-      <div class="stat-label">当日新增</div>
+      <div class="stat-label">今日史低总数</div>
       <div class="stat-value">{{ overview.new_today_raw }}<span class="stat-unit">款</span></div>
     </div>
     <div class="stat-box">
@@ -54,8 +54,9 @@
 
   <nav class="filters" id="filters">
     {% for view in views %}
+    {# active 初始只标「当日新增」，切换后的高亮由 app.js 管理 #}
     <button type="button"
-            class="filter{% if view.enabled %} active{% endif %}"
+            class="filter{% if view.enabled and view.key == 'new_today' %} active{% endif %}"
             data-view="{{ view.key }}"
             {% if not view.enabled %}disabled title="数据攒够后再开"{% endif %}>
       {{ view.label }}{% if view.enabled %} ({{ view.count }}){% endif %}
