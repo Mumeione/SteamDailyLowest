@@ -82,7 +82,7 @@ class RenderPassTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run(self, **stats_overrides):
+    def _run(self, *, upcoming=None, **stats_overrides):
         stats_holder = {}
 
         def stats_of(info):
@@ -99,7 +99,7 @@ class RenderPassTest(unittest.TestCase):
             return stats
 
         info = render_pass(self.state, self.candidates, self.cfg, NOW, stats_of,
-                           announce_merges=False)
+                           announce_merges=False, upcoming=upcoming)
         payload = json.loads(
             (self.out / "data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
         )
@@ -154,12 +154,37 @@ class RenderPassTest(unittest.TestCase):
         self.assertNotIn("criteria-box", html)
         self.assertEqual(payload["page_size"]["breakpoint"], 768)
 
+    def test_upcoming_view_renders_separately(self):
+        """「即将过期」视图：独立进 view_groups，按钮 count 对应，暂不带比价。"""
+        expiring = deal("g-expiring", 444, 90, "Expiring Game")
+        expiring["expiry"] = "2026-09-23T10:00:00+08:00"  # NOW + 18h → 48h 窗口内
+        self.state.set_meta("g-expiring", 444, {"score": 85, "count": 5000}, NOW)
+        info, payload = self._run(upcoming=[expiring])
+
+        groups = payload["view_groups"]["upcoming"]
+        items = [i for g in groups for i in g["items"]]
+        self.assertEqual([i["game_id"] for i in items], ["g-expiring"])
+        self.assertEqual(info["upcoming_shown"], 1)
+        upcoming_view = next(v for v in payload["views"] if v["key"] == "upcoming")
+        self.assertTrue(upcoming_view["enabled"])
+        self.assertEqual(upcoming_view["count"], 1)
+        # 比价数据由 enrich 阶段填（本测试不跑 enrich）→ 详情区由前端回落单栏
+        self.assertEqual(items[0]["compare"], [])
+
+    def test_upcoming_view_absent_when_not_produced(self):
+        """不传 upcoming 时 payload 不带 view_groups（旧产物兼容口径）。"""
+        _, payload = self._run()
+        self.assertEqual(payload["view_groups"], {})
+        upcoming_view = next(v for v in payload["views"] if v["key"] == "upcoming")
+        self.assertTrue(upcoming_view["enabled"])
+        self.assertEqual(upcoming_view["count"], 0)
+
     def test_overview_renders_as_stat_boxes(self):
         """批 F：顶部概览是多个独立小框（窄屏自动换行），不再是并排大框。"""
         self._run()
         html = (self.out / "index.html").read_text(encoding="utf-8")
         self.assertIn("stat-box", html)
-        self.assertIn("今日新增 Steam 史低", html)
+        self.assertIn("今日列表新增", html)
         self.assertNotIn("top-row", html)
 
     def test_pending_group_when_details_missing(self):

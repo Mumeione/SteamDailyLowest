@@ -413,7 +413,7 @@
     ]);
     var metaBox = el("span", { class: "group-meta" }, [
       el("span", { class: "count", text: group.count + " 条" }),
-      data.groups.length > 1 ? lowPointsNode(group.items, true) : null
+      groupsForView(currentView).length > 1 ? lowPointsNode(group.items, true) : null
     ]);
     var head = el("div", { class: "group-head" }, [titleBox, metaBox]);
     var section = el("section", { class: "group" }, [head, toolsBox, cardsBox, pagerBox]);
@@ -459,6 +459,61 @@
     return null;
   }
 
+  // ----------------------------------------------------------------
+  // 视图切换（2026-09-27「即将过期」上线）：当日新增走 data.groups，
+  // 其余视图走 data.view_groups[key]。切视图 = 清空注册表重建列表；
+  // 排序 / 筛选 / 页码状态随重建一起清零（视图之间互不干扰，行为可预期）。
+  // ----------------------------------------------------------------
+  var currentView = "new_today";
+  var EMPTY_TEXTS = {
+    new_today: "今天没有符合条件的史低新增。",
+    upcoming: "未来 48 小时内没有到期的史低。"
+  };
+  var viewButtons = Array.prototype.slice.call(
+    document.querySelectorAll("#filters [data-view]")
+  );
+
+  function groupsForView(key) {
+    if (key === "new_today") return data.groups || [];
+    return (data.view_groups && data.view_groups[key]) || [];
+  }
+
+  function renderListView() {
+    var groups = groupsForView(currentView);
+    pages = {};
+    groupOrder.length = 0;
+    groupsByKey = {};
+    sectionsByKey = {};
+    renderersByKey = {};
+    activeGroupKey = null;
+    listBox.textContent = "";
+    groups.forEach(function (group) {
+      listBox.appendChild(buildGroup(group));
+    });
+    var empty = document.getElementById("empty");
+    empty.hidden = !!groups.length;
+    if (!groups.length) {
+      empty.textContent = EMPTY_TEXTS[currentView] || EMPTY_TEXTS.new_today;
+    }
+  }
+
+  function switchView(key) {
+    if (key === currentView) return;
+    currentView = key;
+    viewButtons.forEach(function (btn) {
+      btn.classList.toggle("active", btn.getAttribute("data-view") === key);
+    });
+    renderListView();
+    scrollListTop(false);
+  }
+
+  viewButtons.forEach(function (btn) {
+    if (btn.disabled) return;
+    btn.addEventListener("click", function () {
+      switchView(btn.getAttribute("data-view"));
+    });
+  });
+
   document.addEventListener("keydown", function (event) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     var focused = document.activeElement;
@@ -477,12 +532,7 @@
   });
 
   var listBox = document.getElementById("list");
-  data.groups.forEach(function (group) {
-    listBox.appendChild(buildGroup(group));
-  });
-  if (!data.groups.length) {
-    document.getElementById("empty").hidden = false;
-  }
+  renderListView();
 
   // 断点变化（旋转屏幕 / 改窗口宽度）时重算每页条数并重画，从第 1 页开始。
   function onBreakpointChange() {

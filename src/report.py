@@ -31,15 +31,30 @@ GROUP_COLLAPSED = {
     classify.TIER_PENDING: True,
 }
 
-#: 预留的其余视图（第一版不上线，数据先攒库）
+#: 视图开关（§7.2）。
 #: 批 F2：「已过期」已删除 —— 折扣过期后毫无价值（用户：过期折扣犹如砒霜），
 #: 不配占一个分类按钮的位置。相关数据仍照常入库，只是不上页面。
+#: 2026-09-27：「即将过期」上线（48h 窗口，``upcoming_expiry_hours``）——
+#: 数据走 ``payload["view_groups"]["upcoming"]``，与当日新增的 ``groups`` 并列；
+#: 「本周 / 折扣中」仍未上线，数据照常攒库。
+#: 即将过期卡片同样带跨区比价：走 ``appid|expiry`` 暂存（同一折扣期内不重拉），
+#: 当日新增与 upcoming 的 appid 合并去重后批量拉取。
 VIEWS = [
     {"key": "new_today", "label": "当日新增", "enabled": True},
     {"key": "week", "label": "本周(14天)", "enabled": False},
     {"key": "active", "label": "折扣中", "enabled": False},
-    {"key": "upcoming", "label": "即将过期", "enabled": False},
+    {"key": "upcoming", "label": "即将过期", "enabled": True},
 ]
+
+#: 各视图「进列表条数」的取数来源（payload 里的对应集合）。
+#: 新视图上线时在这里登记 —— render() 据此给按钮填 count。
+VIEW_COUNT_SOURCES = {"new_today": "items", "upcoming": "upcoming_items"}
+
+#: 「剩 X 天」的凌晨宽容阈值（北京时间的整点小时）：local expiry 落在
+#: 00:00~02:59 的折扣按「前一天深夜收摊」计天数。Steam 折扣的全球统一
+#: 结束时刻换算到北京是凌晨 1~2 点；03:00 起主跑（03:14）已进入新的一天，
+#: 之后的过期时刻按正常日历天算（用户 2026-09-27 定案，6:00 容差过大弃用）。
+EARLY_MORNING_EXPIRY_HOUR = 3
 
 
 def group_specs(cfg: dict) -> list[dict]:
@@ -167,11 +182,18 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
     low_class = classify.steam_low_class(entry, now.tzinfo)
     # 「剩 X 天」按**日期差**算（10-02 结束、今天 09-24 → 剩 8 天），不用小时差：
     # 用户要看的是「还剩几个日历天」这种粗粒度信息，精确时刻放在详情里（批 E spec E2）
+    # 2026-09-27 追加凌晨宽容：Steam 折扣全球统一收摊（夏令时北京 01:00 / 冬令时 02:00），
+    # 明天凌晨 3 点前过期的折扣，买家语义上就是「今天结束」——多出的那几个小时可忽略
+    # （用户定案），直接按前一天结束计天数，避免出现「还剩 1 天」其实是今晚就收的误导。
     days_left = None
     if expiry_dt is not None:
-        days_left = max(0, (expiry_dt.astimezone(now.tzinfo).date() - now.date()).days)
+        local_expiry = expiry_dt.astimezone(now.tzinfo)
+        days_left = (local_expiry.date() - now.date()).days
+        if local_expiry.hour < EARLY_MORNING_EXPIRY_HOUR:
+            days_left -= 1
+        days_left = max(0, days_left)
     # §3.6 史低天数（「距上次史低」那一行）：new = 这次就是新纪录（没有具体日期）；
-    # tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 game_meta.last_low_at）。
+    # tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 low_time_cache）。
     # 主文本只放天数保证单行（日期太长会把整行挤成两排），具体日期由
     # 前端悬停/点按显示（last_low_date）。取不到就不渲染这一行（JS 对空值自动跳过），不猜。
     last_low_date = None
@@ -257,8 +279,14 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
 
 
 def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
-           *, fx: dict | None = None, steam: dict | None = None) -> dict:
-    """写出一整套静态文件，返回产出路径。"""
+           *, fx: dict | None = None, steam: dict | None = None,
+           upcoming_items: list[dict] | None = None) -> dict:
+    """写出一整套静态文件，返回产出路径。
+
+    ``upcoming_items``：「即将过期」视图已进列表的卡片数据（调用方先跑完同一条
+    分档管线再传进来）；``None`` 表示本轮不产出该视图（payload 不带 ``view_groups``，
+    前端按钮点了也是空态）。
+    """
     output_dir = Path(cfg["output_dir"])
     if not output_dir.is_absolute():
         output_dir = ROOT / output_dir
@@ -270,10 +298,15 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
 
     version = str(int(now.timestamp()))
     groups = build_groups(items, cfg)
+    upcoming_groups = (
+        build_groups(upcoming_items, cfg) if upcoming_items is not None else None
+    )
+    # 视图按钮的 count：按 key 从对应集合取数（来源登记在 VIEW_COUNT_SOURCES）
+    view_counts = {"items": len(items), "upcoming_items": len(upcoming_items or [])}
     views = []
     for view in VIEWS:
         item = dict(view)
-        item["count"] = len(items) if view["enabled"] else None
+        item["count"] = view_counts.get(VIEW_COUNT_SOURCES[view["key"]]) if view["enabled"] else None
         views.append(item)
 
     # 批 E spec E4：概览的「史低构成」色点 —— 直接数 cards，
@@ -293,6 +326,8 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "low_points": low_points,
         "views": views,
         "groups": groups,
+        #: 即将过期等辅助视图的分组数据（key 与 VIEWS 对应；当日新增走顶层 groups）
+        "view_groups": {"upcoming": upcoming_groups} if upcoming_groups is not None else {},
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
         #: 断点必须与 app.css 的 @media 一致，否则「布局按手机、每页按桌面」会错位
@@ -301,7 +336,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
             "desktop": int(cfg.get("page_size_desktop", 20)),
             "breakpoint": int(cfg.get("mobile_breakpoint_px", 768)),
         },
-        "notice": "第一版仅上线「当日新增」视图，其余视图的数据先攒库（见 DEVELOPMENT.md §1.1）",
+        "notice": "「即将过期」= 48 小时内到期的史低，比价数据随折扣期暂存；其余视图的数据继续攒库",
     }
 
     data_js = "window.REPORT_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n"

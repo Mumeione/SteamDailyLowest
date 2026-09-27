@@ -144,6 +144,73 @@ class StateTest(unittest.TestCase):
         self.assertEqual(len(self.state.run_log), 30)
         self.assertEqual(self.state.run_log[0]["run_at"], "5")
 
+    # ------------------------------------------------------------------
+    # 比价缓存（2026-09-27 方案 B）：appid|expiry 键，同一折扣期内不重拉
+    # ------------------------------------------------------------------
+    def test_compare_cache_roundtrip(self):
+        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
+        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
+        cached = self.state.compare_cached(111, "2026-09-28T19:00:00+02:00")
+        self.assertEqual(cached[0]["cc"], "UA")
+        self.assertEqual(cached[0]["final"], 4500)
+
+    def test_compare_cache_only_keeps_raw_fields(self):
+        """缓存只存原币种数据；cny_minor/diff_pct 依赖当天汇率，不能进缓存。"""
+        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500,
+                 "cny_minor": 674, "diff_pct": -22}]
+        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
+        self.state.save(NOW)
+        cached = State(self.path, tz=TZ).load().compare_cached(111, "2026-09-28T19:00:00+02:00")
+        self.assertNotIn("cny_minor", cached[0])
+        self.assertNotIn("diff_pct", cached[0])
+        self.assertEqual(cached[0]["final"], 4500)
+
+    def test_compare_cache_empty_rows_not_stored(self):
+        """拉取失败（空 rows）不落缓存 —— 下轮自然重试，宁可留空不猜。"""
+        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", [], NOW)
+        self.assertIsNone(self.state.compare_cached(111, "2026-09-28T19:00:00+02:00"))
+
+    def test_compare_cache_expiry_is_part_of_key(self):
+        """同一游戏新折扣（expiry 变了）不算命中 —— 旧折扣价不能串到新折扣上。"""
+        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
+        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
+        self.assertIsNone(self.state.compare_cached(111, "2026-10-28T19:00:00+02:00"))
+        self.assertIsNone(self.state.compare_cached(222, "2026-09-28T19:00:00+02:00"))
+
+    def test_cleanup_expired_drops_stale_compare_cache(self):
+        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
+        self.state.set_compare(111, (NOW - timedelta(days=10)).isoformat(), rows, NOW)
+        self.state.set_compare(222, (NOW - timedelta(days=3)).isoformat(), rows, NOW)
+        self.state.cleanup_expired(NOW, retention_days=7)
+        self.assertIsNone(self.state.compare_cached(111, (NOW - timedelta(days=10)).isoformat()))
+        self.assertIsNotNone(self.state.compare_cached(222, (NOW - timedelta(days=3)).isoformat()))
+
+    # ------------------------------------------------------------------
+    # 上次史低时间（2026-09-27 起为折扣期暂存，键 game_id|expiry）
+    # ------------------------------------------------------------------
+    def test_low_time_cache_roundtrip(self):
+        expiry = "2026-09-28T19:00:00+02:00"
+        self.state.set_last_low_at("uuid-1", expiry, "2026-06-01T12:00:00+02:00")
+        self.assertEqual(self.state.last_low_at("uuid-1", expiry),
+                         "2026-06-01T12:00:00+02:00")
+        # expiry 是键的一部分：同一游戏的新折扣不继承旧值
+        self.assertIsNone(self.state.last_low_at("uuid-1", "2026-10-28T19:00:00+02:00"))
+
+    def test_low_time_cache_cleanup_with_seen_deal(self):
+        expiry_old = (NOW - timedelta(days=10)).isoformat()
+        expiry_keep = (NOW - timedelta(days=3)).isoformat()
+        self.state.set_last_low_at("uuid-old", expiry_old, "ts-old")
+        self.state.set_last_low_at("uuid-keep", expiry_keep, "ts-keep")
+        self.state.cleanup_expired(NOW, retention_days=7)
+        self.assertIsNone(self.state.last_low_at("uuid-old", expiry_old))
+        self.assertEqual(self.state.last_low_at("uuid-keep", expiry_keep), "ts-keep")
+
+    def test_old_meta_last_low_at_no_longer_read(self):
+        """game_meta 里的旧 last_low_at 存量字段不再被读取（改走折扣期暂存）。"""
+        self.state.set_meta("uuid-1", 999, {"score": 80, "count": 500}, NOW)
+        self.state.game_meta["uuid-1"]["last_low_at"] = "2026-01-01T00:00:00+00:00"
+        self.assertIsNone(self.state.last_low_at("uuid-1", "2026-09-28T19:00:00+02:00"))
+
     def test_save_load_roundtrip(self):
         self.state.set_meta("uuid-1", 999, {"score": 70, "count": 100}, NOW)
         self.state.record_seen(entry(), NOW)

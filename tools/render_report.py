@@ -54,6 +54,17 @@ def pick_today_from_state(state: State, tz, today) -> list[dict]:
     return picked
 
 
+def pick_upcoming_from_state(state: State, now: datetime, cfg: dict) -> list[dict]:
+    """从状态库重建「即将过期」候选（与 run.py 的 hist_low 口径一致：
+    折扣没结束就必然还在当轮史低列表里；本工具不发请求，只能翻 seen_deal）。"""
+    picked: list[dict] = []
+    for entry in state.seen_deal.values():
+        item = dict(entry)
+        if classify.in_view("upcoming", item, now, cfg):
+            picked.append(item)
+    return picked
+
+
 def load_fx_cache_only(cfg: dict, today: str) -> dict | None:
     """只读当天的汇率缓存，不发请求。"""
     cache_path = Path(cfg.get("fx_cache_path") or "data/fx_cache.json")
@@ -142,7 +153,9 @@ def main(argv: list[str] | None = None) -> int:
 
     state = State(resolve_path(cfg, "state_path"), tz=tz).load()
     candidates = pick_today_from_state(state, tz, today)
-    log(f"当日新增候选（从状态库重建）：{len(candidates)} 条")
+    upcoming = pick_upcoming_from_state(state, now, cfg)
+    log(f"当日新增候选（从状态库重建）：{len(candidates)} 条；"
+        f"即将过期候选：{len(upcoming)} 条")
     if not candidates:
         log("状态库里没有今天的条目 —— 先正常跑一次 run.py，再改报表才有东西可渲染。")
         return 1
@@ -180,10 +193,13 @@ def main(argv: list[str] | None = None) -> int:
         return build
 
     info = render_pass(state, candidates, cfg, now, stats_of(0, backlog),
-                       announce_merges=False, enrich_hook=None, fx=fx)
+                       announce_merges=False, enrich_hook=None, fx=fx,
+                       upcoming=upcoming)
     grafted = graft_compare(output_dir, old_compare, log)
     log(f"测试报表已渲染：进列表 {info['shown']} 条（分档 {info['tier']}）；"
-        f"比价行回收 {grafted} 条（其余为空，属预期）")
+        f"即将过期进列表 {info['upcoming_shown']} 条；"
+        f"比价行回收 {grafted} 条（本工具不发请求，比价只回收自旧产物/缓存；"
+        f"即将过期的比价待正式跑写入 low_time/compare 暂存后才有）")
     log(f"  index.html : {info['paths']['index']}")
     log(f"  data.js    : {info['paths']['data_js']}")
     return 0

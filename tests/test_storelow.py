@@ -93,16 +93,34 @@ class FetchLastLowTimes(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_writes_state_and_counts(self):
-        candidates = [{"game_id": "uuid-a", "title": "A"},
+        candidates = [{"game_id": "uuid-a", "title": "A",
+                       "expiry": "2026-09-28T19:00:00+02:00"},
                       {"game_id": "uuid-b", "title": "B"}]
         client = SimpleNamespace(
             fetch_storelow=lambda country, ids: {"uuid-a": "2021-06-24T21:52:22+02:00"})
         n = fetch_last_low_times(client, self.state, candidates,
                                  {"country": "CN", "fetch_last_low_time": True}, NOW)
         self.assertEqual(n, 1)
-        self.assertEqual(self.state.meta("uuid-a")["last_low_at"],
+        # 2026-09-27 起写折扣期暂存（game_id|expiry），不再写 game_meta
+        self.assertEqual(self.state.last_low_at("uuid-a", "2026-09-28T19:00:00+02:00"),
                          "2021-06-24T21:52:22+02:00")
-        self.assertIsNone(self.state.meta("uuid-b"))
+        self.assertIsNone(self.state.last_low_at("uuid-b", None))
+        self.assertNotIn("last_low_at", self.state.meta("uuid-a") or {})
+
+    def test_multi_version_discounts_share_the_timestamp(self):
+        """同一游戏多版本折扣（不同 expiry）各折扣期都落一份暂存。"""
+        candidates = [
+            {"game_id": "uuid-a", "expiry": "2026-09-28T19:00:00+02:00"},
+            {"game_id": "uuid-a", "expiry": "2026-09-30T19:00:00+02:00"},
+        ]
+        client = SimpleNamespace(
+            fetch_storelow=lambda country, ids: {"uuid-a": "2021-06-24T21:52:22+02:00"})
+        fetch_last_low_times(client, self.state, candidates,
+                             {"country": "CN", "fetch_last_low_time": True}, NOW)
+        self.assertEqual(self.state.last_low_at("uuid-a", "2026-09-28T19:00:00+02:00"),
+                         "2021-06-24T21:52:22+02:00")
+        self.assertEqual(self.state.last_low_at("uuid-a", "2026-09-30T19:00:00+02:00"),
+                         "2021-06-24T21:52:22+02:00")
 
     def test_disabled_or_empty_noop(self):
         client = SimpleNamespace(fetch_storelow=lambda *a, **k: self.fail("不应发请求"))
