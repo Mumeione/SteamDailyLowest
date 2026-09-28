@@ -2,7 +2,7 @@
 """状态库（对应 docs/DEVELOPMENT.md §5）。
 
 单个滚动 JSON，结构从一开始就按完整版写（第一版不做简化，避免以后迁移）。
-本模块是**唯一碰磁盘的模块**（§6 职责边界）。
+本模块负责状态库落盘（§6 职责边界；快照导出见 ``snapshot.py``，同为原子写）。
 """
 
 from __future__ import annotations

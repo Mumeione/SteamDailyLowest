@@ -171,6 +171,26 @@ class RenderPassTest(unittest.TestCase):
         # 比价数据由 enrich 阶段填（本测试不跑 enrich）→ 详情区由前端回落单栏
         self.assertEqual(items[0]["compare"], [])
 
+    def test_upcoming_shown_items_is_post_tier_deduped(self):
+        """upcoming_shown_items：已合并详情、已按 appid 去重、且**已过**口碑分档（is_shown）——
+        即「即将过期」视图实际进列表的条目，供 data 分支的 expiring.json 导出
+        （口径单点收敛在主仓库，消费方不再自建门槛；.scratch/expiring-snapshot/changelog.md v3）。
+        """
+        self.state.set_meta("g-good-v2", 111, {"score": 85, "count": 5000}, NOW)
+        self.state.set_meta("g-cold2", 444, {"score": 99, "count": 12}, NOW)
+        upcoming = [
+            deal("g-good", 111, 90, "Good Game"),
+            deal("g-good-v2", 111, 80, "Good Game V2"),   # 同 appid → 去重掉
+            deal("g-cold2", 444, 70, "Cold Two"),          # 冷门 → 分档滤掉，不进导出
+        ]
+        info, _ = self._run(upcoming=upcoming)
+        self.assertIsInstance(info["upcoming_shown_items"], list)
+        self.assertEqual([e["game_id"] for e in info["upcoming_shown_items"]],
+                         ["g-good"])
+        # upcoming_shown 必须保持数字（run_log / render_report 在用，防类型回归，changelog v3）
+        self.assertIsInstance(info["upcoming_shown"], int)
+        self.assertEqual(info["upcoming_shown"], 1)
+
     def test_upcoming_view_absent_when_not_produced(self):
         """不传 upcoming 时 payload 不带 view_groups（旧产物兼容口径）。"""
         _, payload = self._run()
