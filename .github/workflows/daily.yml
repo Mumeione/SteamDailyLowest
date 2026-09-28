@@ -144,10 +144,15 @@ jobs:
           mkdir -p data
           cp ../data/state.json data/state.json
           git add data/state.json
+          # 快照文件可能不存在（渲染阶段失败），存在才提交
+          if [ -f ../data/expiring.json ]; then
+            cp ../data/expiring.json data/expiring.json
+            git add data/expiring.json
+          fi
           if git diff --cached --quiet; then
             echo "状态无变化，跳过提交"
           else
-            git commit -m "state $(date -u +%F)"
+            git commit -m "state + snapshot $(date -u +%F)"
             git push
           fi
 

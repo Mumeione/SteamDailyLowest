@@ -958,11 +958,12 @@ SteamDailyLowest/
 │   ├── enrich.py                 编排：给「进列表」的条目补中文名 + 跨区比价
 │   ├── classify.py               史低分类、当日新增、多版本去重、§4.6 五个视图窗口
 │   ├── state.py                  滚动 JSON 的读写、幂等、精简落库、留存清理
+│   ├── snapshot.py               「即将过期」快照导出（data/expiring.json，跨仓库数据契约；含跨区比价与汇率）
 │   └── report.py                 Jinja2 渲染 index.html + data.js + latest.json
 ├── templates/
 │   ├── index.html.j2
 │   └── static/app.css, app.js
-├── data/                         gitignore（**只有 state.json 入库**）：state.json + probe/ 
+├── data/                         gitignore（**state.json + expiring.json 入库 data 分支**）：state.json + expiring.json + probe/
 ├── output/                       gitignore：生成物（Actions 里用 deploy-pages 发布）
 ├── tools/                        探针与验收脚本（保留供以后校准）
 └── .github/workflows/daily.yml
@@ -970,7 +971,8 @@ SteamDailyLowest/
 
 **职责边界**：`httpclient.py` / `itad.py` / `steam.py` / `fx.py` 只负责网络与解析；
 `classify.py` 是纯函数、无 IO，便于对判定规则写单元测试；
-`state.py` 是唯一碰磁盘的模块；`enrich.py` 是唯一同时用到 steam + fx + state 的地方。
+`state.py` 与 `snapshot.py` 是碰磁盘的模块（状态库 / 快照导出，均临时文件 + `os.replace` 原子写）；
+`enrich.py` 是唯一同时用到 steam + fx + state 的地方。
 
 > **为什么要有** **`httpclient.py`**：ITAD 与 Steam 都要「滑动窗口限流 + 五种响应分开处理」。
 > 早前 `itad.py` 自己实现了一份；加 `steam.py` 时若照抄一份，
@@ -1145,6 +1147,7 @@ SteamDailyLowest/
 | `stale_banner_hours`          | `36`                   | 超过多久显示陈旧横幅                                                                                                                               |
 | `timezone`                    | `"Asia/Shanghai"`      | 日期判定时区                                                                                                                                   |
 | `state_path`                  | `"data/state.json"`    | 状态文件                                                                                                                                     |
+| `expiring_snapshot_path`      | `"data/expiring.json"` | 「即将过期」快照导出（跨仓库数据契约，随 data 分支持久化，`.scratch/expiring-snapshot/spec.md`）                                                       |
 | `output_dir`                  | `"output"`             | 生成物目录                                                                                                                                    |
 | `request_pause_seconds`       | `0.3`                  | 请求间隔                                                                                                                                     |
 | `request_timeout_seconds`     | `25`                   | ITAD 请求超时                                                                                                                                |

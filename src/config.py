@@ -31,6 +31,7 @@ DEFAULTS: dict = {
     "stale_banner_hours": 36,
     "timezone": "Asia/Shanghai",
     "state_path": "data/state.json",
+    "expiring_snapshot_path": "data/expiring.json",
     "output_dir": "output",
     "request_pause_seconds": 0.3,
     "request_timeout_seconds": 25,

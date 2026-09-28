@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from src import classify, enrich, report
+from src import classify, enrich, report, snapshot
 from src.config import ConfigError, api_key, load_config, parse_rate_limit, resolve_path
 from src.httpclient import Blocked, HttpError
 from src.itad import (
@@ -371,9 +371,15 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
 
     # upcoming 的 None（不产出该视图）与 []（产出但为空）是两种不同语义，不能混
     has_upcoming = upcoming is not None
+    # upcoming_shown_items：已合并详情、已按 appid 去重、且已过口碑分档（is_shown）——
+    # 即「即将过期」视图里实际进列表的那批，供 data 分支的 expiring.json 导出。
+    # ⚠️ 与 info["upcoming_shown"]（数字）并存：后者被 run_log / render_report 使用，
+    # 不要把数字字段改成列表，否则 298 条数组会被塞进 state.json（changelog v3）。
+    upcoming_shown_items: list[dict] = []
     upcoming_shown: list[dict] = []
     if has_upcoming:
         _, _, upcoming_shown = build_view(upcoming)
+        upcoming_shown_items = upcoming_shown
 
     tier_counts = {tier: 0 for tier in classify.TIER_LABELS}
     for entry in kept:
@@ -385,6 +391,7 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
         "deduped": deduped,
         "kept": len(kept),
         "upcoming_shown": len(upcoming_shown),
+        "upcoming_shown_items": upcoming_shown_items,
     }
     if enrich_hook:
         info["steam"] = enrich_hook(shown, upcoming_shown, info)
@@ -624,6 +631,14 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"      ITAD 请求 {client.calls} 次（限流事件 {client.rate_limit_events}）· "
         f"Steam 请求 {steam_client.calls} 次（限流事件 {steam_client.rate_limit_events}）· "
         f"状态库已写入 {resolve_path(cfg, 'state_path')}")
+
+    # ---- 即将过期快照：给外部数据管道消费，落 data 分支 ----
+    # 放在 state.save 之后：快照是可重建的衍生品，其 IO 失败不能连累本轮攒库落盘（§12.1）
+    snapshot_path = resolve_path(cfg, "expiring_snapshot_path")
+    snapshot_count = snapshot.write_snapshot(
+        snapshot_path, final["upcoming_shown_items"], now, cfg, fx=fx_rates,
+    )
+    log(f"      即将过期快照已写出：{snapshot_count} 条 → {snapshot_path}")
     return 0
 
 
