@@ -38,6 +38,12 @@ def entry(**kwargs) -> dict:
         "start": "2026-09-25T07:00:00+02:00",
         "expiry": "2026-09-29T07:00:00+02:00",
         "reviews": {"score": 92, "count": 12345},
+        # v3 新增字段的来源：store_low_int 决定「是不是史低」，publishers/developers/stats
+        # 来自 game_meta（merge_details 已合进条目）；此处给 v3 之前的形态也不该崩
+        "store_low_int": 2990,
+        "publishers": [{"id": 369, "name": "SEGA"}],
+        "developers": [{"id": 366, "name": "ATLUS"}],
+        "stats": {"rank": 385, "waitlisted": 16847, "collected": 6601},
         # 以下字段不属于快照契约，写出时必须被裁掉
         "tier": "X",
         "last_low_at": "2026-09-20T10:00:00+08:00",
@@ -51,7 +57,7 @@ class BuildSnapshotTest(unittest.TestCase):
     def test_item_field_order_and_key_last(self):
         """字段契约：KEEP 顺序 + key 追加在末尾（键顺序即写出顺序，便于人工 diff）。"""
         snap = build_snapshot([entry()], NOW, {"upcoming_expiry_hours": 48})
-        self.assertEqual(snap["version"], 2)
+        self.assertEqual(snap["version"], 3)
         self.assertEqual(snap["count"], 1)
         self.assertEqual(snap["window_hours"], 48)
         # generated_at 必须带时区偏移（消费方判断数据新鲜度的唯一依据）
@@ -60,9 +66,10 @@ class BuildSnapshotTest(unittest.TestCase):
         self.assertEqual(
             list(item.keys()),
             [
-                "game_id", "title", "title_zh", "appid", "flag",
+                "game_id", "title", "title_zh", "appid", "flag", "low_class",
                 "price_int", "regular_int", "cut", "currency",
-                "start", "expiry", "reviews", "compare", "key",
+                "start", "expiry", "reviews", "publishers", "developers", "stats",
+                "compare", "key",
             ],
         )
         # 未过口碑分档的条目没有比价 → compare 为 null 是预期状态（消费方降级省略比价行）
@@ -70,6 +77,66 @@ class BuildSnapshotTest(unittest.TestCase):
         # 内部字段不得泄漏进快照（口径归主仓库，消费方不需要）
         self.assertNotIn("tier", item)
         self.assertNotIn("last_low_at", item)
+        self.assertNotIn("store_low_int", item)
+
+    def test_low_class_is_steam_scoped_not_flag(self):
+        """v3 核心：low_class 用 Steam 口径，与 ITAD 的 flag 是两套东西。
+
+        `flag="H"`（全网曾到过该价）但 Steam 店内史低就是本次折扣创下的 → ``new``。
+        依据：店内史低记录时刻（``last_low_at``）与折扣开始时刻（``start``）重合。
+        """
+        # flag=N（全网首次）⇒ 必定 Steam 首次，不必比时间
+        snap = build_snapshot([entry(flag="N")], NOW, {})
+        self.assertEqual(snap["items"][0]["low_class"], "new")
+        # flag=H 但 last_low_at == start ⇒ Steam 口径仍是新史低
+        snap = build_snapshot(
+            [entry(flag="H", last_low_at="2026-09-25T07:00:00+02:00")], NOW, {})
+        self.assertEqual(snap["items"][0]["low_class"], "new")
+        # flag=H 且上次史低是半年前 ⇒ 平史低
+        snap = build_snapshot(
+            [entry(flag="H", last_low_at="2026-03-01T07:00:00+02:00")], NOW, {})
+        self.assertEqual(snap["items"][0]["low_class"], "tie")
+        # storeLow 缺失 ⇒ 如实标 unknown（不静默当「不是史低」，§10）
+        snap = build_snapshot([entry(store_low_int=None, flag=None)], NOW, {})
+        self.assertEqual(snap["items"][0]["low_class"], "unknown")
+        # storeLow 在而 flag 缺失/非法（classify 返回 None 的异常形态）⇒ 也收敛成
+        # unknown —— 契约是三值域，快照里不出现 null（code-review 2026-09-30）
+        snap = build_snapshot([entry(flag=None)], NOW, {})
+        self.assertEqual(snap["items"][0]["low_class"], "unknown")
+        snap = build_snapshot([entry(flag="bogus")], NOW, {})
+        self.assertEqual(snap["items"][0]["low_class"], "unknown")
+
+    def test_low_class_tz_falls_back_to_cfg(self):
+        """``now`` 失去 tzinfo 时按计划书回落 ``classify.zone(cfg["timezone"])``。
+
+        构造让结果依赖时区解释：start = 2026-09-24T16:00Z；
+        last_low_at 无偏移 ``2026-09-25T18:00:00`` —— 按 +08 解释距 start 18h（new），
+        按 UTC 解释 26h（tie）。24h 容差窗口两侧，用于钉死 tz 来源。
+        """
+        naive = datetime(2026, 9, 27, 3, 14, 7)
+        snap = build_snapshot(
+            [entry(flag="H", start="2026-09-24T16:00:00+00:00",
+                   last_low_at="2026-09-25T18:00:00")],
+            naive, {"timezone": "Asia/Shanghai"},
+        )
+        self.assertEqual(snap["items"][0]["low_class"], "new")
+
+    def test_party_lists_normalized_to_empty(self):
+        """publishers / developers 缺键或 null 都收敛成 []，消费方不用判 null。"""
+        snap = build_snapshot([entry(publishers=None, developers=None)], NOW, {})
+        item = snap["items"][0]
+        self.assertEqual(item["publishers"], [])
+        self.assertEqual(item["developers"], [])
+        # stats 保持原样：null = 还没回填到，是真信息，不能假装成 {}
+        snap = build_snapshot([entry(stats=None)], NOW, {})
+        self.assertIsNone(snap["items"][0]["stats"])
+        # 老快照（v2 形态）没有这三个键，也不该崩
+        old = entry()
+        for key in ("publishers", "developers", "stats"):
+            old.pop(key)
+        snap = build_snapshot([old], NOW, {})
+        self.assertEqual(snap["items"][0]["publishers"], [])
+        self.assertIsNone(snap["items"][0]["stats"])
 
     def test_key_is_deal_key_literal(self):
         """key = <game_id>|<price_int>|<expiry>（§5 契约，字面量断言防实现漂移）。"""

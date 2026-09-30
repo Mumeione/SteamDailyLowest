@@ -7,6 +7,10 @@
 口径边界：导出的是窗口内**已进列表**（``is_shown``）的条目（已合并详情、已按 appid
 去重、已过口碑分档）——口碑门槛就是本仓库的进列表口径，口径单点收敛在这里，
 消费方不再自建近似门槛（版本演化见 .scratch/expiring-snapshot/changelog.md）。
+
+**当前契约 `SNAPSHOT_VERSION = 3`**（2026-09-30）：在 v2 之上加了 ``low_class`` /
+``publishers`` / ``developers`` / ``stats`` 四个字段，供消费方做「Steam 口径新史低 +
+分位排序」选稿。**消费方必须按 `version` 分支处理**，不要硬编码 `== 3`。
 """
 
 from __future__ import annotations
@@ -19,17 +23,29 @@ from pathlib import Path
 
 from . import classify
 
-SNAPSHOT_VERSION = 2
+SNAPSHOT_VERSION = 3
 
 #: 导出字段（写出的键顺序即此顺序，便于人工 diff）。
 #: ``compare`` 来自 enrich 阶段、原样透传：输入已是进列表条目，理论上都该有比价，
 #: 个别为 null（某些区无售或拉取失败）—— 消费方降级省略比价行即可，不必过滤条目。
+#:
+#: v3（2026-09-30）新增四个字段，理由见 `.scratch/expiring-snapshot/v3-plan.md`：
+#: - ``low_class``：**Steam 口径**的史低分类（``new`` / ``tie`` / ``unknown``）。
+#:   ⚠️ 与 ``flag`` 是两套口径，别混用：``flag`` 是 ITAD 的**全商店**标记
+#:   （``N`` / ``H`` / ``S``），存在「Steam 店内首次到该价、但别家更早更便宜过」
+#:   因而被标成 H/S 的条目 —— 对只买 Steam 的读者那其实是新史低。
+#:   实测 2026-09-30：790 条里 ``flag=N`` 只有 63 条，而 ``low_class=="new"`` 有 190 条。
+#: - ``publishers`` / ``developers``：``[{"id", "name"}]``，来自 ITAD ``info/v2``
+#:   （与 reviews 同一个响应，**不新增请求**）。``id`` 是稳定标识，名字有变体。
+#: - ``stats``：``{rank, waitlisted, collected}``，同源。**允许 null 或部分缺**
+#:   —— 旧条目回填完成前就是 null。
 KEEP = (
     "game_id",
     "title",
     "title_zh",
     "appid",
     "flag",
+    "low_class",
     "price_int",
     "regular_int",
     "cut",
@@ -37,6 +53,9 @@ KEEP = (
     "start",
     "expiry",
     "reviews",
+    "publishers",
+    "developers",
+    "stats",
     "compare",
 )
 
@@ -62,10 +81,25 @@ def build_fx(fx: dict | None) -> dict | None:
 
 def build_snapshot(entries: list[dict], now: datetime, cfg: dict,
                    fx: dict | None = None) -> dict:
-    """把（已 merge_details + 已按 appid 去重 + 已过 is_shown 分档）的条目组装成快照。"""
+    """把（已 merge_details + 已按 appid 去重 + 已过 is_shown 分档）的条目组装成快照。
+
+    ``low_class`` 在这里**现算**（不落库）：输入条目已由 ``merge_details()`` 带上
+    ``last_low_at``，直接套 :func:`classify.steam_low_class` 即可 ——
+    与报表卡片（``report.build_card``）用的是同一个函数、同一份依据，不存在第二套口径。
+    时区按计划书取 ``classify.zone(cfg["timezone"])``，``now`` 失去 tzinfo 时也能兜住。
+    """
+    tz = now.tzinfo or classify.zone(cfg.get("timezone") or "Asia/Shanghai")
     items = []
     for entry in entries:
         item = {key: entry.get(key) for key in KEEP}
+        # 契约三值域（new/tie/unknown）：classify 返回 None 的只有「storeLow 在而
+        # flag 缺失/非法」的异常形态 —— 按既定口径（§10 如实标记）收敛为 unknown，
+        # 快照里不出现 null（code-review 2026-09-30 抓到的取值域漏洞）。
+        item["low_class"] = classify.steam_low_class(entry, tz) or "unknown"
+        # 两个厂商列表统一成 []（缺键 / null 都收敛），消费方不用判 null；
+        # ``stats`` 保持原样（null = 还没回填到，是真信息，不能假装成 {}）
+        item["publishers"] = item["publishers"] or []
+        item["developers"] = item["developers"] or []
         item["key"] = classify.deal_key(
             entry.get("game_id"), entry.get("price_int"), entry.get("expiry")
         )

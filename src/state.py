@@ -186,12 +186,50 @@ class State:
         entry = self.game_meta.get(game_id)
         return bool(entry and entry.get("appid"))
 
-    def set_meta(self, game_id: str, appid, reviews, now: datetime) -> None:
+    def set_meta(self, game_id: str, appid, reviews, now: datetime,
+                 publishers: list[dict] | None = None,
+                 developers: list[dict] | None = None,
+                 stats: dict | None = None) -> None:
+        """写入详情缓存。
+
+        2026-09-30 起多收 ``publishers`` / ``developers`` / ``stats``（快照 v3 需要）。
+        三条约束（改这里前先想清楚）：
+
+        - **只更新传进来的键**，``None`` 表示「本次没取到」→ 保留旧值，**不要清空**；
+          （空列表 ``[]`` 是「取到了，确实没有」→ 正常写入。）
+        - **不碰 ``fetched_at`` 的语义** —— 它只决定 ``reviews`` 的 TTL，
+          新字段不是 TTL 字段（和 ``title_zh`` / ``title_zh_at`` 同一套路）。
+        - ``game_meta`` 的条目允许**多代字段共存**：旧条目缺新字段是正常状态，
+          ``meta_valid()`` 不能因此判定「无效」而重取。
+        """
         entry = self.game_meta.get(game_id) or {}
         if appid:
             entry["appid"] = appid
         entry["reviews"] = reviews
         entry["fetched_at"] = now.isoformat(timespec="seconds")
+        self.game_meta[game_id] = entry
+        # 新字段的写入规则与回填完全一致 —— 复用 set_meta_extras，别再抄一份
+        # if-is-not-None（两处逻辑漂移过一次：code-review 2026-09-30）
+        self.set_meta_extras(game_id, publishers=publishers,
+                             developers=developers, stats=stats)
+
+    def set_meta_extras(self, game_id: str, *, publishers=None, developers=None,
+                        stats=None) -> None:
+        """只补 ``publishers`` / ``developers`` / ``stats``，**不碰 reviews 与 fetched_at**。
+
+        专供 ``tools/backfill_game_meta.py`` 一次性回填用 —— 回填时并不重新拿好评率，
+        若走 :meth:`set_meta` 会把 ``fetched_at`` 刷成今天、白白推迟 reviews 的 TTL 刷新。
+        传 ``None`` 的键一律跳过（保留旧值）。
+        """
+        if publishers is None and developers is None and stats is None:
+            return
+        entry = self.game_meta.get(game_id) or {}
+        if publishers is not None:
+            entry["publishers"] = publishers
+        if developers is not None:
+            entry["developers"] = developers
+        if stats is not None:
+            entry["stats"] = stats
         self.game_meta[game_id] = entry
 
     # ------------------------------------------------------------------

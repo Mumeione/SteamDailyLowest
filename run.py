@@ -259,7 +259,10 @@ def fetch_details(client: ItadClient, state: State, candidates: list[dict], cfg:
         if not info:
             log(f"[warn] 详情为空，标记「详情待补」：{entry.get('title')}")
             continue
-        state.set_meta(game_id, info.get("appid"), info.get("reviews"), now)
+        state.set_meta(game_id, info.get("appid"), info.get("reviews"), now,
+                       publishers=info.get("publishers"),
+                       developers=info.get("developers"),
+                       stats=info.get("stats"))
         fetched += 1
         if fetched % DETAIL_SAVE_EVERY == 0:
             state.save()  # 断点续传：中途失败下次只补缺的
@@ -323,6 +326,11 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         item = dict(entry)
         item["title_zh"] = meta.get("title_zh") if meta else None
         item["last_low_at"] = state.last_low_at(entry.get("game_id"), entry.get("expiry"))
+        # 厂商 / stats（快照 v3，2026-09-30）：同样来自 game_meta 的一等缓存字段。
+        # 旧条目尚无这些键 → 一律给 None / []，消费方（快照）不得因此判「异常」。
+        item["publishers"] = (meta or {}).get("publishers") or []
+        item["developers"] = (meta or {}).get("developers") or []
+        item["stats"] = (meta or {}).get("stats")
         if not meta or not meta.get("fetched_at"):
             item["appid"] = None
             item["reviews"] = None
