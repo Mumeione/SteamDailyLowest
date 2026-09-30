@@ -1,0 +1,4 @@
+# 文本文件统一：blob 存 LF，工作区换行由 core.autocrlf 决定（本机 = 检出 CRLF）。
+# 背景：src/itad.py 曾是全仓库唯一的混合换行文件，autocrlf 对混合 blob 不做安全
+# 转换，任何编辑都会让 diff 爆炸。二进制文件由 auto 检测自动跳过。
+* text=auto
