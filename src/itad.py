@@ -45,6 +45,28 @@ class ItadBlocked(Blocked, ItadError):
     """连续 403 —— 滥用封禁，中止本轮并告警。"""
 
 
+def _party_list(raw) -> list[dict]:
+    """把 ``info/v2`` 的 ``publishers`` / ``developers`` 收敛成 ``[{"id", "name"}]``。
+
+    ``id`` 是 ITAD 侧的稳定标识 —— **用它做「同厂商 / 同系列」判定，不要用名字**
+    （实测同一厂商有多种写法：``Ubisoft`` / ``Ubisoft Entertainment`` /
+    ``Ubisoft Montreal``；只有 id 是同一个）。
+
+    单项缺 ``name`` 时**保留**（``name`` 置空串）—— 消费方按 id 匹配，id 不能丢；
+    只有 ``id`` 和 ``name`` 都缺失的项才丢掉。``raw`` 缺键 / null 一律收敛成 ``[]``。
+    """
+    out: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        pid = item.get("id")
+        if not name and pid is None:
+            continue
+        out.append({"id": pid, "name": str(name) if name else ""})
+    return out
+
+
 def sweep_filter(sweep: str) -> dict | None:
     """把抓取口径翻译成 ``/deals/v2`` 的 ``filter`` 参数。
 
@@ -146,10 +168,18 @@ class ItadClient(BaseHttpClient):
         return items
 
     def fetch_info(self, game_id: str) -> dict | None:
-        """``GET /games/info/v2`` —— 一游戏一请求，返回 appid + Steam 好评率。
+        """``GET /games/info/v2`` —— 一游戏一请求，返回 appid + Steam 好评率 + 厂商 / stats。
 
         好评率**只取 ``source == "Steam"`` 那条**，并带上 ``count``（§2.1）。
         请求失败/数据不可用时返回 None，由调用方标记「详情待补」。
+
+        **2026-09-30 起顺带取 ``publishers`` / ``developers`` / ``stats``**（快照 v3 需要）：
+        这些字段本来就在同一个响应里（实测填充率 100%，52 条分层样本），
+        **不增加任何请求**；历史上没存，靠 ``tools/backfill_game_meta.py`` 一次性补齐。
+        每一项都可能缺（老游戏 / 特殊条目），缺就给空列表 / None，不编造。
+        ⚠️ ``stats`` **整体**缺失时返回 ``None``（而不是全 null 的 dict）——
+        ``set_meta`` 以 None 判「本次没取到 → 保留旧值」，全 null dict 会把
+        已回填的有效 stats 覆盖掉（code-review 2026-09-30 抓到的坑）。
         """
         data = self.request("GET", "/games/info/v2", params={"id": game_id})
         if not isinstance(data, dict):
@@ -164,10 +194,18 @@ class ItadClient(BaseHttpClient):
                 continue
             reviews = {"score": int(score), "count": int(entry.get("count") or 0)}
             break
+        stats_raw = data.get("stats")
         return {
             "appid": int(appid) if appid else None,
             "reviews": reviews,
             "type": data.get("type"),
+            "publishers": _party_list(data.get("publishers")),
+            "developers": _party_list(data.get("developers")),
+            "stats": {
+                "rank": stats_raw.get("rank"),
+                "waitlisted": stats_raw.get("waitlisted"),
+                "collected": stats_raw.get("collected"),
+            } if isinstance(stats_raw, dict) else None,
         }
 
     def fetch_storelow(self, country: str, game_ids: list[str],

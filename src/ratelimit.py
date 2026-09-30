@@ -84,6 +84,11 @@ class RateLimiter:
     def effective_min_interval(self) -> float:
         return min(self.min_interval * (2 ** self.slow_downs), self.max_interval)
 
+    def window_used(self) -> int:
+        """当前滑动窗口内已用的调用次数（自检用，如回填脚本打印「窗口 N/800」）。"""
+        self._trim(self._clock())
+        return len(self._times)
+
     def stats(self) -> dict:
         return {
             "name": self.name,

@@ -1,7 +1,11 @@
-# changelog：expiring.json 快照契约 v1 → v3
+# changelog：expiring.json 快照契约 v1 → v4
 
 > 版本演化的决策记录与实测数据。已并入本文件的原始交接文档（handoff-v1/v2/v2-review/v3）已删除；
 > 消费方用途相关的细节不在此记录（本仓库公开）。
+>
+> ⚠️ **两套版本号别搞混**：本文件的「v1/v2/v3/v4」是**契约改动的轮次**，
+> 快照里的 `SNAPSHOT_VERSION` 是**机器读的版本**。对应关系：
+> 轮次 v1→`version 1`、v2→`version 2`、v3→`version 2`（只改口径与文件名）、**v4→`version 3`**。
 
 ## v1（2026-09-27）：快照导出
 
@@ -27,6 +31,52 @@
   应先查 enrich 日志再判实现问题。
 - **fx 方向的正确性靠实跑人工核对**（`rates["UAH"] ≈ 6.6`，见 0.15 即被倒转）——单测只能证明
   「透传不变」，不能证明源方向。2026-09-28 实跑核对通过（UAH=6.674）。
+
+## v4（2026-09-30）：加 Steam 口径史低分类与厂商 / 热度字段（`SNAPSHOT_VERSION` 2 → 3）
+
+**起因（消费方的真实痛点，有实测支撑）**：消费方要用 `flag == "N"` 判「新史低」，口径不对。
+
+- `flag` 是 ITAD 的**全商店**标记。存在「Steam 店内首次到该价、但别家更早更便宜过」
+  因而被标成 `H`/`S` 的条目 —— 对只买 Steam 的读者，那**就是**新史低。
+- 实测 2026-09-30（790 条）：`flag="N"` **63** 条，而 `steam_low_class() == "new"` **190** 条
+  → **127 条被错分**，含彩虹六号：围攻、FF7 重制、孤岛惊魂 6、全境封锁 2、沙丘：觉醒、
+  刺客信条：影、最后生还者2 重制。
+- 关键点：**这个判定早就在算**（`classify.steam_low_class()`，`report.build_card()` 在用），
+  只是 `KEEP` 没导出。所以本版**没有新逻辑**，纯粹是把它写出去。
+
+**同时加的三类字段**（都来自**已经在调**的 `GET /games/info/v2`，**零新增请求**）：
+
+- `publishers` / `developers`：`[{"id", "name"}]`，实测填充率 100%（52 条分层样本）。
+  消费方要做「同厂商 / 同系列」的知名度传递（例：P3R 靠 P5R），**用 id 判、别用名字**。
+- `stats`：`{rank, waitlisted, collected}`。`waitlisted`（愿望单）可作热度参考，
+  但已知**领域性偏低** —— 已拥有基数极大的游戏（R6S 这类）愿望单天然低，不能当 0 用。
+- **不进 `KEEP` 的**：`tags` / `releaseDate`（体积大、暂无用）、`last_low_at`
+  （消费方不该重算 `low_class`）。
+
+**实测/成本**：
+
+- 52 条分层样本填充率：developers / publishers / tags / stats / reviews **100%**，releaseDate 98%。
+- 体积：`state.json` 4.26 MB → ≈5.0 MB（每游戏 +≈150 B）；`expiring.json` 每条 +≈150 B。
+- 一次性回填 5047 条 `game_meta`：见 `spec.md` §6（**顺序跑约 2 小时，别按 min_interval 估**）。
+- **网页不展示这些字段**，`report.build_card()` 与前端**未改动**；口碑分档也**未改动**（用户裁决）。
+
+**踩坑记录**：
+
+- `low_class` 依赖 `store_low_int`（`low_kind()` 的门），而它**不在快照契约里** ——
+  在消费方「重算」`low_class` 是行不通的（这也是必须导出而不是导出原料的原因）。
+- `game_meta` 是**多代字段共存**的：旧条目缺新字段属正常，`meta_valid()` 不能因此重取；
+  `set_meta()` 只更新传进来的键，`None` = 「本次没取到」→ 保留旧值。
+- `fetch_info()` 响应缺 `stats` 时必须返回 **None**（不是全 null 的 dict）——
+  全 null dict 会绕过 `set_meta` 的保留旧值保护、把已回填的有效 stats 覆盖掉
+  （code-review 2026-09-30 抓到，`tests/test_itad_info.py` 钉住）。
+- `classify.steam_low_class()` 在「storeLow 在而 flag 缺失/非法」时返回 **None**，
+  快照层收敛为 `unknown` —— 契约是 new/tie/unknown 三值域，不写 null。
+- `_party_list` 单项缺 name：**保留**、name 置空串（消费方按 id 判同厂商，id 不能丢）；
+  id/name 全缺才丢。
+
+**落地验收（2026-09-30，code-review 后）**：162 单测全绿；评审修复 6 项
+（stats None 保护、low_class 三值域收敛、回填脚本判缺/落盘/窗口打印、set_meta 去重）。
+换行符归一化**不在本版内**，单独 chore 提交处理（见 `.scratch/expiring-snapshot/issues/01-itad-mixed-eol.md`）。
 
 ## v3（2026-09-28）：口径归位 + 契约改名
 
