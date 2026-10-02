@@ -130,7 +130,6 @@ def detail_targets(hist_low: list[dict], candidates: list[dict], state: State,
     cap = int(cfg.get("detail_new_today_cap", 0) or 0)
     if cap > 0 and len(targets) > cap:
         targets = targets[:cap]
-        info["capped_to"] = cap
     return targets, {
         "scope": scope,
         "budget": budget,
