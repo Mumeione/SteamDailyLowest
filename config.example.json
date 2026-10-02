@@ -33,7 +33,7 @@
   "reviews_empty_ttl_days": 3,
   "sweep_mode": "low_only",
   "detail_scope": "catalog",
-  "detail_daily_budget": 300,
+  "detail_daily_budget": 0,
   "prefetch_daily_budget": 300,
   "probe_timeout_seconds": 6,
   "fx_cache_path": "data/fx_cache.json",
