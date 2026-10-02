@@ -123,6 +123,14 @@ def detail_targets(hist_low: list[dict], candidates: list[dict], state: State,
                 continue
             backfill.append(entry)
     targets.extend(backfill)
+    # 秋促应急（2026-10-02）：大促首日「当日新增」可能上万（全场 timestamp 命中），
+    # 详情全抓会撞 ITAD 速率墙（min_interval + pause ≈ 0.6s/条 → 3 万条 ≈ 5h）。
+    # cap>0 时只抓前 N 条，其余按「详情待补」渲染（is_shown 含 pending，报表主体不受影响）；
+    # 次日起 timestamp 过期、当日新增回落，欠账由 catalog 预算 / prefetch 逐步补。
+    cap = int(cfg.get("detail_new_today_cap", 0) or 0)
+    if cap > 0 and len(targets) > cap:
+        targets = targets[:cap]
+        info["capped_to"] = cap
     return targets, {
         "scope": scope,
         "budget": budget,
