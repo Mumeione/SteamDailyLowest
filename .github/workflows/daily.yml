@@ -72,6 +72,8 @@ jobs:
           fi
 
   daily:
+    needs: prefetch   
+    # 串行化：daily 在 prefetch 回写完成后再 checkout，竞态根治
     needs: daily-guard
     # needs 的 job 因 if 为假被 skip 时，依赖它的 job 会被连带 skip（GitHub 规则）。
     # guard 的 if 只在补跑 cron 时为真，主跑/手动触发下 guard 必被跳过，
