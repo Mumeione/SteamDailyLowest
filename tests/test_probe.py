@@ -13,24 +13,20 @@ from run import run_probe
 
 
 class FakeSteamClient:
-    """按 appid 返回罐头数据的假 Steam 客户端（info + reviews 各记 1 次调用）。"""
+    """按 appid 返回罐头数据的假 Steam 客户端（info 记 1 次调用）。
 
-    def __init__(self, info_map=None, reviews_map=None):
+    好评率实时对照已随 `appreviews` 停用移除（run.run_probe）。
+    """
+
+    def __init__(self, info_map=None):
         self.info_map = info_map or {}
-        self.reviews_map = reviews_map or {}
         self.calls = 0
         self.asked_info = []
-        self.asked_reviews = []
 
     def info(self, appid, cc="CN"):
         self.calls += 1
         self.asked_info.append((appid, cc))
         return self.info_map.get(int(appid))
-
-    def reviews(self, appid):
-        self.calls += 1
-        self.asked_reviews.append(int(appid))
-        return self.reviews_map.get(int(appid))
 
 
 def make_state(tmp: Path, n_good: int = 5, n_pending: int = 1,
@@ -72,16 +68,15 @@ class ProbeTest(unittest.TestCase):
         self.cfg = {"timezone": "Asia/Shanghai", "country": "CN", "output_dir": str(self.out_dir)}
         self.state = make_state(self.tmp)
 
-    def fake_steam(self, name_shift=0, price_shift=0, score_shift=0):
-        info_map, reviews_map = {}, {}
+    def fake_steam(self, name_shift=0, price_shift=0):
+        info_map = {}
         for i in range(5):
             info_map[100 + i] = {
                 "name": f"游戏{i}" if name_shift == 0 else f"游戏{i}X",
                 "final": 1000 + i + price_shift,
                 "discount_percent": 50,
             }
-            reviews_map[100 + i] = {"score": 80 + score_shift, "count": 1001}
-        return FakeSteamClient(info_map, reviews_map)
+        return FakeSteamClient(info_map)
 
     def report_lines(self):
         return (self.out_dir / "probe_report.txt").read_text(encoding="utf-8").splitlines()
@@ -96,18 +91,18 @@ class ProbeTest(unittest.TestCase):
         self.assertTrue(any("抽样 3 个" in line for line in lines))
 
     def test_requests_shape(self):
-        """每个抽查对象恰好 2 次 Steam 请求（info + reviews），且走了国区 cc。"""
+        """每个抽查对象恰好 1 次 Steam 请求（appreviews 已停用），且走了国区 cc。"""
         steam = self.fake_steam()
         run_probe(self.cfg, state=self.state, steam=steam, log=lambda m: None)
-        self.assertEqual(steam.calls, 6)
+        self.assertEqual(steam.calls, 3)
         self.assertTrue(all(cc == "CN" for _, cc in steam.asked_info))
 
     def test_mismatch_counted(self):
-        """名称 / 价格 / 好评率三路不一致各计 1 处。"""
-        steam = self.fake_steam(name_shift=1, price_shift=100, score_shift=5)
+        """名称 / 价格两路不一致各计 1 处（好评率实时对照已移除）。"""
+        steam = self.fake_steam(name_shift=1, price_shift=100)
         run_probe(self.cfg, state=self.state, steam=steam, log=lambda m: None)
         lines = self.report_lines()
-        self.assertTrue(any("9 处需人工确认" in line for line in lines))
+        self.assertTrue(any("6 处需人工确认" in line for line in lines))
         self.assertTrue(any("不一致" in line for line in lines))
 
     def test_no_cached_title_is_ok(self):

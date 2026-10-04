@@ -39,6 +39,7 @@ from src.itad import (
 from src.ratelimit import RateLimiter
 from src.state import State
 from src.steam import SteamClient
+from src.steam_browse import SteamBrowseClient
 
 ROOT = Path(__file__).resolve().parent
 DETAIL_SAVE_EVERY = 20
@@ -90,44 +91,50 @@ def build_steam_client(cfg: dict) -> SteamClient:
     )
 
 
-def detail_targets(hist_low: list[dict], candidates: list[dict], state: State,
+def detail_targets(candidates: list[dict], state: State,
                    cfg: dict, now: datetime) -> tuple[list[dict], dict]:
-    """决定这一轮要给哪些游戏抓详情。
+    """决定这一轮要给哪些游戏抓详情（重构 S2：**派生式欠账**，spec §3.2 决策 5/6）。
 
-    两段（用户要求「只跑符合要求的史低目录、别每轮全跑一遍」）：
+        欠账 = seen_deal 的 game_id 集合 − 有有效详情的集合（meta_valid）
+        目标 = 当日新增 ∪ 欠账      —— **无条数上限**（新链路 3 万条 ≈ 120 次请求）
 
-    1. **当日新增 → 全部抓**（本轮报表的核心，必须完整）
-    2. **目录里的其它史低 → 按每日预算增量补**（`detail_scope=catalog`）
-       优先级：折扣力度大的先补（最可能被人看到）；命中缓存的直接跳过。
-       `detail_scope=new_today` 或 `detail_daily_budget=0` 时退化成旧行为。
-
-    这里的「目录」= 通过筛选链的史低（本体 + 付费 + `flag != None`），与报表口径一致。
-    **不额外用服务端 `steamCount` 再筛一道** —— 那会静默丢掉「ITAD 缺评测数据、
-    但 Steam 上评价很多」的游戏，正是 §3.5 要避免的事（详见 §12.1）。
+    - **不建队列文件**：欠账每轮从状态库现算派生；折扣结束 7 天后
+      `seen_deal` 条目被留存清理，欠账集合自动收缩（§5）。
+    - 「有效」沿用 :meth:`State.meta_valid`（reviews 7 天 TTL / 空评测 3 天 TTL）
+      —— 比 spec 公式「有 appid 且有 reviews」多算一层 TTL，否则**ITAD 本就没有
+      Steam 评测**的游戏（reviews 永远为空）会变成永远清不掉的假欠账。
+    - 近期失败的条目按 ``reviews_empty_ttl_days`` 天数冷却排除
+      （失败标记见 :meth:`State.set_detail_failed`），避免每轮重试坏条目。
+      **当日新增不冷却** —— 报表核心，每轮必须重试。
+    - 欠账排序：新史低（``low_kind == "N"``）优先 → 折扣力度降序（分层字典序的
+      详情管线版，spec §3.3 决策 8）；同 game_id 多版本折扣取最近出现的为代表。
     """
-    scope = (cfg.get("detail_scope") or "new_today").lower()
-    budget = int(cfg.get("detail_daily_budget", 0) or 0)
     ttl = int(cfg.get("reviews_ttl_days", 7))
     empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
 
-    targets = list(candidates)
-    backfill: list[dict] = []
-    if scope == "catalog" and budget > 0:
-        new_ids = {e.get("game_id") for e in candidates}
-        rest = [e for e in hist_low if e.get("game_id") not in new_ids]
-        rest.sort(key=lambda e: (-(int(e.get("cut") or 0)), e.get("expiry") or ""))
-        for entry in rest:
-            if len(backfill) >= budget:
-                break
-            if state.meta_valid(entry.get("game_id"), now, ttl, empty_ttl):
-                continue
-            backfill.append(entry)
-    targets.extend(backfill)
-    return targets, {
-        "scope": scope,
-        "budget": budget,
-        "new_today": len(candidates),
-        "backfill_chosen": len(backfill),
+    new_targets = [e for e in candidates
+                   if not state.meta_valid(e.get("game_id"), now, ttl, empty_ttl)]
+    new_ids = {e.get("game_id") for e in candidates}
+
+    latest: dict[str, dict] = {}
+    for entry in state.seen_deal.values():
+        gid = entry.get("game_id")
+        if not gid or gid in new_ids:
+            continue
+        prev = latest.get(gid)
+        if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
+            latest[gid] = entry
+    backlog = [
+        e for gid, e in latest.items()
+        if not state.meta_valid(gid, now, ttl, empty_ttl)
+        and not state.detail_recently_failed(gid, now, empty_ttl)
+    ]
+    backlog.sort(key=lambda e: (0 if e.get("low_kind") == "N" else 1,
+                                -(int(e.get("cut") or 0)), e.get("expiry") or ""))
+    return new_targets + backlog, {
+        "new_today": len(new_targets),
+        "backlog": len(backlog),
+        "total": len(new_targets) + len(backlog),
     }
 
 
@@ -238,35 +245,165 @@ def pick_new_today(hist_low: list[dict], tz, today, has_seen) -> tuple[list[dict
     return picked, by_reason
 
 
-def fetch_details(client: ItadClient, state: State, candidates: list[dict], cfg: dict, now: datetime) -> int:
-    """只抓「当日新增」的详情，缓存命中不发请求；按 uuid 逐条落盘（断点续传）。
+def build_steam_browse_client(cfg: dict) -> SteamBrowseClient:
+    """GetItems（api.steampowered.com）独立限流通道（重构 spec §3.1）。
 
-    是否发请求由 :meth:`State.meta_valid` 决定 —— 「抓过但没拿到 appid / 好评率」
-    的条目也按 ``reviews_empty_ttl_days`` 计 TTL，不再每轮重复请求。
+    与 store 域是否共用限流桶判定不了 → 新开一条窗口，最小间隔小得多
+    （实测 0.14~0.36s/次）；429/403 自动降速由底座策略保留。
+    """
+    calls, window = parse_rate_limit(cfg.get("steam_browse_rate_limit") or "150 / 300s",
+                                     default=(150, 300))
+    limiter = RateLimiter(
+        name="steam_browse",
+        max_calls=calls,
+        window_seconds=window,
+        min_interval=float(cfg.get("steam_browse_min_interval", 0.5)),
+    )
+    return SteamBrowseClient(
+        limiter=limiter,
+        timeout=float(cfg.get("request_timeout_seconds", 25)),
+        pause=float(cfg.get("request_pause_seconds", 0.3)),
+        log=log,
+    )
+
+
+def _write_browse_meta(state: State, game_id: str, meta, now: datetime) -> None:
+    """把一条 GetItems 的 :class:`~src.steam_browse.GameMeta` 写进 game_meta。
+
+    ⚠️ 厂商字段**只填空白条目、id 置 None（name-only）**：GetItems 的
+    ``creator_clan_account_id`` 与 ITAD 厂商 id **不同源**且实测 63% 条目缺失
+    （2026-10-04 对照探针），进不得倒排索引；已有 ITAD 口径厂商的存量一律不覆盖
+    （``stats`` 传 None 同理 —— GetItems 没有 rank/waitlisted，保留旧值）。
+    中文名是同源的 Steam 本地化标题，直接刷新（永久缓存）。
+    """
+    existing = state.meta(game_id) or {}
+    publishers = developers = None
+    if not existing.get("publishers") and meta.publishers:
+        publishers = [{"id": None, "name": p.get("name")} for p in meta.publishers]
+    if not existing.get("developers") and meta.developers:
+        developers = [{"id": None, "name": d.get("name")} for d in meta.developers]
+    state.set_meta(game_id, meta.appid, meta.reviews, now,
+                   publishers=publishers, developers=developers, stats=None)
+    if meta.name:
+        state.set_title_zh(game_id, meta.name.strip(), now)
+
+
+def fetch_details(client: ItadClient, state: State, targets: list[dict], cfg: dict,
+                  now: datetime, browse: SteamBrowseClient | None = None) -> dict:
+    """批量详情管线（重构 S2）：lookup 批映射 → GetItems 批量 → info/v2 降级。
+
+    目标由 :func:`detail_targets` 派生（当日新增 ∪ 欠账，无条数上限），这里只管抓：
+
+    1. 缺 appid 的 uuid → ``lookup/shop/61/id/v1`` 批量映射（免鉴权、不计额度），
+       命中的先写 :meth:`State.set_appid`（appid 永久缓存，断点续传）；
+    2. 有 appid 的 → ``GetItems`` 批量（250/批）：好评率 + 厂商名 + 中文名一次到手，
+       每批落盘一次；**连续 3 批失败即熔断**（GetItems 大概率整体失效，
+       别把墙钟耗在逐批重试上）；
+    3. 前两步拿不到的 → ``info/v2`` 逐条降级（完整 ITAD 口径），每轮上限
+       ``detail_fallback_budget``（默认 1000）—— 降级路径 1 请求/条，必须设界；
+       GetItems 正常时该路径平时为空。降级仍失败/为空的才写失败标记。
+
+    返回统计 dict（fetched / fallback_fetched / fallback_skipped），
+    ``fetched`` = 本轮新写入详情的条数（两跳 + 降级合计）。
+    Blocked（连续 403 滥用封禁）不降级、不上抛被吞 —— 照常中止本轮。
     """
     ttl = int(cfg.get("reviews_ttl_days", 7))
     empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
-    fetched = 0
-    for entry in candidates:
-        game_id = entry.get("game_id")
-        if state.meta_valid(game_id, now, ttl, empty_ttl):
-            continue
+    fallback_budget = max(0, int(cfg.get("detail_fallback_budget", 1000) or 0))
+    todo = [e for e in targets if e.get("game_id")
+            and not state.meta_valid(e.get("game_id"), now, ttl, empty_ttl)]
+    stats = {"fetched": 0, "fallback_fetched": 0, "fallback_skipped": 0}
+    if not todo:
+        return stats
+
+    # ---- 1) uuid → appid 批量映射（免费） ----
+    need_lookup = [e["game_id"] for e in todo if not state.has_appid(e["game_id"])]
+    if need_lookup:
         try:
-            info = client.fetch_info(game_id)
+            mapped = client.fetch_appid_batch(need_lookup)
+        except Blocked:
+            raise   # 滥用封禁：中止本轮（main 的 Blocked 处理），绝不降级硬扛
+        except ItadError as exc:
+            log(f"[warn] uuid→appid 批量映射失败（{len(need_lookup)} 条），"
+                f"本批全部转入 info/v2 降级：{exc}")
+            mapped = {}
+        for gid, appid in mapped.items():
+            state.set_appid(gid, appid)
+        log(f"      uuid→appid 映射：{len(mapped)}/{len(need_lookup)} 命中"
+            f"（lookup {len(need_lookup)} 条）")
+
+    # ---- 2) GetItems 批量（连续失败熔断） ----
+    with_appid = [e for e in todo if state.has_appid(e["game_id"])]
+    getitems_broken: list[dict] = []
+    disabled = browse is None
+    consecutive_failures = 0
+    batch_size = browse.batch_size if browse else 1
+    for start in range(0, len(with_appid), batch_size):
+        chunk = with_appid[start:start + batch_size]
+        if disabled:
+            getitems_broken.extend(chunk)
+            continue
+        appids = [int(state.meta(e["game_id"])["appid"]) for e in chunk]
+        try:
+            metas = browse.fetch(appids)
+        except Blocked:
+            raise   # 滥用封禁：中止本轮（main 的 Blocked 处理），绝不降级硬扛
+        except HttpError as exc:
+            log(f"[warn] GetItems 批量失败（{len(chunk)} 条），转入降级：{exc}")
+            getitems_broken.extend(chunk)
+            consecutive_failures += 1
+            if consecutive_failures >= 3 and not disabled:
+                disabled = True
+                log("[warn] GetItems 连续 3 批失败，本轮剩余批次不再重试，全部降级")
+            continue
+        consecutive_failures = 0
+        for entry in chunk:
+            appid = int(state.meta(entry["game_id"])["appid"])
+            meta = metas.get(appid)
+            if meta is None:
+                getitems_broken.append(entry)   # 无效 appid / 响应缺条
+                continue
+            _write_browse_meta(state, entry["game_id"], meta, now)
+            stats["fetched"] += 1
+        state.save(now)   # 断点续传：每批落盘
+
+    # ---- 3) info/v2 逐条降级（每轮上限 detail_fallback_budget） ----
+    lookup_missed = [e for e in todo if not state.has_appid(e["game_id"])]
+    fallback_pool: list[dict] = []
+    seen_gids: set[str] = set()
+    for entry in lookup_missed + getitems_broken:
+        gid = entry.get("game_id")
+        if gid and gid not in seen_gids:
+            seen_gids.add(gid)
+            fallback_pool.append(entry)
+    if len(fallback_pool) > fallback_budget:
+        stats["fallback_skipped"] = len(fallback_pool) - fallback_budget
+        log(f"[warn] info/v2 降级候选 {len(fallback_pool)} 条超出本轮预算 "
+            f"{fallback_budget}，其余留给下轮（派生欠账会自动重派）")
+    for entry in fallback_pool[:fallback_budget]:
+        gid = entry["game_id"]
+        try:
+            info = client.fetch_info(gid)
+        except Blocked:
+            raise   # 滥用封禁：中止本轮（main 的 Blocked 处理），绝不降级硬扛
         except ItadError as exc:
             log(f"[warn] 详情抓取失败，标记「详情待补」：{entry.get('title')}（{exc}）")
+            state.set_detail_failed(gid, now)
             continue
         if not info:
             log(f"[warn] 详情为空，标记「详情待补」：{entry.get('title')}")
+            state.set_detail_failed(gid, now)
             continue
-        state.set_meta(game_id, info.get("appid"), info.get("reviews"), now,
+        state.set_meta(gid, info.get("appid"), info.get("reviews"), now,
                        publishers=info.get("publishers"),
                        developers=info.get("developers"),
                        stats=info.get("stats"))
-        fetched += 1
-        if fetched % DETAIL_SAVE_EVERY == 0:
-            state.save()  # 断点续传：中途失败下次只补缺的
-    return fetched
+        stats["fetched"] += 1
+        stats["fallback_fetched"] += 1
+        if stats["fallback_fetched"] % DETAIL_SAVE_EVERY == 0:
+            state.save(now)   # 断点续传：中途失败下次只补缺的
+    state.save(now)
+    return stats
 
 
 def fetch_last_low_times(client: ItadClient, state: State, candidates: list[dict],
@@ -540,14 +677,14 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     state.save(now)  # ← 关键：先落盘，别让详情阶段的失败把这一轮的攒库一起带走
     log(f"      状态库已落盘（{len(hist_low)} 条已见记录）：随后即便详情全失败也不会丢")
 
-    # ---- 详情抓取目标：当日新增全部 + 目录内按预算增量补 ----
-    targets, target_info = detail_targets(hist_low, candidates, state, cfg, now)
-    log(f"      详情目标 {len(targets)} 个：当日新增 {target_info['new_today']} 个"
-        f" + 目录增量补 {target_info['backfill_chosen']} 个"
-        f"（口径 {target_info['scope']}，每日预算 {target_info['budget']}）")
+    # ---- 详情抓取目标：当日新增 ∪ 派生欠账（无条数上限，spec §3.2 决策 5/6） ----
+    targets, target_info = detail_targets(candidates, state, cfg, now)
+    log(f"      详情目标 {target_info['total']} 个：当日新增 {target_info['new_today']}"
+        f" + 派生欠账 {target_info['backlog']} 个（派生式，不设预算）")
 
     fx_rates = enrich.load_fx(cfg, today.isoformat(), log)
     steam_client = build_steam_client(cfg)
+    browse_client = build_steam_browse_client(cfg)
 
     def stats_of(detail_fetched: int, backlog: int):
         def build(info: dict) -> dict:
@@ -565,11 +702,15 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         f"{first['paths']['index']}")
 
     # ---- 慢的部分放最后 ----
-    detail_fetched = fetch_details(client, state, targets, cfg, now)
+    detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse_client)
+    detail_fetched = detail_stats["fetched"]
     state.save(now)
     backlog = count_backlog(hist_low, state, cfg, now)
-    log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个"
-        f"（目标 {len(targets)} 个，其余命中缓存）；目录还差 {backlog} 条")
+    log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个（目标 {len(targets)} 个；"
+        f"GetItems 批量 {detail_stats['fetched'] - detail_stats['fallback_fetched']}"
+        f" + info/v2 降级 {detail_stats['fallback_fetched']}"
+        f"{' ，预算截断 ' + str(detail_stats['fallback_skipped']) + ' 条' if detail_stats['fallback_skipped'] else ''}）；"
+        f"目录还差 {backlog} 条")
 
     # ---- 上次史低时间（§3.6）：批量接口，当日新增 + 即将过期每轮重取 ----
     low_time_fetched = fetch_last_low_times(client, state, candidates + upcoming_entries, cfg, now)
@@ -613,10 +754,13 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "new_today_shown": final["shown"],
             "upcoming_raw": len(upcoming_entries),
             "upcoming_shown": final["upcoming_shown"],
-            "detail_scope": target_info["scope"],
-            "detail_daily_budget": target_info["budget"],
+            "detail_pipeline": "derived-batch",
             "detail_targets": len(targets),
+            "detail_new_today": target_info["new_today"],
+            "detail_derived_backlog": target_info["backlog"],
             "detail_fetched": detail_fetched,
+            "detail_fallback_fetched": detail_stats["fallback_fetched"],
+            "detail_fallback_skipped": detail_stats["fallback_skipped"],
             "detail_backlog": backlog,
             "last_low_fetched": low_time_fetched,
             "detail_pending": final["tier"].get(classify.TIER_PENDING, 0),
@@ -630,8 +774,11 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "fx": {"date": (fx_rates or {}).get("date"), "base": (fx_rates or {}).get("base")},
             "limiter": client.limiter.stats(),
             "steam_limiter": steam_client.limiter.stats(),
+            "steam_browse_limiter": browse_client.limiter.stats(),
             "errors": errors + [e for e in steam_client.events
-                                if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")],
+                                if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+            + [e for e in browse_client.events
+               if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")],
         },
         keep=int(cfg.get("run_log_keep", 30)),
     )
@@ -717,8 +864,9 @@ def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetim
     1. **顺序 = 最近出现在史低的优先**（spec 定稿口径）：按当前折扣的开始时间
        `start`（即 deal.timestamp）降序 —— 刚进史低的最可能被人看到；
        没有时间戳的排最后。
-    2. **预算独立**：用 `prefetch_daily_budget`（默认 300），与 `detail_daily_budget`
-       互不相干；`0` = 关闭预抓。
+    2. **预算独立**：用 `prefetch_daily_budget`（默认 300）——日常详情已不设预算
+       （重构 S2），预抓是**提前几小时**补缓存的轻量轮，保留小预算压请求量；
+       `0` = 关闭预抓。
 
     「缺数据」= 缺 appid / 好评率（`meta_valid` 不通过）**或**已有详情但缺中文名
     （两条独立缓存，§2.5）。调用前须已 `record_seen`。
@@ -742,14 +890,17 @@ def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetim
 def run_prefetch(cfg: dict, *, state: State | None = None,
                  client: ItadClient | None = None,
                  steam: SteamClient | None = None,
+                 browse: SteamBrowseClient | None = None,
                  log: Callable[[str], None] = log) -> int:
     """批 B 预抓（.scratch/prefetch/spec.md R1）：只补缓存，**不出报表**。
 
     与日常同一套筛选（collect + funnel）；对缺数据的条目按「最近出现在史低的优先」
     用独立预算 `prefetch_daily_budget` 补齐：
 
-    1. 缺 appid / 好评率 → ITAD `info/v2`（复用日常的 fetch_details，缓存命中不发请求）；
-    2. 缺中文名 → Steam 逐游戏（必须走 :mod:`src.steam`，全站合并限流 + 最小间隔 2 秒）。
+    1. 缺 appid / 好评率 → 复用日常的批量详情管线 :func:`fetch_details`
+       （lookup → GetItems → info/v2 降级，缓存命中不发请求）；
+    2. 缺中文名 → GetItems 已在批量详情里顺带写入；仍缺的（GetItems 无名等）
+       走 Steam 逐游戏补（必须走 :mod:`src.steam`，全站合并限流 + 最小间隔 2 秒）。
 
     产物只有 state.json + run_log，不写 `output/` 任何文件 ——
     次日常规运行（或 Pages 构建）自然读到补全的数据。幂等：连续跑第二次应几乎零请求。
@@ -763,6 +914,8 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
         client = build_client(cfg)
     if steam is None:
         steam = build_steam_client(cfg)
+    if browse is None:
+        browse = build_steam_browse_client(cfg)
 
     log("=" * 70)
     log(f"SteamDailyLowest 预抓 --prefetch {now.isoformat(timespec='seconds')}"
@@ -783,10 +936,12 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     log(f"预抓目标 {target_info['chosen']} 个（缺数据 {target_info['needed']} 个，"
         f"预算 {target_info['budget']}，顺序=最近出现在史低优先）")
 
-    # 1) ITAD info/v2：appid + 好评率（缓存命中不发请求，断点续传）
-    fetched = fetch_details(client, state, targets, cfg, now)
+    # 1) 批量详情管线：lookup → GetItems → info/v2 降级（缓存命中不发请求，断点续传）
+    detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse)
+    fetched = detail_stats["fetched"]
 
-    # 2) Steam 中文名：逐游戏单请求（批量拿不到 name，§2.2），永久缓存
+    # 2) Steam 中文名：正常已被 GetItems 批量写入（_write_browse_meta）；
+    #    仍缺的（GetItems 失效走了 info/v2 降级等）逐游戏单请求补，永久缓存
     title_fetched = 0
     title_errors = 0
     done = 0
@@ -809,12 +964,14 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     state.save(now)
 
     backlog = count_backlog(hist_low, state, cfg, now)
-    log(f"预抓完成：详情新抓 {fetched} 个 · 中文名新取 {title_fetched} 个"
+    log(f"预抓完成：详情新抓 {fetched} 个（info/v2 降级 {detail_stats['fallback_fetched']}）"
+        f"· 中文名新取 {title_fetched} 个"
         f"（失败 {title_errors} 个，Steam 请求 {steam.calls} 次）；"
         f"目录还差 {backlog} 条。未产出报表。")
 
     errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
     errors += [e for e in steam.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+    errors += [e for e in browse.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
     state.add_run_log(
         {
             "run_at": now.isoformat(timespec="seconds"),
@@ -823,15 +980,18 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
             "deals_fetched": len(items),
             "itad_requests": client.calls,
             "steam_requests": steam.calls,
+            "steam_browse_requests": browse.calls,
             "filtered": result["counts"],
             "hist_low_total": len(hist_low),
             "prefetch_budget": target_info["budget"],
             "prefetch_targets": target_info["chosen"],
             "detail_fetched": fetched,
+            "detail_fallback_fetched": detail_stats["fallback_fetched"],
             "title_zh_fetched": title_fetched,
             "detail_backlog": backlog,
             "limiter": client.limiter.stats(),
             "steam_limiter": steam.limiter.stats(),
+            "steam_browse_limiter": browse.limiter.stats(),
             "errors": errors,
         },
         keep=int(cfg.get("run_log_keep", 30)),
@@ -862,11 +1022,13 @@ def build_probe_steam_client(cfg: dict) -> SteamClient:
 def run_probe(cfg: dict, *, state: State | None = None,
               steam: SteamClient | None = None,
               log: Callable[[str], None] = log) -> int:
-    """§12 第 8 步：人工抽查 3 个游戏的「价格 / 好评率 / 中文名」。
+    """§12 第 8 步：人工抽查 3 个游戏的「价格 / 中文名」。
 
     从状态库选 3 个**最近出现**且已有缓存详情的游戏，实时重拉 Steam 侧
-    （`appdetails` 单 appid 给 name + 国区价；`appreviews` 给好评率），
-    与 `game_meta` / `seen_deal` 里缓存的数据对照。**只读 state，不写。**
+    （`appdetails` 单 appid 给 name + 国区价），与 `game_meta` / `seen_deal`
+    里缓存的数据对照。**只读 state，不写。**
+    （原来的好评率对照随 `appreviews` 端点 2026-10-22 (PT) 停用一并移除，
+    决策 4：好评价径现在只有 ITAD `info/v2` 与 `GetItems`。）
 
     报告落 `output/probe_report.txt`（UTF-8）——另一台 agent 的环境
     PowerShell 捕获 stdout 不可靠，一律以文件为准；stdout 同时打印一份。
@@ -915,7 +1077,6 @@ def run_probe(cfg: dict, *, state: State | None = None,
         lines.append(f"游戏：{entry.get('title')}  appid={appid}  last_seen={entry.get('last_seen_at')}")
         try:
             info = steam.info(int(appid), cc=cfg.get("country", "CN"))
-            reviews = steam.reviews(int(appid))
         except HttpError as exc:
             lines.append(f"  [请求失败] {exc}")
             mismatches += 1
@@ -943,21 +1104,11 @@ def run_probe(cfg: dict, *, state: State | None = None,
         )
         if not price_ok:
             mismatches += 1
-
-        # 3) 好评率（§11：与 ITAD 缓存误差 ≤1 视为一致）
-        live_reviews = reviews or {}
-        live_score = live_reviews.get("score")
+        # 缓存好评率参考（不实时对照：appreviews 已停用，GetItems 批量对照见 tools/probe_api_limits.py P7）
         cached_score = cached_reviews.get("score")
-        score_ok = (
-            live_score is not None and cached_score is not None
-            and abs(int(live_score) - int(cached_score)) <= 1
-        )
-        lines.append(
-            f"  好评率  缓存={cached_score}%/{cached_reviews.get('count')}条  "
-            f"实时={live_score}%/{live_reviews.get('count')}条  → {'一致' if score_ok else '不一致'}"
-        )
-        if not score_ok:
-            mismatches += 1
+        if cached_score is not None:
+            lines.append(f"  好评率  缓存={cached_score}%/{cached_reviews.get('count')}条"
+                         f"  （不再实时对照）")
         lines.append("-" * 70)
 
     lines.append(f"结论：{len(samples)} 个抽查对象，{mismatches} 处需人工确认（Steam 实发 {steam.calls} 次请求）。")

@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """Steam 官方客户端（对应 docs/DEVELOPMENT.md §2.2 / §2.5）。
 
-职责：**中文名 + 各区价格**。不消耗 ITAD 配额。limit 与「五种响应」策略在
-:mod:`src.httpclient`（`store.steampowered.com` 全站按同一个预算合并计数，
-`appdetails` 与 `appreviews` 同 host，保守假设共享 per-IP 预算）。
+职责：**跨区价格**（`ua`/`in`）。不消耗 ITAD 配额。limit 与「五种响应」策略在
+:mod:`src.httpclient`（`store.steampowered.com` 全站按同一个预算合并计数）。
+中文名与好评率已由 `IStoreBrowseService/GetItems`（:mod:`src.steam_browse`）承接；
+`appreviews` 端点 2026-10-22 (PT) 停用，``reviews()`` 已随重构删除（决策 4）。
 
 ## ⚠️ 实测出来的 appdetails 批量规则（与早前文档的说法不同）
 
@@ -161,26 +162,6 @@ class SteamClient(BaseHttpClient):
                 if price:
                     out[appid] = price
         return out
-
-    def reviews(self, appid: int, language: str = "all", purchase_type: str = "all") -> dict | None:
-        """Steam 官方好评率（§2.5 的**兜底**路径，首选仍是 ITAD `info/v2`）。
-
-        ``query_summary.total_reviews`` 为 0 时返回 None —— 没有样本就没有参考价值。
-        """
-        data = self.request(
-            "GET",
-            f"/appreviews/{appid}",
-            params={"json": 1, "num_per_page": 0, "language": language,
-                    "purchase_type": purchase_type},
-        )
-        if not isinstance(data, dict):
-            return None
-        summary = data.get("query_summary") or {}
-        total = int(summary.get("total_reviews") or 0)
-        if total <= 0:
-            return None
-        positive = int(summary.get("total_positive") or 0)
-        return {"score": int(round(positive / total * 100)), "count": total}
 
 
 __all__ = ["BASE", "BATCH_FILTERS", "DEFAULT_BATCH_SIZE", "SINGLE_FILTERS",

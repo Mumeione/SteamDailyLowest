@@ -186,6 +186,38 @@ class State:
         entry = self.game_meta.get(game_id)
         return bool(entry and entry.get("appid"))
 
+    def set_appid(self, game_id: str, appid) -> None:
+        """只写 appid，**不碰 reviews 与 fetched_at**（批量映射专用，重构 S2）。
+
+        appid 是永久缓存（见本节注释），批量 lookup 拿到的映射没有好评率可写；
+        若走 :meth:`set_meta` 会把 reviews 清成 None、fetched_at 刷成今天，
+        既丢已有好评率又干扰 TTL。
+        """
+        if not appid or not game_id:
+            return
+        entry = self.game_meta.get(game_id) or {}
+        entry["appid"] = int(appid)
+        self.game_meta[game_id] = entry
+
+    def set_detail_failed(self, game_id: str, now: datetime) -> None:
+        """标记本轮详情抓取失败（重构 S2 派生式欠账的失败标记）。
+
+        ``detail_failed_at`` + ``detail_attempts``（累加）—— 派生欠账时按
+        冷却天数排除近期失败项，避免每轮重试注定拿不到的坏条目。
+        """
+        if not game_id:
+            return
+        entry = self.game_meta.get(game_id) or {}
+        entry["detail_failed_at"] = now.isoformat(timespec="seconds")
+        entry["detail_attempts"] = int(entry.get("detail_attempts") or 0) + 1
+        self.game_meta[game_id] = entry
+
+    def detail_recently_failed(self, game_id: str, now: datetime, cooldown_days: int) -> bool:
+        """详情是否在冷却期内失败过（派生欠账时排除，避免每轮重试坏条目）。"""
+        entry = self.game_meta.get(game_id) or {}
+        failed = classify.parse_time(entry.get("detail_failed_at"), self.tz)
+        return failed is not None and now - failed < timedelta(days=cooldown_days)
+
     def set_meta(self, game_id: str, appid, reviews, now: datetime,
                  publishers: list[dict] | None = None,
                  developers: list[dict] | None = None,

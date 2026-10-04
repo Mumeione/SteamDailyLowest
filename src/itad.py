@@ -36,6 +36,11 @@ SWEEP_LOW_ONLY = "low_only"
 SWEEP_FULL = "full"
 SWEEP_MODES = (SWEEP_LOW_ONLY, SWEEP_FULL)
 
+#: ``/lookup/shop/{shop}/id/v1`` 的保守批大小（实测 ≥20000 也通、1.86s，spec §9 P4）
+LOOKUP_BATCH_SIZE = 5000
+#: 二分降级最大递归深度：实测单批 20000 也通（spec §9 P4）→ ⌈log2 20000⌉ = 15 层
+_LOOKUP_MAX_DEPTH = 15
+
 
 class ItadError(HttpError):
     """ITAD 请求失败（不可重试或重试耗尽）。"""
@@ -65,6 +70,22 @@ def _party_list(raw) -> list[dict]:
             continue
         out.append({"id": pid, "name": str(name) if name else ""})
     return out
+
+
+def _pick_appid(shop_ids) -> int | None:
+    """从 ``['sub/589578', 'app/1658920']`` 里挑 ``app/`` 前缀的 appid。
+
+    lookup 返回值 ``app/`` 与 ``sub/`` **混排**（约 10~15% 的 uuid 只有 ``sub/``，
+    拿不到 appid，属正常 —— 命中率实测 85~90.4%，spec §9 P4）→ 只挑 ``app/`` 转 int，
+    挑不到返回 None，由调用方识别未命中并决定回落。
+    """
+    for sid in shop_ids or []:
+        if isinstance(sid, str) and sid.startswith("app/"):
+            try:
+                return int(sid.split("/", 1)[1])
+            except (IndexError, ValueError):
+                continue
+    return None
 
 
 def sweep_filter(sweep: str) -> dict | None:
@@ -109,9 +130,11 @@ class ItadClient(BaseHttpClient):
         )
 
     def _prepare(self, path: str, params: dict | None) -> tuple[str, dict]:
-        query = {"key": self.api_key}
-        if params:
-            query.update(params)
+        query = dict(params or {})
+        if not path.startswith("/lookup/"):
+            # /lookup/* 免鉴权且**不计入额度**（2026-10-04 用量页实测：三端点相加
+            # 正好 100%，没有它的位置）→ key 不进 URL；该端点的 key 走 ITAD-API-Key 头
+            query["key"] = self.api_key
         return self.BASE + path, query
 
     def _endpoint(self, path: str) -> str:
@@ -208,7 +231,8 @@ class ItadClient(BaseHttpClient):
             } if isinstance(stats_raw, dict) else None,
         }
 
-    def fetch_storelow(self, country: str, game_ids: list[str],
+
+    def fetch_storelow(self, country: str, game_ids: list[str],
                        shops: int = STEAM_SHOP_ID, batch_size: int = 200) -> dict[str, str]:
         """``POST /games/storelow/v2`` —— 批量取 Steam 店内史低的记录时间（§3.6）。
 
@@ -243,9 +267,68 @@ class ItadClient(BaseHttpClient):
             self._log(f"[itad] storelow/v2 批量 {batches} 次，命中 {len(lows_map)}/{len(ids)}")
         return lows_map
 
+    # ------------------------------------------------------------------
+    # 批量映射（重构 S1：uuid → appid，替代 info/v2 逐条的第一跳）
+    # ------------------------------------------------------------------
+    def fetch_appid_batch(self, uuids: list[str], shop: int = STEAM_SHOP_ID,
+                          batch_size: int = LOOKUP_BATCH_SIZE) -> dict[str, int]:
+        """``POST /lookup/shop/{shop}/id/v1`` —— uuid → appid **批量映射**。
+
+        免鉴权、**不计入 ITAD 额度**（spec §4 未知量 1 已确认）→ key 只走
+        ``ITAD-API-Key`` 请求头、**不进 URL**（见 :meth:`_prepare`）。
+
+        实测边界（spec §9 P4）：单批 ≥20000 也通，保守默认 5000/批、自动切片。
+        返回 ``{uuid: appid}``；未命中的 uuid（只有 ``sub/`` / 完全未知）**不在
+        返回值里**，由调用方识别（回落 ``info/v2`` 逐条补）。
+
+        **二分降级保留为防御**：实测随机无效 uuid 不会 500（回 200 + 空条目），
+        但调研那次用官方占位符 uuid 触发过整批 500 —— 批次失败（:class:`HttpError`
+        或响应非对象）时对半拆到单条，单条仍失败则丢弃该 uuid 并记 ``lookup_drop``
+        事件。:class:`Blocked`（连续 403 滥用封禁）**不降级**，照常上抛中止本轮。
+        """
+        ids = [u for u in dict.fromkeys(uuids) if u]
+        if not ids:
+            return {}
+        size = max(1, int(batch_size))
+        out: dict[str, int] = {}
+        batches = (len(ids) + size - 1) // size
+        for start in range(0, len(ids), size):
+            out.update(self._lookup_split(ids[start:start + size], shop))
+        self._log(f"[itad] lookup/shop/{shop}/id/v1 批量 {batches} 次，"
+                  f"映射命中 {len(out)}/{len(ids)}")
+        return out
+
+    def _lookup_split(self, batch: list[str], shop: int, depth: int = 0) -> dict[str, int]:
+        """查一个批次；失败（HttpError / 响应非对象）时二分降级到单条。"""
+        path = f"/lookup/shop/{shop}/id/v1"
+        data = None
+        failed = False
+        try:
+            data = self.request("POST", path, json_body=batch,
+                                headers={"ITAD-API-Key": self.api_key})
+        except Blocked:
+            raise
+        except HttpError:
+            failed = True
+        if failed or not isinstance(data, dict):
+            if len(batch) > 1 and depth < _LOOKUP_MAX_DEPTH:
+                mid = len(batch) // 2
+                merged = self._lookup_split(batch[:mid], shop, depth + 1)
+                merged.update(self._lookup_split(batch[mid:], shop, depth + 1))
+                return merged
+            self._record("lookup_drop", path, uuid=batch[0] if batch else "")
+            return {}
+        out: dict[str, int] = {}
+        for uid, shop_ids in data.items():
+            appid = _pick_appid(shop_ids)
+            if appid is not None:
+                out[uid] = appid
+        return out
+
 
 __all__ = [
     "BASE",
+    "LOOKUP_BATCH_SIZE",
     "STEAM_SHOP_ID",
     "FLAG_ANY_LOW",
     "GAME_TYPE_ID",

@@ -42,17 +42,24 @@ def raw_item(game_id: str, start: str, title: str = "T") -> dict:
 
 
 class FakeItadClient:
-    def __init__(self, items: list[dict], info_map: dict | None = None):
+    def __init__(self, items: list[dict], info_map: dict | None = None,
+                 lookup: dict | None = None):
         self._items = items
         self._info_map = info_map or {}
+        self._lookup = lookup or {}
         self.calls = 0
         self.asked_info: list[str] = []
+        self.asked_lookup: list[str] = []
         self.events: list[dict] = []
         self.limiter = SimpleNamespace(stats=lambda: {})
 
     def fetch_deals(self, country, shops=61, limit=200, sort="-cut",
                     max_deals=None, sweep="low_only", progress=None):
         return self._items
+
+    def fetch_appid_batch(self, uuids, shop=61, batch_size=5000):
+        self.asked_lookup.extend(uuids)
+        return {u: a for u, a in self._lookup.items() if u in set(uuids)}
 
     def fetch_info(self, game_id):
         self.calls += 1

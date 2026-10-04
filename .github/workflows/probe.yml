@@ -1,0 +1,138 @@
+# 接口边界探针（手动触发，只读 + 只写探针报告）
+#
+# 目的：测出文档没写清的边界 —— GetItems 的单批上限 / UA 必需性 / 是否会出现 429，
+# 以及 ITAD 批量映射端点的单批上限与「无效 uuid 导致整批 500」的二分降级。
+#
+# ⚠️ 使用约束（用户与 agent 已约定）：
+#   1. **只在非大促日跑** —— 大促期间不要动这些端点（下方有强制勾选项把关）
+#   2. 全程**不请求 ITAD /deals/v2**（那是每日依赖的主接口，不拿它冒险）
+#   3. 请求数有硬上限（默认 120），一遇 429/403 立即停止并如实记录
+#   4. 本 workflow 只读 state.json，只把报告写回 data 分支的 probe/ 目录
+#
+# 跑完去哪里看结果：
+#   * 本页的 Summary（$GITHUB_STEP_SUMMARY，自动渲染）
+#   * data 分支 probe/latest.md（用 codeload zip 匿名可读）
+#   * 本次运行的 Artifact「probe-report」
+
+name: probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      not_a_sale_day:
+        description: "确认今天不是大促/游戏节（秋促 2026-10-09 01:00 北京时间结束）"
+        type: boolean
+        required: true
+        default: false
+      probes:
+        description: "要跑的探针（逗号分隔）：batch,ua,rate,lookup,split,mix,reviews"
+        required: false
+        type: string
+        default: "batch,ua,rate,lookup,split"
+      interval:
+        description: "请求间隔秒数（保守起见别调小）"
+        required: false
+        type: string
+        default: "2"
+      max_batches:
+        description: "P3 连续请求次数（看会不会出现 429）"
+        required: false
+        type: string
+        default: "10"
+      hard_cap:
+        description: "总请求数硬上限"
+        required: false
+        type: string
+        default: "120"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: state-write
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 大促日把关
+        env:
+          NOT_SALE: ${{ inputs.not_a_sale_day }}
+        run: |
+          if [ "$NOT_SALE" != "true" ]; then
+            echo "::error::未勾选「确认今天不是大促日」。大促期间不要跑探针 —— 请等秋促结束（2026-10-09 01:00 北京时间）后再试。"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: 取出 data 分支（拿真实 appid / uuid 作探针材料，并作为报告落点）
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: statedata
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 跑探针
+        env:
+          PYTHONUNBUFFERED: "1"
+          # 只有 reviews 探针会用到；key 只走请求头，报告落盘前还会再抹一次
+          ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+        run: |
+          python tools/probe_api_limits.py \
+            --state statedata/data/state.json \
+            --probes "${{ inputs.probes }}" \
+            --interval "${{ inputs.interval }}" \
+            --max-batches "${{ inputs.max_batches }}" \
+            --hard-cap "${{ inputs.hard_cap }}" \
+            --out probe_report.md
+
+      - name: 写进本次运行的 Summary
+        if: always()
+        run: |
+          if [ -f probe_report.md ]; then
+            {
+              echo ""
+              echo "---"
+              echo "_探针参数：probes=\`${{ inputs.probes }}\` interval=${{ inputs.interval }}s max_batches=${{ inputs.max_batches }} hard_cap=${{ inputs.hard_cap }}_"
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat probe_report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ 没有生成 probe_report.md（探针脚本可能在启动阶段就失败了）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 报告提交回 data 分支 probe/ 目录
+        if: always() && hashFiles('probe_report.md') != ''
+        run: |
+          cd statedata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p probe
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          cp ../probe_report.md "probe/${stamp}.md"
+          cp ../probe_report.md probe/latest.md
+          git add probe
+          if git diff --cached --quiet; then
+            echo "报告无变化，跳过提交"
+          else
+            git commit -m "probe ${stamp}"
+            # 与 daily / prefetch 共用 data 分支，push 前先 rebase（防非快进冲突）
+            git pull --rebase --autostash
+            git push
+          fi
+
+      - name: 备份成 Artifact
+        if: always() && hashFiles('probe_report.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-report
+          path: probe_report.md
+          retention-days: 30

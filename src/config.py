@@ -43,14 +43,17 @@ DEFAULTS: dict = {
     "itad_min_interval": 0.3,
     "steam_rate_limit": "150 / 300s",
     "steam_min_interval": 2.0,
-    "max_concurrency": 1,
+    # api.steampowered.com（GetItems）独立限流通道：与 store 域是否共桶判定不了，
+    # 新开一条（重构 spec §3.1）；实测 0.14~0.36s/次 → 最小间隔可比 store 域小得多
+    "steam_browse_rate_limit": "150 / 300s",
+    "steam_browse_min_interval": 0.5,
     "fetch_last_low_time": True,
-    "use_steam_side_fetch": False,
     "reviews_ttl_days": 7,
     "reviews_empty_ttl_days": 3,
     "sweep_mode": "low_only",
-    "detail_scope": "catalog",
-    "detail_daily_budget": 300,
+    # GetItems 失效时 info/v2 逐条降级的每轮上限（1 请求/条，必须设界；
+    # GetItems 正常时该路径为空）。额度按 key 计 1000 请求/5min 滑窗，实测无压力
+    "detail_fallback_budget": 1000,
     "prefetch_daily_budget": 300,
     "probe_timeout_seconds": 6,
     "fx_cache_path": "data/fx_cache.json",

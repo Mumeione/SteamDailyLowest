@@ -162,12 +162,19 @@ class BaseHttpClient:
     def _backoff_wait(self, seconds: float) -> None:
         self.limiter.wait(seconds)
 
-    def request(self, method: str, path: str, params: dict | None = None, json_body: Any = None) -> Any:
-        """发一次请求并返回解析后的 JSON；重试耗尽则抛 :class:`HttpError`。"""
+    def request(self, method: str, path: str, params: dict | None = None,
+                json_body: Any = None, headers: dict | None = None) -> Any:
+        """发一次请求并返回解析后的 JSON；重试耗尽则抛 :class:`HttpError`。
+
+        ``headers`` 是本次请求的**附加**头（与 session 头合并，如 ITAD 的
+        ``ITAD-API-Key``）——只在非空时传给 session，避免旧式假 session
+        不认识该参数。
+        """
         url, query = self._prepare(path, params)
 
         attempt = 0
         backoff = 10.0
+        extra_headers = {"headers": headers} if headers else {}
         while True:
             attempt += 1
             self.limiter.acquire()
@@ -175,7 +182,8 @@ class BaseHttpClient:
                 self._sleep(self.pause)
             try:
                 resp = self.session.request(
-                    method, url, params=query, json=json_body, timeout=self.timeout
+                    method, url, params=query, json=json_body, timeout=self.timeout,
+                    **extra_headers
                 )
             except requests.RequestException as exc:
                 self.network_errors += 1

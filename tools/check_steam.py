@@ -56,12 +56,5 @@ try:
 except HttpError as exc:
     p(f"   -> 失败：{exc}")
 
-p("3) appreviews（兜底好评率）")
-try:
-    reviews = client.reviews(1091500)
-    p(f"   -> {reviews}")
-except HttpError as exc:
-    p(f"   -> 失败：{exc}")
-
 p("")
 p(f"合计 {client.calls} 次请求 · 429={client.rate_limit_events} · 网络错误={client.network_errors}")
