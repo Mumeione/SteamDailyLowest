@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -222,6 +223,97 @@ class StateTest(unittest.TestCase):
         self.assertEqual(reloaded.meta("uuid-1")["appid"], 999)
         self.assertEqual(reloaded.last_run()["mode"], "daily")
         self.assertEqual(reloaded.data["updated_at"], NOW.isoformat(timespec="seconds"))
+
+    # ------------------------------------------------------------------
+    # 重构 S4：状态库切分 state.json（不可重建）/ cache.json（可重建）
+    # ------------------------------------------------------------------
+    def test_split_save_writes_two_files(self):
+        """缓存落到 cache.json，state.json 不再含缓存键；重载后两族方法照常工作。"""
+        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
+        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
+        self.state.set_last_low_at("uuid-1", "2026-09-28T19:00:00+02:00", "2026-06-01T12:00:00+02:00")
+        self.state.record_seen(entry(), NOW)
+        self.state.save(NOW)
+
+        cache_path = self.path.with_name("cache.json")
+        self.assertTrue(cache_path.exists())
+        state_raw = json.loads(self.path.read_text(encoding="utf-8"))
+        cache_raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        self.assertNotIn("compare_cache", state_raw)
+        self.assertNotIn("low_time_cache", state_raw)
+        self.assertIn("seen_deal", state_raw)
+        self.assertEqual(len(cache_raw["compare_cache"]), 1)
+        self.assertEqual(len(cache_raw["low_time_cache"]), 1)
+
+        reloaded = State(self.path, tz=TZ).load()
+        self.assertEqual(reloaded.compare_cached(111, "2026-09-28T19:00:00+02:00")[0]["cc"], "UA")
+        self.assertEqual(reloaded.last_low_at("uuid-1", "2026-09-28T19:00:00+02:00"),
+                         "2026-06-01T12:00:00+02:00")
+        self.assertEqual(len(reloaded.seen_deal), 1)
+        self.assertEqual(reloaded.cache.data["updated_at"], NOW.isoformat(timespec="seconds"))
+
+    def test_split_legacy_state_cache_keys_adopted(self):
+        """旧版 state.json（带缓存键）加载时自动收编进 cache.json（代码自迁移）。"""
+        legacy = {
+            "version": 1,
+            "updated_at": "2026-10-01T03:00:00+08:00",
+            "seen_deal": {},
+            "game_meta": {},
+            "compare_cache": {"111|e": {"rows": [{"cc": "UA", "final": 1}], "fetched_at": "t"}},
+            "low_time_cache": {"uuid-old|e": "ts"},
+            "run_log": [],
+        }
+        self.path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+        state = State(self.path, tz=TZ).load()
+
+        # 收编进 Cache 并立即落盘 cache.json；state.json 里不再有缓存键
+        self.assertEqual(state.compare_cached(111, "e")[0]["final"], 1)
+        self.assertEqual(state.last_low_at("uuid-old", "e"), "ts")
+        cache_raw = json.loads(self.path.with_name("cache.json").read_text(encoding="utf-8"))
+        self.assertEqual(cache_raw["compare_cache"]["111|e"]["rows"][0]["final"], 1)
+        state.save(NOW)
+        state_raw = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("compare_cache", state_raw)
+        self.assertNotIn("low_time_cache", state_raw)
+        # 幂等：再 load 一次结果一致
+        again = State(self.path, tz=TZ).load()
+        self.assertEqual(again.compare_cached(111, "e")[0]["final"], 1)
+
+    def test_split_cache_json_priority_over_legacy(self):
+        """cache.json 已有的键不被旧 state.json 的遗留键覆盖（cache 是权威来源）。"""
+        cache = {"version": 1, "updated_at": None,
+                 "compare_cache": {"111|e": {"rows": [{"cc": "UA", "final": 2}], "fetched_at": "new"}},
+                 "low_time_cache": {}}
+        self.path.with_name("cache.json").write_text(
+            json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        legacy = {
+            "version": 1, "updated_at": None, "seen_deal": {}, "game_meta": {},
+            "compare_cache": {"111|e": {"rows": [{"cc": "UA", "final": 1}], "fetched_at": "old"},
+                              "222|e": {"rows": [{"cc": "IN", "final": 3}], "fetched_at": "old"}},
+            "low_time_cache": {}, "run_log": [],
+        }
+        self.path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+        state = State(self.path, tz=TZ).load()
+        # 111：cache.json 优先（final=2）；222：cache.json 缺，从遗留键收编
+        self.assertEqual(state.compare_cached(111, "e")[0]["final"], 2)
+        self.assertEqual(state.compare_cached(222, "e")[0]["final"], 3)
+
+    def test_split_missing_cache_json_starts_empty(self):
+        """cache.json 缺失：按空缓存起步（可重建，丢了重拉），state 不受影响。"""
+        self.state.record_seen(entry(), NOW)
+        self.state.save(NOW)
+        self.path.with_name("cache.json").unlink()
+        reloaded = State(self.path, tz=TZ).load()
+        self.assertEqual(reloaded.compare_cache, {})
+        self.assertEqual(reloaded.low_time_cache, {})
+        self.assertEqual(len(reloaded.seen_deal), 1)
+
+    def test_split_corrupt_cache_json_starts_empty(self):
+        """cache.json 损坏：与 State 不同（State 抛 ValueError），Cache 容错重建。"""
+        self.state.save(NOW)
+        self.path.with_name("cache.json").write_text("{broken", encoding="utf-8")
+        reloaded = State(self.path, tz=TZ).load()
+        self.assertEqual(reloaded.compare_cache, {})
 
 
 if __name__ == "__main__":

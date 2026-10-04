@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
-"""状态库（对应 docs/DEVELOPMENT.md §5）。
+"""状态库（对应 docs/DEVELOPMENT.md §5；重构 spec §3.4）。
 
-单个滚动 JSON，结构从一开始就按完整版写（第一版不做简化，避免以后迁移）。
+**重构 S4 起切两份**（2026-10-04）：
+
+- ``state.json`` —— 不可重建：``seen_deal`` + ``game_meta`` + ``run_log``
+- ``cache.json`` —— 可重建（丢了重拉）：``compare_cache`` + ``low_time_cache``
+
+两份都按完整版结构写（不做简化，避免以后迁移）。``State`` 对外接口不变，
+比价 / 史低时间两族方法内部委托给 :class:`Cache`；旧版 state.json 里带的
+缓存键在 :meth:`State.load` 时自动收编（代码自迁移，见该处注释）。
 本模块负责状态库落盘（§6 职责边界；快照导出见 ``snapshot.py``，同为原子写）。
 """
 
@@ -16,19 +23,80 @@ from pathlib import Path
 from . import classify
 
 STATE_VERSION = 1
+CACHE_VERSION = 1
+
+# cache.json 收的两块缓存键（旧版 state.json 里的遗留键同名）
+_CACHE_KEYS = ("compare_cache", "low_time_cache")
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """紧凑 JSON + 原子写（先写临时文件再替换），State 与 Cache 共用。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+
+
+class Cache:
+    """可重建缓存（cache.json）：compare_cache + low_time_cache。
+
+    **可重建**语义决定了它和 State 容错策略不同：文件缺失或损坏按空缓存
+    起步（丢了重拉），不抛异常炸管线。
+    """
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.data: dict = {
+            "version": CACHE_VERSION,
+            "updated_at": None,
+            "compare_cache": {},
+            "low_time_cache": {},
+        }
+
+    def load(self) -> "Cache":
+        if not self.path.exists():
+            return self
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            raw = {}  # 可重建：坏了不炸管线，按空缓存起步（丢了重拉）
+        if not isinstance(raw, dict):
+            raw = {}
+        for key in _CACHE_KEYS:
+            if not isinstance(raw.get(key), dict):
+                raw[key] = {}
+        raw.setdefault("version", CACHE_VERSION)
+        raw.setdefault("updated_at", None)
+        self.data = raw
+        return self
+
+    def save(self, now: datetime | None = None) -> None:
+        if now is not None:
+            self.data["updated_at"] = now.isoformat(timespec="seconds")
+        _atomic_write_json(self.path, self.data)
 
 
 class State:
-    def __init__(self, path: str | Path, tz=None):
+    def __init__(self, path: str | Path, tz=None, cache_path: str | Path | None = None):
         self.path = Path(path)
+        # cache.json 固定与 state.json 同目录同名（data/state.json → data/cache.json），
+        # 无独立配置键 —— 派生规则单一来源；特殊场景用 cache_path 参数显式指定
+        self.cache = Cache(cache_path if cache_path else self.path.with_name("cache.json"))
         self.tz = tz
         self.data: dict = {
             "version": STATE_VERSION,
             "updated_at": None,
             "seen_deal": {},
             "game_meta": {},
-            "compare_cache": {},
-            "low_time_cache": {},
             "run_log": [],
         }
 
@@ -37,6 +105,7 @@ class State:
     # ------------------------------------------------------------------
     def load(self) -> "State":
         if not self.path.exists():
+            self.cache.load()
             return self
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -49,12 +118,23 @@ class State:
                 raw[key] = {}
         if not isinstance(raw.get("run_log"), list):
             raw["run_log"] = []
-        if not isinstance(raw.get("compare_cache"), dict):
-            raw["compare_cache"] = {}
-        if not isinstance(raw.get("low_time_cache"), dict):
-            raw["low_time_cache"] = {}
         raw.setdefault("version", STATE_VERSION)
         raw.setdefault("updated_at", None)
+        # ---- 重构 S4 代码自迁移：旧版 state.json 里带 compare_cache /
+        # low_time_cache（切分前的格式）→ 收编进 Cache 后从 state 里剥掉。
+        # cache.json 里已有的键不覆盖（cache.json 是切分后的权威来源），
+        # 缺的键补上 —— 既幂等又无损。
+        self.cache.load()
+        legacy_found = False
+        for key in _CACHE_KEYS:
+            legacy = raw.pop(key, None)
+            if isinstance(legacy, dict) and legacy:
+                legacy_found = True
+                target = self.cache.data[key]
+                for k, v in legacy.items():
+                    target.setdefault(k, v)
+        if legacy_found:
+            self.cache.save()
         self.data = raw
         return self
 
@@ -68,24 +148,18 @@ class State:
            下一次保存就会自动收敛成精简格式，不需要单独写迁移脚本。
         2. **用紧凑 JSON**（不缩进、无多余空格）：实测 5.09 MB → 4.15 MB（省 19%）。
            状态文件是给程序读的，格式化缩进没有收益，只增加 Actions 的 IO 与传输量。
+
+        重构 S4 起 cache.json（可重建缓存）随同一次保存落盘（state 先、cache 后）。
+        两次独立的原子替换**做不到跨文件原子**：中途崩溃可能留下单侧新/旧组合
+        （如 state 已含新折扣、cache 缺对应缓存键）。两侧都可安全收敛，不会丢数据：
+        cache 缺键下一轮自然重拉；state 侧 seen_deal 有幂等键，重跑重记即可。
         """
         if now is not None:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         for key, entry in list(self.seen_deal.items()):
             self.seen_deal[key] = classify.slim_deal(entry)
-        payload = json.dumps(self.data, ensure_ascii=False, separators=(",", ":"))
-        fd, tmp_name = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp_name, self.path)
-        except BaseException:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-            raise
+        _atomic_write_json(self.path, self.data)
+        self.cache.save(now)
 
     # ------------------------------------------------------------------
     # seen_deal：幂等 + 兜底口径 + 其余视图的攒库
@@ -294,7 +368,7 @@ class State:
     # ------------------------------------------------------------------
     @property
     def low_time_cache(self) -> dict:
-        return self.data["low_time_cache"]
+        return self.cache.data["low_time_cache"]
 
     @staticmethod
     def low_time_key(game_id: str, expiry: str | None) -> str:
@@ -318,7 +392,7 @@ class State:
     # ------------------------------------------------------------------
     @property
     def compare_cache(self) -> dict:
-        return self.data["compare_cache"]
+        return self.cache.data["compare_cache"]
 
     @staticmethod
     def compare_key(appid: int, expiry: str | None) -> str:

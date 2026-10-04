@@ -47,6 +47,12 @@ jobs:
           else
             echo "data 分支无状态文件，按空库起步"
           fi
+          # 可重建缓存（重构 S4）：回填只动 game_meta，但要防 save 剥离旧格式
+          # 缓存键后缓存丢失 —— 带回带出，缺失不报错
+          if [ -f statedata/data/cache.json ]; then
+            cp statedata/data/cache.json data/cache.json
+            echo "缓存库 $(wc -c < data/cache.json) 字节"
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -69,6 +75,11 @@ jobs:
           mkdir -p data
           cp ../data/state.json data/state.json
           git add data/state.json
+          # 可重建缓存（重构 S4）：state.save 会同步落盘，存在才提交
+          if [ -f ../data/cache.json ]; then
+            cp ../data/cache.json data/cache.json
+            git add data/cache.json
+          fi
           if git diff --cached --quiet; then
             echo "状态无变化，跳过提交"
           else

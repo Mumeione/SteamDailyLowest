@@ -109,6 +109,11 @@ jobs:
           else
             echo "data 分支无状态文件，按空库起步"
           fi
+          # 可重建缓存（重构 S4）：缺失不报错，丢了重拉
+          if [ -f statedata/data/cache.json ]; then
+            cp statedata/data/cache.json data/cache.json
+            echo "缓存库 $(wc -c < data/cache.json) 字节"
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -146,6 +151,11 @@ jobs:
           mkdir -p data
           cp ../data/state.json data/state.json
           git add data/state.json
+          # 可重建缓存（重构 S4）：与 state 同一份保存，存在才提交
+          if [ -f ../data/cache.json ]; then
+            cp ../data/cache.json data/cache.json
+            git add data/cache.json
+          fi
           # 快照文件可能不存在（渲染阶段失败），存在才提交
           if [ -f ../data/expiring.json ]; then
             cp ../data/expiring.json data/expiring.json
@@ -198,6 +208,11 @@ jobs:
           else
             echo "data 分支无状态文件，按空库起步"
           fi
+          # 可重建缓存（重构 S4）：缺失不报错，丢了重拉
+          if [ -f statedata/data/cache.json ]; then
+            cp statedata/data/cache.json data/cache.json
+            echo "缓存库 $(wc -c < data/cache.json) 字节"
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -223,6 +238,11 @@ jobs:
           mkdir -p data
           cp ../data/state.json data/state.json
           git add data/state.json
+          # 可重建缓存（重构 S4）：与 state 同一份保存，存在才提交
+          if [ -f ../data/cache.json ]; then
+            cp ../data/cache.json data/cache.json
+            git add data/cache.json
+          fi
           if git diff --cached --quiet; then
             echo "状态无变化，跳过提交"
           else

@@ -868,9 +868,18 @@ N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结
 
 ## 5. 数据模型
 
-状态文件为**单个滚动 JSON**（非按天归档，体积可控），用 `GITHUB_TOKEN` 提交回仓库。
+**重构 S4 起切两份**（2026-10-04，均可重复迁移且幂等）：
+
+- `state.json` —— **不可重建**：`seen_deal` + `game_meta` + `run_log`，丢了就是丢数据
+- `cache.json` —— **可重建**（丢了重拉）：`compare_cache` + `low_time_cache`
+
+两份都是滚动 JSON（非按天归档，体积可控），用 `GITHUB_TOKEN` 提交回 data 分支；
+`cache.json` 固定与 `state.json` 同目录同名（派生规则，无独立配置键）。
+旧版 state.json 里带的缓存键在加载时自动收编进 cache.json（代码自迁移），
+也可用 `tools/migrate_split_state.py` 显式迁移。
 
 ```jsonc
+// state.json —— 不可重建
 {
   "version": 1,
   "updated_at": "2026-09-21T03:00:12+08:00",
@@ -902,23 +911,6 @@ N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结
       "fetched_at": "2026-09-21T03:00:07+08:00"
     }
   },
-  "compare_cache": {
-    // 折扣期暂存（批 H 2026-09-27）：跨区比价，键 = "<appid>|<expiry>"。
-    // 同一折扣期内不重拉；只存原币种数据，CNY 换算按当天汇率渲染时现算。
-    // 随 cleanup_expired 与 seen_deal 同保留期（7 天）清理
-    "1658920|2026-09-28T19:00:00+02:00": {
-      "rows": [
-        { "cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500 }
-      ],
-      "fetched_at": "2026-09-27T12:00:00+08:00"
-    }
-  },
-  "low_time_cache": {
-    // 折扣期暂存（批 H 2026-09-27）：上次史低时间，键 = "<game_id>|<expiry>"。
-    // 每轮对当日新增 + 即将过期候选整批重取覆盖；随留存清理一起删。
-    // 旧 game_meta.last_low_at 存量字段留存不迁移
-    "018d937f-…|2026-09-28T19:00:00+02:00": "2025-09-18T03:00:00+08:00"
-  },
   "run_log": [
     {
       "run_at": "2026-09-21T03:00:12+08:00",
@@ -938,6 +930,31 @@ N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结
       "errors": []
     }
   ]
+}
+```
+
+```jsonc
+// cache.json —— 可重建（丢了重拉），与 state.json 同一次保存落盘
+{
+  "version": 1,
+  "updated_at": "2026-09-27T12:00:00+08:00",
+  "compare_cache": {
+    // 折扣期暂存（批 H 2026-09-27）：跨区比价，键 = "<appid>|<expiry>"。
+    // 同一折扣期内不重拉；只存原币种数据，CNY 换算按当天汇率渲染时现算。
+    // 随 cleanup_expired 与 seen_deal 同保留期（7 天）清理
+    "1658920|2026-09-28T19:00:00+02:00": {
+      "rows": [
+        { "cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500 }
+      ],
+      "fetched_at": "2026-09-27T12:00:00+08:00"
+    }
+  },
+  "low_time_cache": {
+    // 折扣期暂存（批 H 2026-09-27）：上次史低时间，键 = "<game_id>|<expiry>"。
+    // 每轮对当日新增 + 即将过期候选整批重取覆盖；随留存清理一起删。
+    // 旧 game_meta.last_low_at 存量字段留存不迁移
+    "018d937f-…|2026-09-28T19:00:00+02:00": "2025-09-18T03:00:00+08:00"
+  }
 }
 ```
 
@@ -970,7 +987,7 @@ SteamDailyLowest/
 ├── templates/
 │   ├── index.html.j2
 │   └── static/app.css, app.js
-├── data/                         gitignore（**state.json + expiring.json 入库 data 分支**）：state.json + expiring.json + probe/
+├── data/                         gitignore（**state.json + cache.json + expiring.json 入库 data 分支**）：state.json + cache.json + expiring.json + probe/
 ├── output/                       gitignore：生成物（Actions 里用 deploy-pages 发布）
 ├── tools/                        探针与验收脚本（保留供以后校准）
 └── .github/workflows/daily.yml
@@ -1153,7 +1170,7 @@ SteamDailyLowest/
 | `week_window_days`            | `14`                   | 本周视图长度                                                                                                                                   |
 | `stale_banner_hours`          | `36`                   | 超过多久显示陈旧横幅                                                                                                                               |
 | `timezone`                    | `"Asia/Shanghai"`      | 日期判定时区                                                                                                                                   |
-| `state_path`                  | `"data/state.json"`    | 状态文件                                                                                                                                     |
+| `state_path`                  | `"data/state.json"`    | 状态文件（不可重建）；`cache.json`（可重建缓存，重构 S4）固定与其同目录同名，无独立配置键                                                                                     |
 | `expiring_snapshot_path`      | `"data/expiring.json"` | 「即将过期」快照导出（跨仓库数据契约，随 data 分支持久化，`.scratch/expiring-snapshot/spec.md`）                                                       |
 | `output_dir`                  | `"output"`             | 生成物目录                                                                                                                                    |
 | `request_pause_seconds`       | `0.3`                  | 请求间隔                                                                                                                                     |
