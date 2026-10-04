@@ -1,2 +1,5 @@
 requests>=2.31
 jinja2>=3.1
+# 仅 tools/check_workflow_yaml.py（提交前的 workflow 严格校验，含重复键检测）使用；
+# 运行管线（run.py / src/*）不依赖它，CI 也不安装 —— 需要校验时本地 `pip install pyyaml`
+pyyaml>=6.0
