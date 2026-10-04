@@ -1,0 +1,77 @@
+# S3 一次性回填（重构 spec §5 S3）：把秋促欠账 28,030 条 uuid 批量补进 game_meta。
+#
+# 触发：仅 workflow_dispatch（手动）。幂等可重复执行 —— 已有有效详情的条目自动跳过，
+# 降级预算截断的与冷却中的失败项在重跑时继续消化；清单全部清空后再跑就是 0 请求。
+# 跑完后 .scratch/backfill-autumn-2026/uuids.jsonl 即可从仓库删除。
+#
+# 与 daily 共用 state-write 并发组：不会和主跑/预抓并发写 data 分支。
+# 不发 Pages、不出报表：产物只有 state.json（game_meta 批量扩容）。
+# 本地等价命令：python tools/backfill_queue.py
+
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 本次最多处理的欠账条数（0 = 全部；首跑建议 250 试跑）
+        type: string
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: state-write
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取出 data 分支（状态库持久层）
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: statedata
+
+      - name: 恢复状态文件
+        run: |
+          mkdir -p data
+          if [ -f statedata/data/state.json ]; then
+            cp statedata/data/state.json data/state.json
+            echo "状态库 $(wc -c < data/state.json) 字节"
+          else
+            echo "data 分支无状态文件，按空库起步"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: pip install requests jinja2
+
+      - name: 回填欠账详情（lookup → GetItems → info/v2 降级）
+        env:
+          ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+        run: python tools/backfill_queue.py --limit "${{ github.event.inputs.limit }}"
+
+      - name: 状态回写 data 分支（§8 坑 3）
+        if: always() && hashFiles('data/state.json') != ''
+        run: |
+          cd statedata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          cp ../data/state.json data/state.json
+          git add data/state.json
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "state (backfill) $(date -u +%F)"
+            git push
+          fi

@@ -40,9 +40,14 @@ BASE = "https://api.steampowered.com"
 #: GetItems 端点路径（相对 :data:`BASE`）
 PATH = "/IStoreBrowseService/GetItems/v1"
 
-#: 实测单批硬上限（250 完整通过，300 → HTTP 400）
+#: 实测单批条数上限的**历史落点**（250 完整通过，300 → HTTP 400）
 MAX_BATCH_SIZE = 250
 DEFAULT_BATCH_SIZE = MAX_BATCH_SIZE
+#: 编码后 URL 的保守字符预算（第二道闸）。GetItems 走 GET，input_json 经 URL 编码
+#: （``{ " : ,`` 每字符膨胀 3 倍）→ **服务端上限是请求长度而非固定条数**
+#: （2026-10-04 用户实测反馈；与 P1 数据吻合：~250 条 ≈6.9KB 通过、300 条 ≈7.9KB 被拒）
+#: —— appid 越长单批装得越少，按条数死切会撞 400。取 7000 留余量：宁多一批，不赌边界。
+URL_BUDGET = 7000
 #: context.steam_realm（全球商店区，探针实测值）
 STEAM_REALM = 1
 
@@ -206,6 +211,24 @@ def _tags(raw) -> list:
     return out
 
 
+def _encoded_len(s: str) -> int:
+    """`urllib.quote` 编码后的长度：ASCII 保留字符 1 字节，其余（``{ } " : , [ ]``）3 字节。"""
+    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-~/"
+    return len(s) + 2 * sum(1 for c in s if c not in safe)
+
+
+def _static_url_len(country_code: str, language: str) -> int:
+    """不含 ids 的固定部分编码长度（域名 + 路径 + query 名 + context/data_request）。"""
+    tail = json.dumps(
+        {"context": {"language": language, "country_code": country_code,
+                     "steam_realm": STEAM_REALM},
+         "data_request": DATA_REQUEST},
+        separators=(",", ":"),
+    )
+    full = '{"ids":[' + '],' + tail[1:]   # ids 为空时的完整 input_json 形态
+    return len(BASE) + len(PATH) + len("?input_json=") + _encoded_len(full)
+
+
 class SteamBrowseClient(BaseHttpClient):
     BASE = BASE
 
@@ -246,9 +269,8 @@ class SteamBrowseClient(BaseHttpClient):
         if not unique:
             return {}
         out: dict[int, GameMeta] = {}
-        batches = (len(unique) + self.batch_size - 1) // self.batch_size
-        for start in range(0, len(unique), self.batch_size):
-            chunk = unique[start:start + self.batch_size]
+        batches = self._pack(unique, country_code, language)
+        for chunk in batches:
             body = self.request("GET", PATH, params={
                 "input_json": json.dumps(
                     self._payload(chunk, country_code, language),
@@ -261,8 +283,30 @@ class SteamBrowseClient(BaseHttpClient):
                 meta = parse_store_item(item)
                 if meta is not None:
                     out[meta.appid] = meta
-        self._log(f"[steam_browse] GetItems 批量 {batches} 次，命中 {len(out)}/{len(unique)}")
+        self._log(f"[steam_browse] GetItems 批量 {len(batches)} 次，命中 {len(out)}/{len(unique)}")
         return out
+
+    def _pack(self, appids: list[int], country_code: str, language: str) -> list[list[int]]:
+        """按「条数 ≤ batch_size」与「编码后 URL ≤ :data:`URL_BUDGET`」双闸切批。
+
+        每条 appid 的编码占用 = ``len(str(appid)) + 21``
+        （``{"appid":N}`` 编码 +8、逗号 ``%2C`` +3）—— appid 越长单批装得越少。
+        单条超预算也至少装 1 条（让 400 响亮暴露，而不是静默丢 id）。
+        """
+        budget = URL_BUDGET - _static_url_len(country_code, language)
+        batches: list[list[int]] = []
+        cur: list[int] = []
+        cur_len = 0
+        for a in appids:
+            item_len = len(str(a)) + 21
+            if cur and (len(cur) >= self.batch_size or cur_len + item_len > budget):
+                batches.append(cur)
+                cur, cur_len = [], 0
+            cur.append(a)
+            cur_len += item_len
+        if cur:
+            batches.append(cur)
+        return batches
 
     @staticmethod
     def _payload(appids: list[int], country_code: str, language: str) -> dict:
@@ -285,6 +329,7 @@ __all__ = [
     "MAX_BATCH_SIZE",
     "PATH",
     "STEAM_REALM",
+    "URL_BUDGET",
     "SteamBrowseBlocked",
     "SteamBrowseClient",
     "SteamBrowseError",

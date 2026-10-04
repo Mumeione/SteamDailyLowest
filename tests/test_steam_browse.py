@@ -244,6 +244,21 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(client.fetch([0, ""]), {})
         self.assertEqual(session.calls, [])
 
+    def test_length_aware_packing(self):
+        """上限是**请求长度**而非固定条数（2026-10-04 用户实测反馈）：
+        长 appid 单批装得少、更早切批；两种长度都不得超条数上限、不丢 id。"""
+        short = [100000 + i for i in range(600)]      # 6 位
+        long_ids = [9000000 + i for i in range(600)]  # 7 位
+        cs, cl = make_client(FakeSession(200, RESPONSE)), make_client(FakeSession(200, RESPONSE))
+        cs.fetch(short)
+        cl.fetch(long_ids)
+        sizes_s = [len(body_of(c)["ids"]) for c in cs.session.calls]
+        sizes_l = [len(body_of(c)["ids"]) for c in cl.session.calls]
+        self.assertTrue(all(s <= MAX_BATCH_SIZE for s in sizes_s + sizes_l))
+        self.assertEqual(sum(sizes_s), 600)   # 不丢 id
+        self.assertEqual(sum(sizes_l), 600)
+        self.assertLess(max(sizes_l), max(sizes_s))   # 长 appid 更早切批
+
     def test_multi_batch_results_merged(self):
         items = [{"appid": a, "name": f"Game {a}", "success": 1} for a in (7, 8)]
         payload = {"response": {"store_items": items}}
