@@ -6,9 +6,19 @@
 - ``state.json`` —— 不可重建：``seen_deal`` + ``game_meta`` + ``run_log``
 - ``cache.json`` —— 可重建（丢了重拉）：``compare_cache`` + ``low_time_cache``
 
-两份都按完整版结构写（不做简化，避免以后迁移）。``State`` 对外接口不变，
-比价 / 史低时间两族方法内部委托给 :class:`Cache`；旧版 state.json 里带的
-缓存键在 :meth:`State.load` 时自动收编（代码自迁移，见该处注释）。
+**重构 S6 起切三份**（2026-10-05，spec 决策 12/15）：
+
+- ``dynamic.json`` —— 动态重要数据：``reviews`` / ``stats`` / ``fetched_at`` /
+  ``detail_failed_at`` / ``detail_attempts``（按 game_id 键控）
+- ``game_meta``（state.json 内）只留**不变层**：``appid`` / ``title_zh`` /
+  ``title_zh_at`` / ``publishers`` / ``developers`` / ``release_date`` / ``unlisted``
+
+分层依据：「不变」= 不随时间变化或变化可忽略（appid/中文标题/厂商/发行日）；
+「动态重要」= 会变且有消费方（好评率、ITAD stats）；动态条目跟随 seen_deal
+留存清理（游戏离开 seen_deal 即删，重现时靠不变层 appid 直批 GetItems，成本低）。
+``Dynamic`` 的容错策略与 ``Cache`` 一致（文件缺失/损坏按空起步，可重抓自愈）；
+``State.meta()`` 返回不变层 + 动态层的**合并视图**，读方无感；
+旧版 game_meta 里混存的动态键在 :meth:`State.load` 时自动收编（代码自迁移）。
 本模块负责状态库落盘（§6 职责边界；快照导出见 ``snapshot.py``，同为原子写）。
 """
 
@@ -24,9 +34,13 @@ from . import classify
 
 STATE_VERSION = 1
 CACHE_VERSION = 1
+DYN_VERSION = 1
 
 # cache.json 收的两块缓存键（旧版 state.json 里的遗留键同名）
 _CACHE_KEYS = ("compare_cache", "low_time_cache")
+
+# 旧版 game_meta 里混存的动态键（S6 拆分前格式）→ 收编进 dynamic.json
+_DYN_KEYS = ("reviews", "stats", "fetched_at", "detail_failed_at", "detail_attempts")
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -85,12 +99,62 @@ class Cache:
         _atomic_write_json(self.path, self.data)
 
 
-class State:
-    def __init__(self, path: str | Path, tz=None, cache_path: str | Path | None = None):
+class Dynamic:
+    """动态重要数据（dynamic.json）：reviews / stats / fetched_at / 失败簿记。
+
+    ``entries`` 按 game_id 键控。**跟随 seen_deal 留存清理**（游戏离开
+    seen_deal 即删，见 :meth:`State.cleanup_expired`）。容错策略：
+    文件**缺失**按空起步（可重抓自愈）；文件**损坏抛错**与 state.json 同等
+    对待（review-s6 P1-3）—— 拆分后 dynamic 是 reviews 的唯一副本，
+    静默丢档会让全部已列游戏看起来「没抓过」而整轮重抓，必须响亮失败。
+    """
+
+    def __init__(self, path: str | Path):
         self.path = Path(path)
-        # cache.json 固定与 state.json 同目录同名（data/state.json → data/cache.json），
-        # 无独立配置键 —— 派生规则单一来源；特殊场景用 cache_path 参数显式指定
+        self.data: dict = {
+            "version": DYN_VERSION,
+            "updated_at": None,
+            "entries": {},
+        }
+
+    @property
+    def entries(self) -> dict:
+        return self.data["entries"]
+
+    def load(self) -> "Dynamic":
+        if not self.path.exists():
+            return self
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"动态数据文件不是合法 JSON：{self.path}（{exc}）"
+                "—— 拒绝按空库静默起步（reviews 唯一副本，丢了会整轮重抓）"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise ValueError(f"动态数据文件顶层必须是对象：{self.path}")
+        if not isinstance(raw.get("entries"), dict):
+            raw["entries"] = {}
+        raw.setdefault("version", DYN_VERSION)
+        raw.setdefault("updated_at", None)
+        self.data = raw
+        return self
+
+    def save(self, now: datetime | None = None) -> None:
+        if now is not None:
+            self.data["updated_at"] = now.isoformat(timespec="seconds")
+        _atomic_write_json(self.path, self.data)
+
+
+class State:
+    def __init__(self, path: str | Path, tz=None, cache_path: str | Path | None = None,
+                 dynamic_path: str | Path | None = None):
+        self.path = Path(path)
+        # cache.json / dynamic.json 固定与 state.json 同目录同名
+        # （data/state.json → data/cache.json + data/dynamic.json），
+        # 无独立配置键 —— 派生规则单一来源；特殊场景用参数显式指定
         self.cache = Cache(cache_path if cache_path else self.path.with_name("cache.json"))
+        self.dynamic = Dynamic(dynamic_path if dynamic_path else self.path.with_name("dynamic.json"))
         self.tz = tz
         self.data: dict = {
             "version": STATE_VERSION,
@@ -106,6 +170,7 @@ class State:
     def load(self) -> "State":
         if not self.path.exists():
             self.cache.load()
+            self.dynamic.load()
             return self
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -136,6 +201,22 @@ class State:
         if legacy_found:
             self.cache.save()
         self.data = raw
+        # ---- 重构 S6 代码自迁移：旧版 game_meta 里混存的动态键（reviews /
+        # stats / fetched_at / 失败簿记）→ 收编进 dynamic.json 后从 game_meta
+        # 剥掉。dynamic.json 已有的键不覆盖（它是拆分后的权威来源）。幂等。
+        self.dynamic.load()
+        dyn_found = False
+        for gid, entry in self.game_meta.items():
+            if not isinstance(entry, dict):
+                continue
+            legacy_dyn = {k: entry.pop(k) for k in _DYN_KEYS if k in entry}
+            if legacy_dyn:
+                dyn_found = True
+                target = self.dynamic.entries.setdefault(gid, {})
+                for k, v in legacy_dyn.items():
+                    target.setdefault(k, v)
+        if dyn_found:
+            self.dynamic.save()
         return self
 
     def save(self, now: datetime | None = None) -> None:
@@ -149,16 +230,18 @@ class State:
         2. **用紧凑 JSON**（不缩进、无多余空格）：实测 5.09 MB → 4.15 MB（省 19%）。
            状态文件是给程序读的，格式化缩进没有收益，只增加 Actions 的 IO 与传输量。
 
-        重构 S4 起 cache.json（可重建缓存）随同一次保存落盘（state 先、cache 后）。
-        两次独立的原子替换**做不到跨文件原子**：中途崩溃可能留下单侧新/旧组合
-        （如 state 已含新折扣、cache 缺对应缓存键）。两侧都可安全收敛，不会丢数据：
-        cache 缺键下一轮自然重拉；state 侧 seen_deal 有幂等键，重跑重记即可。
+        重构 S4 起 cache.json、S6 起 dynamic.json 随同一次保存落盘
+        （state 先、dynamic 次、cache 后）。三次独立的原子替换**做不到跨文件原子**：
+        中途崩溃可能留下新旧组合。三侧都可安全收敛，不会丢数据：
+        cache 缺键下一轮自然重拉；dynamic 缺条按折扣活跃度重新派生重抓；
+        state 侧 seen_deal 有幂等键，重跑重记即可。
         """
         if now is not None:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
         for key, entry in list(self.seen_deal.items()):
             self.seen_deal[key] = classify.slim_deal(entry)
         _atomic_write_json(self.path, self.data)
+        self.dynamic.save(now)
         self.cache.save(now)
 
     # ------------------------------------------------------------------
@@ -194,6 +277,9 @@ class State:
 
         「折扣期暂存」的两块缓存（比价 / 上次史低时间，键都含 expiry）
         随 seen_deal 同一保留期一起清理，不单独设 TTL。
+        **S6 起 dynamic.json 同步收缩**：被清条目的 game_id 若已不在任何
+        seen_deal 条目里，其动态数据（reviews/stats/失败簿记）一并删除 ——
+        动态数据的消费方（欠账派生、报表合并）都源自 seen_deal。
         """
         deadline = now - timedelta(days=retention_days)
         drop: list[str] = []
@@ -201,10 +287,15 @@ class State:
             expiry = classify.parse_time(entry.get("expiry"), self.tz)
             if expiry is not None and expiry < deadline:
                 drop.append(key)
+        dropped_gids = {self.seen_deal[key].get("game_id") for key in drop}
         for key in drop:
             del self.seen_deal[key]
         self._cleanup_expiry_keyed(self.compare_cache, deadline)
         self._cleanup_expiry_keyed(self.low_time_cache, deadline)
+        live_gids = {e.get("game_id") for e in self.seen_deal.values()}
+        for gid in dropped_gids:
+            if gid and gid not in live_gids:
+                self.dynamic.entries.pop(gid, None)
         return len(drop)
 
     @staticmethod
@@ -225,47 +316,51 @@ class State:
         return len(stale)
 
     # ------------------------------------------------------------------
-    # game_meta：详情缓存（appid 永久有效 / reviews TTL 7 天）
+    # game_meta（不变层） + dynamic.json（动态层） + 合并视图
     # ------------------------------------------------------------------
     @property
     def game_meta(self) -> dict:
         return self.data["game_meta"]
 
     def meta(self, game_id: str) -> dict | None:
-        return self.game_meta.get(game_id)
+        """合并视图：不变层（game_meta）+ 动态层（dynamic.json）。
 
-    def meta_valid(self, game_id: str, now: datetime, ttl_days: int, empty_ttl_days: int = 3) -> bool:
-        """详情缓存是否还在有效期内（决定这一轮要不要再发 ``info/v2``）。
-
-        分两种 TTL：
-
-        - **拿到了 Steam 好评率** → ``ttl_days``（默认 7 天，好评率变化很慢）
-        - **抓过但没拿到好评率**（ITAD 对这个游戏没有 Steam 评测数据，或连 appid 都没给）
-          → ``empty_ttl_days``（默认 3 天）
-
-        ⚠️ 旧实现是「``has_appid`` 且 ``reviews_valid``」两个条件相与，
-        没有 appid 的条目会**每一轮都被重新请求**。判定必须落在「有没有抓过 + 抓过多久」
-        上，而不是「有没有 appid」上 —— appid 本来就可能永远拿不到。
+        动态键（reviews/stats/fetched_at/失败簿记）以动态层为准；
+        读方（报表合并 / 比价 / 探针）无感 —— 拿到的仍是「一个 meta dict」。
         """
-        entry = self.game_meta.get(game_id)
-        if not entry or entry.get("fetched_at") is None:
+        base = self.game_meta.get(game_id)
+        dyn = self.dynamic.entries.get(game_id)
+        if dyn:
+            return {**(base or {}), **dyn}
+        return base
+
+    def dyn(self, game_id: str) -> dict | None:
+        """原始动态条目（不合并），供派生欠账判定数据年龄。"""
+        return self.dynamic.entries.get(game_id)
+
+    def drop_dyn(self, game_id: str) -> None:
+        """删除整个动态条目（unlisted 收敛 / 留存清理用）。"""
+        self.dynamic.entries.pop(game_id, None)
+
+    def detail_fetched_recently(self, game_id: str, now: datetime, ttl_days: int) -> bool:
+        """动态数据是否在 ttl 天内抓过（给一次性工具做幂等跳过用；
+        管线内的新鲜度判定走 run.py 的折扣感知逻辑，不用这个）。"""
+        dyn = self.dyn(game_id)
+        if not dyn or dyn.get("fetched_at") is None:
             return False
-        fetched = classify.parse_time(entry.get("fetched_at"), self.tz)
-        if fetched is None:
-            return False
-        days = ttl_days if entry.get("reviews") else empty_ttl_days
-        return now - fetched < timedelta(days=days)
+        fetched = classify.parse_time(dyn.get("fetched_at"), self.tz)
+        return fetched is not None and now - fetched < timedelta(days=ttl_days)
 
     def has_appid(self, game_id: str) -> bool:
         entry = self.game_meta.get(game_id)
         return bool(entry and entry.get("appid"))
 
     def set_appid(self, game_id: str, appid) -> None:
-        """只写 appid，**不碰 reviews 与 fetched_at**（批量映射专用，重构 S2）。
+        """只写 appid（不变层），**不碰 reviews 与 fetched_at**（批量映射专用，重构 S2）。
 
         appid 是永久缓存（见本节注释），批量 lookup 拿到的映射没有好评率可写；
         若走 :meth:`set_meta` 会把 reviews 清成 None、fetched_at 刷成今天，
-        既丢已有好评率又干扰 TTL。
+        既丢已有好评率又干扰刷新节奏。
         """
         if not appid or not game_id:
             return
@@ -273,22 +368,64 @@ class State:
         entry["appid"] = int(appid)
         self.game_meta[game_id] = entry
 
-    def set_detail_failed(self, game_id: str, now: datetime) -> None:
-        """标记本轮详情抓取失败（重构 S2 派生式欠账的失败标记）。
+    # ---- release_date（不变层）：GetItems 顺带返回，新游判定用（spec 决策 16）----
+    def set_release_date(self, game_id: str, ts) -> None:
+        """发行时间戳（秒）。**首见即定、不回退** —— 发行日不会变，避免每轮覆写。"""
+        if not game_id or ts is None:
+            return
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            return
+        entry = self.game_meta.get(game_id) or {}
+        if entry.get("release_date") is None:
+            entry["release_date"] = ts
+            self.game_meta[game_id] = entry
 
-        ``detail_failed_at`` + ``detail_attempts``（累加）—— 派生欠账时按
-        冷却天数排除近期失败项，避免每轮重试注定拿不到的坏条目。
+    # ---- unlisted 标记（不变层）：未入列表条目（spec 决策 17）----
+    def unlisted(self, game_id: str) -> dict | None:
+        return (self.game_meta.get(game_id) or {}).get("unlisted")
+
+    def set_unlisted(self, game_id: str, now: datetime, start: str | None) -> None:
+        """打未入列表标记：``{at, start}``。
+
+        ``start`` = 判定时的折扣开始日 —— 派生欠账时对比条目当前的 ``start``，
+        相同 = 同一折扣期内冻结（不建动态条目、不重抓）；不同 = 下次折扣，重抓重判。
         """
         if not game_id:
             return
         entry = self.game_meta.get(game_id) or {}
+        entry["unlisted"] = {
+            "at": now.isoformat(timespec="seconds"),
+            "start": start,
+        }
+        self.game_meta[game_id] = entry
+
+    def clear_unlisted(self, game_id: str) -> bool:
+        """摘除标记（翻案转正常记录）；返回是否真的摘了。"""
+        entry = self.game_meta.get(game_id)
+        if entry and "unlisted" in entry:
+            del entry["unlisted"]
+            return True
+        return False
+
+    def set_detail_failed(self, game_id: str, now: datetime) -> None:
+        """标记本轮详情抓取失败（重构 S2 派生式欠账的失败标记）。
+
+        ``detail_failed_at`` + ``detail_attempts``（累加）写**动态层** ——
+        派生欠账时按 ``detail_retry_cooldown_days`` 冷却排除近期失败项，
+        避免每轮重试注定拿不到的坏条目。
+        """
+        if not game_id:
+            return
+        entry = self.dynamic.entries.setdefault(game_id, {})
         entry["detail_failed_at"] = now.isoformat(timespec="seconds")
         entry["detail_attempts"] = int(entry.get("detail_attempts") or 0) + 1
-        self.game_meta[game_id] = entry
+        self.dynamic.entries[game_id] = entry
 
     def detail_recently_failed(self, game_id: str, now: datetime, cooldown_days: int) -> bool:
         """详情是否在冷却期内失败过（派生欠账时排除，避免每轮重试坏条目）。"""
-        entry = self.game_meta.get(game_id) or {}
+        entry = self.dyn(game_id) or {}
         failed = classify.parse_time(entry.get("detail_failed_at"), self.tz)
         return failed is not None and now - failed < timedelta(days=cooldown_days)
 
@@ -296,47 +433,57 @@ class State:
                  publishers: list[dict] | None = None,
                  developers: list[dict] | None = None,
                  stats: dict | None = None) -> None:
-        """写入详情缓存。
+        """写入详情缓存（S6 起按层分写）。
 
         2026-09-30 起多收 ``publishers`` / ``developers`` / ``stats``（快照 v3 需要）。
         三条约束（改这里前先想清楚）：
 
         - **只更新传进来的键**，``None`` 表示「本次没取到」→ 保留旧值，**不要清空**；
           （空列表 ``[]`` 是「取到了，确实没有」→ 正常写入。）
-        - **不碰 ``fetched_at`` 的语义** —— 它只决定 ``reviews`` 的 TTL，
-          新字段不是 TTL 字段（和 ``title_zh`` / ``title_zh_at`` 同一套路）。
-        - ``game_meta`` 的条目允许**多代字段共存**：旧条目缺新字段是正常状态，
-          ``meta_valid()`` 不能因此判定「无效」而重取。
+        - **不碰 ``fetched_at`` 的语义** —— 它只决定 ``reviews`` 的刷新节奏，
+          新字段不是时间字段（和 ``title_zh`` / ``title_zh_at`` 同一套路）。
+        - 条目允许**多代字段共存**：旧条目缺新字段是正常状态，
+          新鲜度判定不能因此判「无效」而重取。
+
+        分层落点：``appid`` / ``publishers`` / ``developers`` → game_meta（不变层）；
+        ``reviews`` / ``fetched_at`` / ``stats`` → dynamic.json（动态层，决策 15）。
         """
-        entry = self.game_meta.get(game_id) or {}
         if appid:
+            entry = self.game_meta.get(game_id) or {}
             entry["appid"] = appid
-        entry["reviews"] = reviews
-        entry["fetched_at"] = now.isoformat(timespec="seconds")
-        self.game_meta[game_id] = entry
+            self.game_meta[game_id] = entry
+        dyn = self.dynamic.entries.setdefault(game_id, {})
+        dyn["reviews"] = reviews
+        dyn["fetched_at"] = now.isoformat(timespec="seconds")
+        if stats is not None:
+            dyn["stats"] = stats
+        self.dynamic.entries[game_id] = dyn
         # 新字段的写入规则与回填完全一致 —— 复用 set_meta_extras，别再抄一份
         # if-is-not-None（两处逻辑漂移过一次：code-review 2026-09-30）
-        self.set_meta_extras(game_id, publishers=publishers,
-                             developers=developers, stats=stats)
+        self.set_meta_extras(game_id, publishers=publishers, developers=developers)
 
     def set_meta_extras(self, game_id: str, *, publishers=None, developers=None,
                         stats=None) -> None:
-        """只补 ``publishers`` / ``developers`` / ``stats``，**不碰 reviews 与 fetched_at**。
+        """只补附加字段，**不碰 reviews 与 fetched_at**。
 
         专供 ``tools/backfill_game_meta.py`` 一次性回填用 —— 回填时并不重新拿好评率，
-        若走 :meth:`set_meta` 会把 ``fetched_at`` 刷成今天、白白推迟 reviews 的 TTL 刷新。
+        若走 :meth:`set_meta` 会把 ``fetched_at`` 刷成今天、白白推迟 reviews 的刷新。
         传 ``None`` 的键一律跳过（保留旧值）。
+        分层落点：publishers/developers → 不变层；stats → 动态层（决策 15）。
         """
         if publishers is None and developers is None and stats is None:
             return
-        entry = self.game_meta.get(game_id) or {}
-        if publishers is not None:
-            entry["publishers"] = publishers
-        if developers is not None:
-            entry["developers"] = developers
+        if publishers is not None or developers is not None:
+            entry = self.game_meta.get(game_id) or {}
+            if publishers is not None:
+                entry["publishers"] = publishers
+            if developers is not None:
+                entry["developers"] = developers
+            self.game_meta[game_id] = entry
         if stats is not None:
-            entry["stats"] = stats
-        self.game_meta[game_id] = entry
+            dyn = self.dynamic.entries.setdefault(game_id, {})
+            dyn["stats"] = stats
+            self.dynamic.entries[game_id] = dyn
 
     # ------------------------------------------------------------------
     # 中文名：永久缓存（Steam 的本地化标题不会变，没必要每次重拉）

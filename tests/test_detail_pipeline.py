@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from run import detail_targets, fetch_details  # noqa: E402
+from run import apply_listing, detail_targets, entry_needs_detail, fetch_details, merge_details  # noqa: E402
 from src import classify  # noqa: E402
 from src.state import State  # noqa: E402
 from src.steam_browse import GameMeta  # noqa: E402
@@ -33,8 +33,15 @@ NOW = datetime(2026, 10, 4, 16, 0, tzinfo=TZ)
 EXPIRY = "2026-10-10T10:00:00+08:00"
 
 CFG = {
-    "reviews_ttl_days": 7,
-    "reviews_empty_ttl_days": 3,
+    "new_game_days": 30,
+    "new_game_refresh_days": 1,
+    "discount_refresh_days": 3,
+    "expiry_refresh_days": 1,
+    "upcoming_expiry_hours": 48,
+    "detail_retry_cooldown_days": 3,
+    "min_positive_ratio": 0.7,
+    "min_review_count": 100,
+    "notable_review_count": 10000,
     "detail_fallback_budget": 1000,
 }
 
@@ -131,14 +138,14 @@ class DetailTargetsTest(unittest.TestCase):
         new_today = [deal("g-new")]
         targets, info = detail_targets(new_today, self.state, CFG, NOW)
         self.assertEqual([e["game_id"] for e in targets], ["g-new", "g-missing"])
-        self.assertEqual(info, {"new_today": 1, "backlog": 1, "total": 2})
+        self.assertEqual(info, {"new_today": 1, "backlog": 1, "rejudge": 0, "total": 2})
 
     def test_no_cap_on_backlog(self):
         """决策 6：无条数上限 —— 300 条欠账全部进目标。"""
         for i in range(300):
             self._seed(f"g-{i:03d}")
         targets, info = detail_targets([], self.state, CFG, NOW)
-        self.assertEqual(info, {"new_today": 0, "backlog": 300, "total": 300})
+        self.assertEqual(info, {"new_today": 0, "backlog": 300, "rejudge": 0, "total": 300})
         self.assertEqual(len(targets), 300)
 
     def test_ordering_new_low_first_then_cut(self):
@@ -369,6 +376,122 @@ class FetchDetailsTest(unittest.TestCase):
         browse2 = FakeBrowse(metas={101: game_meta(101), 102: game_meta(102)})
         stats2 = fetch_details(itad2, self.state, targets, CFG, NOW, browse=browse2)
         self.assertEqual(stats2["fetched"], 2)
+
+
+class S6RefreshPolicyTest(unittest.TestCase):
+    """S6 折扣感知刷新（spec 决策 16/17）：非折扣不刷 / unlisted 冻结与翻案 /
+    四档 TTL / 分档落库（apply_listing）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = State(Path(self.tmp.name) / "state.json", tz=TZ).load()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _seed(self, game_id: str, **overrides) -> dict:
+        entry = deal(game_id)
+        entry.update(overrides)
+        self.state.record_seen(entry, NOW)
+        return entry
+
+    def test_non_discount_not_refreshed(self):
+        """验收：非折扣期（expiry 已过）条目不再进入详情目标 —— 即使从未抓过详情。"""
+        self._seed("g-old", expiry="2026-10-01T00:00:00+08:00")
+        targets, info = detail_targets([], self.state, CFG, NOW)
+        self.assertEqual(targets, [])
+        self.assertFalse(entry_needs_detail(
+            next(iter(self.state.seen_deal.values())), self.state, CFG, NOW))
+
+    def test_unlisted_frozen_within_same_discount(self):
+        """决策 17：unlisted 条目同一折扣期内（start 相同）不重抓、不入目标。"""
+        self._seed("g-cold")
+        self.state.set_unlisted("g-cold", NOW, "2026-10-04T10:00:00+08:00")
+        targets, info = detail_targets([], self.state, CFG, NOW)
+        self.assertEqual([e["game_id"] for e in targets if e["game_id"] == "g-cold"], [])
+        self.assertEqual(info["rejudge"], 0)
+
+    def test_unlisted_rejudge_on_new_start(self):
+        """验收：unlisted 条目下次折扣（start 变化）→ 重抓一次重判（翻案入口）。"""
+        self._seed("g-return")
+        self.state.set_unlisted("g-return", NOW, "2026-09-20T10:00:00+08:00")
+        targets, info = detail_targets([], self.state, CFG, NOW)
+        self.assertEqual([e["game_id"] for e in targets], ["g-return"])
+        self.assertEqual(targets[0]["_scope"], "rejudge")
+        self.assertEqual(info["rejudge"], 1)
+
+    def test_rejudge_future_start_survives_fetch_filter(self):
+        """review-s6 P0-1 回归：rejudge 条目新折扣 start 在未来（跨时区时间戳）
+        不得被 fetch_details 内层 discount_active 闸门静默剔除 ——
+        否则 run_log 的 detail_rejudge 计数与实际请求数不符。"""
+        self._seed("g-return", start="2026-10-05T09:00:00+08:00")   # NOW +17h
+        self.state.set_unlisted("g-return", NOW, "2026-09-20T10:00:00+08:00")
+        targets, info = detail_targets([], self.state, CFG, NOW)
+        self.assertEqual(info["rejudge"], 1)
+        itad = FakeItad(lookup={"g-return": 100},
+                        info_map={"g-return": {"appid": 100,
+                                               "reviews": {"score": 85, "count": 5000}}})
+        browse = FakeBrowse(metas={100: game_meta(100)})
+        stats = fetch_details(itad, self.state, targets, CFG, NOW, browse=browse)
+        self.assertEqual(stats["fetched"], 1)
+        self.assertEqual(itad.asked_lookup, ["g-return"])   # GetItems 命中，info/v2 不该发生
+
+    def test_new_game_daily_ttl(self):
+        """新游（release_date ≤30 天）TTL 1 天：12h 前抓过不重抓，26h 前抓过要重抓。"""
+        self._seed("g-young")
+        self.state.set_release_date("g-young", int(NOW.timestamp()) - 5 * 86400)
+        entry = next(iter(self.state.seen_deal.values()))
+        from datetime import timedelta
+        self.state.set_meta("g-young", 100, {"score": 80, "count": 500},
+                            NOW - timedelta(hours=12))
+        self.assertFalse(entry_needs_detail(entry, self.state, CFG, NOW))
+        self.state.dyn("g-young")["fetched_at"] = (
+            NOW - timedelta(hours=26)).isoformat(timespec="seconds")
+        self.assertTrue(entry_needs_detail(entry, self.state, CFG, NOW))
+
+    def test_old_game_three_day_ttl(self):
+        """普通折扣条目 TTL 3 天：2 天前抓过不重抓，4 天前抓过要重抓。"""
+        self._seed("g-oldgame")
+        self.state.set_release_date("g-oldgame", int(NOW.timestamp()) - 300 * 86400)
+        entry = next(iter(self.state.seen_deal.values()))
+        from datetime import timedelta
+        self.state.set_meta("g-oldgame", 100, {"score": 80, "count": 500},
+                            NOW - timedelta(days=2))
+        self.assertFalse(entry_needs_detail(entry, self.state, CFG, NOW))
+        self.state.dyn("g-oldgame")["fetched_at"] = (
+            NOW - timedelta(days=4)).isoformat(timespec="seconds")
+        self.assertTrue(entry_needs_detail(entry, self.state, CFG, NOW))
+
+    def test_expiry_window_one_day_ttl(self):
+        """到期窗口（expiry −48h 起）TTL 1 天：2 天前的数据在窗口内已算陈旧。"""
+        self._seed("g-ending", expiry="2026-10-05T10:00:00+08:00")   # NOW +18h，进 48h 窗口
+        entry = next(iter(self.state.seen_deal.values()))
+        from datetime import timedelta
+        self.state.set_meta("g-ending", 100, {"score": 80, "count": 500},
+                            NOW - timedelta(days=2))
+        self.assertTrue(entry_needs_detail(entry, self.state, CFG, NOW))
+
+    def test_apply_listing_marks_cold_and_drops_dynamic(self):
+        """验收：抓完详情后分档落库 —— COLD 打 unlisted 并丢动态数据。"""
+        self._seed("g-cold")
+        self.state.set_meta("g-cold", 100, {"score": 90, "count": 12}, NOW)  # count<100
+        listing = apply_listing(self.state, [deal("g-cold")], CFG, NOW)
+        self.assertEqual(listing, {"unlisted": 1, "relisted": 0})
+        self.assertIsNotNone(self.state.unlisted("g-cold"))
+        self.assertIsNone(self.state.dyn("g-cold"))   # 动态数据已丢（省空间）
+        # merge_details：unlisted 归「冷门 / 无数据」而不是「详情待补」（PENDING 会展示）
+        item = merge_details(self.state, [deal("g-cold")], CFG)[0]
+        self.assertEqual(item["tier"], classify.TIER_COLD)
+
+    def test_apply_listing_relists_recovered_game(self):
+        """验收：翻案 —— 下次折扣重判达标后摘标记、转正常记录。"""
+        self._seed("g-back")
+        self.state.set_unlisted("g-back", NOW, "2026-09-20T10:00:00+08:00")
+        self.state.set_meta("g-back", 100, {"score": 85, "count": 5000}, NOW)  # 达标
+        listing = apply_listing(self.state, [deal("g-back")], CFG, NOW)
+        self.assertEqual(listing, {"unlisted": 0, "relisted": 1})
+        self.assertIsNone(self.state.unlisted("g-back"))
+        self.assertIsNotNone(self.state.dyn("g-back"))   # 正常记录，动态数据保留
 
 
 if __name__ == "__main__":

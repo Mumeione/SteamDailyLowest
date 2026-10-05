@@ -48,8 +48,15 @@ DEFAULTS: dict = {
     "steam_browse_rate_limit": "150 / 300s",
     "steam_browse_min_interval": 0.5,
     "fetch_last_low_time": True,
-    "reviews_ttl_days": 7,
-    "reviews_empty_ttl_days": 3,
+    # ---- S6 评价刷新（折扣感知四档 TTL，spec §3.2 / 决策 16）----
+    # 原 reviews_ttl_days / reviews_empty_ttl_days 已废弃：派生欠账不再用全局 TTL，
+    # 改为「新游 1 天 / 到期窗口 1 天 / 折扣期普通 3 天 / 非折扣期不刷新」
+    "new_game_days": 30,
+    "new_game_refresh_days": 1,
+    "discount_refresh_days": 3,
+    "expiry_refresh_days": 1,
+    # 详情抓取失败的冷却天数（原复用 reviews_empty_ttl_days，语义拆独立）
+    "detail_retry_cooldown_days": 3,
     "sweep_mode": "low_only",
     # GetItems 失效时 info/v2 逐条降级的每轮上限（1 请求/条，必须设界；
     # GetItems 正常时该路径为空）。额度按 key 计 1000 请求/5min 滑窗，实测无压力

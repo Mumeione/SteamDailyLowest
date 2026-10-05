@@ -665,7 +665,9 @@ IN ₹149 = 14900 paise → 14900 / 14.303287 ≈ 1042 分 = ¥10.42
 #### 缓存策略
 
 - `appid`：**永久有效**（Steam AppID 不会变）
-- `reviews`：**TTL 7 天**（好评率变化很慢）；「抓过但没数据」用 `reviews_empty_ttl_days`（3 天）
+- `reviews`：**折扣感知四档 TTL**（S6，2026-10-05）：新游（发行 ≤30 天）1 天 /
+  到期窗口（expiry −48h 起）1 天 / 折扣期普通条目 3 天 / **非折扣期不刷新**；
+  旧的全局 `reviews_ttl_days`（7 天）与 `reviews_empty_ttl_days`（3 天）已废弃删除
 - `title_zh`（中文名）：**永久有效**，与 `reviews` 是两条独立缓存（§2.5）
 - 缓存命中就不发请求 —— 这是把请求量压下来的关键
 
@@ -1204,8 +1206,11 @@ SteamDailyLowest/
 | `fx_cache_path`               | `"data/fx_cache.json"` | 汇率缓存文件（每天一份）                                                                                                                             |
 | `steam_timeout_seconds`       | `15`                   | Steam 请求超时（响应都很小，比 ITAD 短一些）                                                                                                             |
 | `steam_batch_size`            | `20`                   | 批量 `appdetails` 一次塞几个 appid（实测 20 正常，文档说的 50 未复核）                                                                                        |
-| `reviews_ttl_days`            | `7`                    | 好评率缓存的 TTL                                                                                                                               |
-| `reviews_empty_ttl_days`      | `3`                    | **抓过但没拿到 appid / 好评率**时的重试间隔（不再每轮重复请求）                                                                                                   |
+| `new_game_days`               | `30`                   | 新游判定窗口：发行 ≤ 该天数享受每日评价刷新（S6 决策 16）                                                                                                |
+| `new_game_refresh_days`       | `1`                    | 新游评价刷新 TTL（天）                                                                                                                          |
+| `discount_refresh_days`       | `3`                    | 折扣活跃期普通条目的评价刷新 TTL（天）；**非折扣期不刷新**（无消费方）                                                                                            |
+| `expiry_refresh_days`         | `1`                    | 到期窗口（expiry −`upcoming_expiry_hours` 起）的评价刷新 TTL（天）—— 订阅端消费窗口                                                                       |
+| `detail_retry_cooldown_days`  | `3`                    | 详情抓取失败的冷却天数（原复用 reviews_empty_ttl_days，S6 拆独立）                                                                                          |
 | `itad_rate_limit`             | `800 / 300s`           | ITAD 窗口（上限 1000 / 5min，留 20% 余量）                                                                                                         |
 | `itad_min_interval`           | `0.3`                  | ITAD 最小请求间隔（秒）                                                                                                                           |
 | `steam_rate_limit`            | `150 / 300s`           | Steam store **全站合并计数**（社区 \~200 / 5min，留 25%）                                                                                            |

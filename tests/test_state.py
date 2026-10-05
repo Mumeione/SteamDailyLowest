@@ -65,28 +65,87 @@ class StateTest(unittest.TestCase):
         self.assertEqual(dropped, 2)
         self.assertEqual(list(self.state.seen_deal.values())[0]["game_id"], "uuid-3")
 
-    def test_meta_ttl(self):
-        self.state.set_meta("uuid-1", 1658920, {"score": 61, "count": 472}, NOW)
-        self.assertTrue(self.state.meta_valid("uuid-1", NOW, ttl_days=7, empty_ttl_days=3))
-        self.assertFalse(self.state.meta_valid("uuid-1", NOW + timedelta(days=8), 7, 3))
+    def test_set_meta_splits_layers(self):
+        """S6 分层：appid/厂商 → game_meta（不变层）；reviews/stats/fetched_at → dynamic。"""
+        self.state.set_meta("uuid-1", 1658920, {"score": 61, "count": 472}, NOW,
+                            publishers=[{"id": 1, "name": "P"}], stats={"rank": 9})
+        # 不变层：只有 appid / publishers（reviews 等动态键不再混存）
+        base = self.state.game_meta["uuid-1"]
+        self.assertEqual(base["appid"], 1658920)
+        self.assertNotIn("reviews", base)
+        self.assertNotIn("fetched_at", base)
+        self.assertIn("publishers", base)
+        # 动态层
+        dyn = self.state.dyn("uuid-1")
+        self.assertEqual(dyn["reviews"], {"score": 61, "count": 472})
+        self.assertEqual(dyn["stats"], {"rank": 9})
+        self.assertEqual(dyn["fetched_at"], NOW.isoformat(timespec="seconds"))
+        # 合并视图对读方无感
+        merged = self.state.meta("uuid-1")
+        self.assertEqual(merged["appid"], 1658920)
+        self.assertEqual(merged["reviews"], {"score": 61, "count": 472})
         self.assertTrue(self.state.has_appid("uuid-1"))
 
-    def test_appid_survives_but_reviews_expire(self):
-        self.state.set_meta("uuid-1", 123, {"score": 80, "count": 500}, NOW - timedelta(days=30))
-        self.assertFalse(self.state.meta_valid("uuid-1", NOW, 7, 3))
-        self.assertTrue(self.state.has_appid("uuid-1"))
+    def test_set_appid_does_not_touch_dynamic(self):
+        self.state.set_meta("uuid-1", 123, {"score": 80, "count": 500}, NOW)
+        self.state.set_appid("uuid-1", 456)
+        self.assertEqual(self.state.dyn("uuid-1")["fetched_at"],
+                         NOW.isoformat(timespec="seconds"))   # fetched_at 没被刷掉
+        self.assertEqual(self.state.meta("uuid-1")["appid"], 456)
 
-    def test_no_data_entry_uses_empty_ttl_not_forever(self):
-        """抓过但没有好评率/appid 的条目：按 empty_ttl 重试，不是每轮都重抓。"""
-        self.state.set_meta("uuid-noappid", None, None, NOW)
-        self.assertTrue(self.state.meta_valid("uuid-noappid", NOW, 7, 3))
-        self.assertTrue(self.state.meta_valid("uuid-noappid", NOW + timedelta(days=2), 7, 3))
-        self.assertFalse(self.state.meta_valid("uuid-noappid", NOW + timedelta(days=4), 7, 3))
-        # 关键：判定不能依赖「有没有 appid」—— 该条目 appid 就是拿不到
-        self.assertFalse(self.state.has_appid("uuid-noappid"))
+    def test_never_fetched_has_no_dynamic(self):
+        self.assertIsNone(self.state.dyn("uuid-missing"))
+        self.assertFalse(self.state.detail_fetched_recently("uuid-missing", NOW, 7))
 
-    def test_never_fetched_is_invalid(self):
-        self.assertFalse(self.state.meta_valid("uuid-missing", NOW, 7, 3))
+    def test_legacy_game_meta_auto_migrates(self):
+        """S6 代码自迁移：旧版 game_meta 混存的动态键 → load 时收编进 dynamic.json。"""
+        legacy = {
+            "version": 1, "updated_at": None, "seen_deal": {}, "run_log": [],
+            "game_meta": {
+                "uuid-old": {
+                    "appid": 999,
+                    "reviews": {"score": 70, "count": 100},
+                    "stats": {"rank": 3},
+                    "fetched_at": "2026-10-01T00:00:00+08:00",
+                    "detail_failed_at": "2026-09-30T00:00:00+08:00",
+                    "detail_attempts": 2,
+                }
+            },
+        }
+        self.path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+        state = State(self.path, tz=TZ).load()
+        # game_meta 只剩不变层；动态键进了 dynamic
+        self.assertEqual(state.game_meta["uuid-old"], {"appid": 999})
+        dyn = state.dyn("uuid-old")
+        self.assertEqual(dyn["reviews"], {"score": 70, "count": 100})
+        self.assertEqual(dyn["stats"], {"rank": 3})
+        self.assertEqual(dyn["detail_attempts"], 2)
+        # 合并视图与迁移前读感一致
+        self.assertEqual(state.meta("uuid-old")["reviews"], {"score": 70, "count": 100})
+        # dynamic.json 已落盘；幂等：再 load 一次结果一致
+        self.assertTrue(self.path.with_name("dynamic.json").exists())
+        again = State(self.path, tz=TZ).load()
+        self.assertEqual(again.meta("uuid-old")["reviews"], {"score": 70, "count": 100})
+        self.assertEqual(again.game_meta["uuid-old"], {"appid": 999})
+
+    def test_unlisted_mark_roundtrip(self):
+        self.state.set_unlisted("uuid-1", NOW, "2026-09-21T00:30:00+02:00")
+        mark = self.state.unlisted("uuid-1")
+        self.assertEqual(mark["start"], "2026-09-21T00:30:00+02:00")
+        self.assertTrue(self.state.clear_unlisted("uuid-1"))
+        self.assertIsNone(self.state.unlisted("uuid-1"))
+        self.assertFalse(self.state.clear_unlisted("uuid-1"))   # 再摘一次：False
+
+    def test_cleanup_drops_dynamic_for_gone_games(self):
+        """验收：游戏离开 seen_deal（留存清理）→ 动态条目一并删除。"""
+        self.state.record_seen(entry(expiry=(NOW - timedelta(days=10)).isoformat()), NOW)
+        self.state.record_seen(entry(game_id="uuid-3",
+                                     expiry=(NOW - timedelta(days=3)).isoformat()), NOW)
+        self.state.set_meta("uuid-1", 111, {"score": 80, "count": 500}, NOW)
+        self.state.set_meta("uuid-3", 222, {"score": 80, "count": 500}, NOW)
+        self.state.cleanup_expired(NOW, retention_days=7)
+        self.assertIsNone(self.state.dyn("uuid-1"))
+        self.assertIsNotNone(self.state.dyn("uuid-3"))
 
     def test_record_seen_trims_fields(self):
         """落库只保留 classify.SEEN_KEEP 里的字段（§5 精简）。"""
@@ -314,6 +373,21 @@ class StateTest(unittest.TestCase):
         self.path.with_name("cache.json").write_text("{broken", encoding="utf-8")
         reloaded = State(self.path, tz=TZ).load()
         self.assertEqual(reloaded.compare_cache, {})
+
+    def test_split_corrupt_dynamic_json_raises(self):
+        """dynamic.json 损坏：与 state.json 同等对待抛错（review-s6 P1-3）——
+        它是 reviews 的唯一副本，静默按空起步会让整轮无谓重抓且无人知晓。"""
+        self.state.save(NOW)
+        self.path.with_name("dynamic.json").write_text("{broken", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            State(self.path, tz=TZ).load()
+
+    def test_split_missing_dynamic_json_starts_empty(self):
+        """dynamic.json 缺失（≠损坏）：按空起步，可重抓自愈。"""
+        self.state.save(NOW)
+        self.path.with_name("dynamic.json").unlink()
+        reloaded = State(self.path, tz=TZ).load()
+        self.assertEqual(reloaded.dynamic.entries, {})
 
 
 if __name__ == "__main__":

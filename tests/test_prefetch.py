@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,9 @@ from src import classify  # noqa: E402
 from src.state import State  # noqa: E402
 
 NOW_STAMP = "2026-09-22T15:00:00+08:00"
+# S6 起非折扣期（expiry 已过）不刷新 —— expiry 必须永远落在「未来」测试才有意义
+EXPIRY = (datetime.now(classify.zone("Asia/Shanghai")) + timedelta(days=30)
+          ).isoformat(timespec="seconds")
 
 
 def raw_item(game_id: str, start: str, title: str = "T") -> dict:
@@ -33,7 +37,7 @@ def raw_item(game_id: str, start: str, title: str = "T") -> dict:
             "regular": {"amountInt": 10000, "amount": 100.0},
             "cut": 90, "flag": "N",
             "timestamp": start,
-            "expiry": "2026-09-30T19:00:00+08:00",
+            "expiry": EXPIRY,
             "storeLow": {"amountInt": 1000, "amount": 10.0},
             "historyLow": {"amountInt": 1000, "amount": 10.0},
             "historyLow_1y": {"amountInt": 1000, "amount": 10.0},
@@ -95,8 +99,11 @@ class PrefetchTest(unittest.TestCase):
             "expired_retention_days": 7,
             "sweep_mode": "low_only",
             "prefetch_daily_budget": 300,
-            "reviews_ttl_days": 7,
-            "reviews_empty_ttl_days": 3,
+            "new_game_days": 30,
+            "new_game_refresh_days": 1,
+            "discount_refresh_days": 3,
+            "expiry_refresh_days": 1,
+            "detail_retry_cooldown_days": 3,
             "min_cut": 0, "max_price": None,
             "only_type": "game", "exclude_mature": True, "exclude_free": True,
             "run_log_keep": 30,

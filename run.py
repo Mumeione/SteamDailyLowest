@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -91,29 +91,112 @@ def build_steam_client(cfg: dict) -> SteamClient:
     )
 
 
+def discount_active(entry: dict, now: datetime) -> bool:
+    """条目是否折扣活跃（spec 决策 16：``start ≤ now ≤ expiry``）。
+
+    边界解析不了的按**活跃**处理 —— 宁多刷不漏刷；非折扣期一律不刷新
+    （用户 2026-10-05 裁决：不进列表就没有消费方）。
+    """
+    expiry = classify.parse_time(entry.get("expiry"), now.tzinfo)
+    if expiry is not None and expiry < now:
+        return False
+    start = classify.parse_time(entry.get("start"), now.tzinfo)
+    if start is not None and start > now:
+        return False
+    return True
+
+
+def refresh_ttl_days(entry: dict, state: State, game_id: str, cfg: dict, now: datetime) -> int:
+    """折扣感知的刷新 TTL（spec 决策 16，四档）：
+
+    新游（release_date ≤ ``new_game_days``）1 天 → 到期窗口（expiry −
+    ``upcoming_expiry_hours`` 起）1 天 → 折扣期普通条目 ``discount_refresh_days``
+    （3 天）。调用方保证条目折扣活跃（非折扣期根本不进派生）。
+    """
+    ng_days = int(cfg.get("new_game_days", 30) or 0)
+    meta = state.meta(game_id) or {}
+    rd = meta.get("release_date")
+    if ng_days > 0 and rd:
+        try:
+            released = datetime.fromtimestamp(int(rd), tz=now.tzinfo)
+            if abs((now - released).total_seconds()) <= ng_days * 86400:
+                return int(cfg.get("new_game_refresh_days", 1))
+        except (TypeError, ValueError, OSError, OverflowError):
+            pass
+    expiry = classify.parse_time(entry.get("expiry"), now.tzinfo)
+    if expiry is not None:
+        window = timedelta(hours=int(cfg.get("upcoming_expiry_hours", 48)))
+        if now >= expiry - window:
+            return int(cfg.get("expiry_refresh_days", 1))
+    return int(cfg.get("discount_refresh_days", 3))
+
+
+def entry_needs_detail(entry: dict, state: State, cfg: dict, now: datetime,
+                       *, is_new: bool = False) -> bool:
+    """单条目级「要不要发详情请求」（S6 折扣感知口径，detail_targets 的原子判定）。
+
+    - unlisted 冻结（同一折扣期内，``start`` 与标记一致）→ False；
+    - 非当日新增且**非折扣活跃** → False（非折扣期不刷新）；
+    - 冷却期内失败过 → False（**当日新增不冷却**，报表核心每轮重试）；
+    - 其余按动态数据年龄 vs :func:`refresh_ttl_days` 判定（没抓过 → True）。
+    """
+    game_id = entry.get("game_id")
+    if not game_id:
+        return False
+    mark = state.unlisted(game_id)
+    if mark is not None and (entry.get("start") or "") == (mark.get("start") or ""):
+        return False   # 同一折扣期内冻结（决策 17）
+    if not is_new:
+        if not discount_active(entry, now):
+            return False
+        if state.detail_recently_failed(
+                game_id, now, int(cfg.get("detail_retry_cooldown_days", 3))):
+            return False
+    dyn = state.dyn(game_id)
+    if not dyn or dyn.get("fetched_at") is None:
+        return True
+    fetched = classify.parse_time(dyn.get("fetched_at"), now.tzinfo)
+    if fetched is None:
+        return True
+    ttl_days = refresh_ttl_days(entry, state, game_id, cfg, now)
+    return (now - fetched) >= timedelta(days=ttl_days)
+
+
+def _is_new_today(entry: dict, now: datetime) -> bool:
+    """兜底的当日新增判定（给 count_backlog / prefetch 用，无 candidates 入参时）：
+    折扣开始日是今天，或首次见到是今天（pick_new_today 双口径的条目级复刻）。"""
+    start = classify.parse_time(entry.get("start"), now.tzinfo)
+    if start is not None and start.astimezone(now.tzinfo).date() == now.date():
+        return True
+    first = classify.parse_time(entry.get("first_seen_at"), now.tzinfo)
+    return first is not None and first.astimezone(now.tzinfo).date() == now.date()
+
+
 def detail_targets(candidates: list[dict], state: State,
                    cfg: dict, now: datetime) -> tuple[list[dict], dict]:
-    """决定这一轮要给哪些游戏抓详情（重构 S2：**派生式欠账**，spec §3.2 决策 5/6）。
+    """决定这一轮要给哪些游戏抓详情（S6 修订：**折扣感知派生**，spec §3.2 决策 16/17）。
 
-        欠账 = seen_deal 的 game_id 集合 − 有有效详情的集合（meta_valid）
-        目标 = 当日新增 ∪ 欠账      —— **无条数上限**（新链路 3 万条 ≈ 120 次请求）
+        目标 = 当日新增
+             ∪ {折扣活跃 ∧ 数据年龄 > TTL(e)}          # 四档 TTL，非折扣期不刷新
+             ∪ {unlisted ∧ e.start ≠ 标记.start}       # 下次折扣重判翻案
 
-    - **不建队列文件**：欠账每轮从状态库现算派生；折扣结束 7 天后
-      `seen_deal` 条目被留存清理，欠账集合自动收缩（§5）。
-    - 「有效」沿用 :meth:`State.meta_valid`（reviews 7 天 TTL / 空评测 3 天 TTL）
-      —— 比 spec 公式「有 appid 且有 reviews」多算一层 TTL，否则**ITAD 本就没有
-      Steam 评测**的游戏（reviews 永远为空）会变成永远清不掉的假欠账。
-    - 近期失败的条目按 ``reviews_empty_ttl_days`` 天数冷却排除
-      （失败标记见 :meth:`State.set_detail_failed`），避免每轮重试坏条目。
+    - **不建队列文件**：目标每轮从状态库现算派生；折扣结束 7 天后
+      `seen_deal` 条目被留存清理，动态条目随之删除，集合自动收缩（§5）。
+    - **unlisted 冻结**（决策 17）：未入列表条目同一折扣期内不重抓、不建动态条目；
+      ``start`` 变了（下次折扣）才重抓一次重判。
+    - 近期失败的条目按 ``detail_retry_cooldown_days`` 冷却排除
+      （失败标记见 :meth:`State.set_detail_failed`）。
       **当日新增不冷却** —— 报表核心，每轮必须重试。
-    - 欠账排序：新史低（``low_kind == "N"``）优先 → 折扣力度降序（分层字典序的
+    - 排序：新史低（``low_kind == "N"``）优先 → 折扣力度降序（分层字典序的
       详情管线版，spec §3.3 决策 8）；同 game_id 多版本折扣取最近出现的为代表。
+    - 返回的目标 dict 是 seen_deal 条目的**浅拷贝**并附 ``_scope``
+      （new / stale / rejudge），fetch_details 用它区分「当日新增不冷却」。
     """
-    ttl = int(cfg.get("reviews_ttl_days", 7))
-    empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
+    cooldown = int(cfg.get("detail_retry_cooldown_days", 3))
 
-    new_targets = [e for e in candidates
-                   if not state.meta_valid(e.get("game_id"), now, ttl, empty_ttl)]
+    new_targets = [{**e, "_scope": "new"} for e in candidates
+                   if e.get("game_id")
+                   and entry_needs_detail(e, state, cfg, now, is_new=True)]
     new_ids = {e.get("game_id") for e in candidates}
 
     latest: dict[str, dict] = {}
@@ -124,28 +207,73 @@ def detail_targets(candidates: list[dict], state: State,
         prev = latest.get(gid)
         if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
             latest[gid] = entry
-    backlog = [
-        e for gid, e in latest.items()
-        if not state.meta_valid(gid, now, ttl, empty_ttl)
-        and not state.detail_recently_failed(gid, now, empty_ttl)
-    ]
+
+    backlog: list[dict] = []
+    rejudge = 0
+    for gid, entry in latest.items():
+        mark = state.unlisted(gid)
+        if mark is not None:
+            if (entry.get("start") or "") == (mark.get("start") or ""):
+                continue   # 同一折扣期内冻结
+            if state.detail_recently_failed(gid, now, cooldown):
+                continue
+            backlog.append({**entry, "_scope": "rejudge"})   # 下次折扣 → 重判翻案
+            rejudge += 1
+            continue
+        if entry_needs_detail(entry, state, cfg, now):
+            backlog.append({**entry, "_scope": "stale"})
     backlog.sort(key=lambda e: (0 if e.get("low_kind") == "N" else 1,
                                 -(int(e.get("cut") or 0)), e.get("expiry") or ""))
     return new_targets + backlog, {
         "new_today": len(new_targets),
-        "backlog": len(backlog),
+        "backlog": len(backlog) - rejudge,
+        "rejudge": rejudge,
         "total": len(new_targets) + len(backlog),
     }
 
 
 def count_backlog(hist_low: list[dict], state: State, cfg: dict, now: datetime) -> int:
-    """目录里还有多少条没详情（给页面显示增量补齐的进度）。"""
-    ttl = int(cfg.get("reviews_ttl_days", 7))
-    empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
+    """目录里还有多少条没详情（给页面显示增量补齐的进度）。
+
+    S6 口径：只数**会真正派生为目标**的条目（折扣活跃 / 当日新增 / 重判），
+    非折扣期与 unlisted 冻结条目不再计入 —— 33,891 条 game_meta 存量里
+    大部分是非折扣期条目，按旧口径数会虚高且永远清不掉。
+    """
     return sum(
         1 for e in hist_low
-        if not state.meta_valid(e.get("game_id"), now, ttl, empty_ttl)
+        if e.get("game_id") and entry_needs_detail(
+            e, state, cfg, now, is_new=_is_new_today(e, now))
     )
+
+
+def apply_listing(state: State, targets: list[dict], cfg: dict, now: datetime) -> dict:
+    """详情抓完后的分档落库（spec 决策 17）：达标转正常，不达标打 unlisted 并丢动态数据。
+
+    对本轮目标里有动态数据的条目重算 tier：
+
+    - 进列表（quality/notable/pending）→ 摘除 unlisted 标记（翻案）；
+    - 不进列表（cold/other）→ 打 ``unlisted{at, start}`` 并删除动态条目
+      —— 评价数 <100 或差评低热的游戏永不展示，为它们存评价数据纯属浪费；
+      下次折扣（``start`` 变化）由 :func:`detail_targets` 重抓重判。
+
+    返回 ``{"unlisted": 标记数, "relisted": 翻案数}``（日志与 run_log 用）。
+    """
+    marked = relisted = 0
+    for entry in targets:
+        gid = entry.get("game_id")
+        if not gid:
+            continue
+        dyn = state.dyn(gid)
+        if not dyn or dyn.get("fetched_at") is None:
+            continue   # 本轮没抓到（预算截断 / 失败），维持原状
+        if classify.is_shown(classify.tier_of(dyn.get("reviews"), cfg)):
+            if state.clear_unlisted(gid):
+                relisted += 1
+        else:
+            state.set_unlisted(gid, now, entry.get("start"))
+            state.drop_dyn(gid)
+            marked += 1
+    return {"unlisted": marked, "relisted": relisted}
 
 
 def resolve_sweep(cfg: dict, audit: bool) -> str:
@@ -284,6 +412,7 @@ def _write_browse_meta(state: State, game_id: str, meta, now: datetime) -> None:
         developers = [{"id": None, "name": d.get("name")} for d in meta.developers]
     state.set_meta(game_id, meta.appid, meta.reviews, now,
                    publishers=publishers, developers=developers, stats=None)
+    state.set_release_date(game_id, meta.release_date)
     if meta.name:
         state.set_title_zh(game_id, meta.name.strip(), now)
 
@@ -307,11 +436,16 @@ def fetch_details(client: ItadClient, state: State, targets: list[dict], cfg: di
     ``fetched`` = 本轮新写入详情的条数（两跳 + 降级合计）。
     Blocked（连续 403 滥用封禁）不降级、不上抛被吞 —— 照常中止本轮。
     """
-    ttl = int(cfg.get("reviews_ttl_days", 7))
-    empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
     fallback_budget = max(0, int(cfg.get("detail_fallback_budget", 1000) or 0))
-    todo = [e for e in targets if e.get("game_id")
-            and not state.meta_valid(e.get("game_id"), now, ttl, empty_ttl)]
+    # 内层再过滤一次：同轮重复目标 / 断点续传后已补齐的跳过。
+    # 「当日新增不冷却」由 detail_targets 附在目标上的 _scope 传递。
+    # rejudge 同样跳过折扣活跃闸门（review-s6 P0-1）：派生处已按
+    # 「start ≠ 标记.start」放行且自查冷却，若这里再走 discount_active，
+    # 新折扣 start 在未来（跨时区时间戳）时会被静默剔除，
+    # run_log 的 detail_rejudge 计数与实际请求数不符。
+    todo = [e for e in targets if e.get("game_id") and entry_needs_detail(
+        e, state, cfg, now,
+        is_new=e.get("_scope") in ("new", "rejudge"))]
     stats = {"fetched": 0, "fallback_fetched": 0, "fallback_skipped": 0}
     if not todo:
         return stats
@@ -463,12 +597,18 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         item = dict(entry)
         item["title_zh"] = meta.get("title_zh") if meta else None
         item["last_low_at"] = state.last_low_at(entry.get("game_id"), entry.get("expiry"))
-        # 厂商 / stats（快照 v3，2026-09-30）：同样来自 game_meta 的一等缓存字段。
+        # 厂商 / stats（快照 v3，2026-09-30）：同样来自 meta 合并视图的一等缓存字段。
         # 旧条目尚无这些键 → 一律给 None / []，消费方（快照）不得因此判「异常」。
         item["publishers"] = (meta or {}).get("publishers") or []
         item["developers"] = (meta or {}).get("developers") or []
         item["stats"] = (meta or {}).get("stats")
-        if not meta or not meta.get("fetched_at"):
+        # S6 决策 17：unlisted 条目的动态数据已被丢弃 —— 必须归「冷门 / 无数据」
+        # 而不是「详情待补」，否则会以 PENDING 档重新进列表（PENDING 是展示档）。
+        if meta and meta.get("unlisted"):
+            item["appid"] = meta.get("appid")
+            item["reviews"] = None
+            item["tier"] = classify.TIER_COLD
+        elif not meta or not meta.get("fetched_at"):
             item["appid"] = None
             item["reviews"] = None
             item["tier"] = classify.TIER_PENDING
@@ -709,10 +849,11 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     state.save(now)  # ← 关键：先落盘，别让详情阶段的失败把这一轮的攒库一起带走
     log(f"      状态库已落盘（{len(hist_low)} 条已见记录）：随后即便详情全失败也不会丢")
 
-    # ---- 详情抓取目标：当日新增 ∪ 派生欠账（无条数上限，spec §3.2 决策 5/6） ----
+    # ---- 详情抓取目标：当日新增 ∪ 折扣活跃欠账 ∪ unlisted 重判（无条数上限，spec §3.2）----
     targets, target_info = detail_targets(candidates, state, cfg, now)
     log(f"      详情目标 {target_info['total']} 个：当日新增 {target_info['new_today']}"
-        f" + 派生欠账 {target_info['backlog']} 个（派生式，不设预算）")
+        f" + 折扣期欠账 {target_info['backlog']} + unlisted 重判 {target_info['rejudge']}"
+        f"（派生式，不设预算）")
 
     fx_rates = enrich.load_fx(cfg, today.isoformat(), log)
     steam_client = build_steam_client(cfg)
@@ -737,6 +878,12 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     # ---- 慢的部分放最后 ----
     detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse_client)
     detail_fetched = detail_stats["fetched"]
+    state.save(now)
+    # ---- 分档落库（S6 决策 17）：达标转正常，不达标打 unlisted 并丢动态数据 ----
+    listing = apply_listing(state, targets, cfg, now)
+    if listing["unlisted"] or listing["relisted"]:
+        log(f"      分档落库：新标记未入列表 {listing['unlisted']} 个"
+            f" · 翻案转正常 {listing['relisted']} 个")
     state.save(now)
     backlog = count_backlog(hist_low, state, cfg, now)
     log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个（目标 {len(targets)} 个；"
@@ -791,6 +938,9 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "detail_targets": len(targets),
             "detail_new_today": target_info["new_today"],
             "detail_derived_backlog": target_info["backlog"],
+            "detail_rejudge": target_info["rejudge"],
+            "detail_unlisted_marked": listing["unlisted"],
+            "detail_relisted": listing["relisted"],
             "detail_fetched": detail_fetched,
             "detail_fallback_fetched": detail_stats["fallback_fetched"],
             "detail_fallback_skipped": detail_stats["fallback_skipped"],
@@ -901,19 +1051,20 @@ def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetim
        （重构 S2），预抓是**提前几小时**补缓存的轻量轮，保留小预算压请求量；
        `0` = 关闭预抓。
 
-    「缺数据」= 缺 appid / 好评率（`meta_valid` 不通过）**或**已有详情但缺中文名
-    （两条独立缓存，§2.5）。调用前须已 `record_seen`。
+    「缺数据」= 需要发详情请求（:func:`entry_needs_detail`，S6 折扣感知口径：
+    折扣活跃 / 当日新增 / unlisted 重判，非折扣期与冻结条目跳过）**或**
+    已有详情但缺中文名（两条独立缓存，§2.5；unlisted 冻结条目跳过 ——
+    不进列表的游戏补中文名没有消费方）。调用前须已 `record_seen`。
     """
     budget = int(cfg.get("prefetch_daily_budget", 300) or 0)
-    ttl = int(cfg.get("reviews_ttl_days", 7))
-    empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
 
     need: list[dict] = []
     for entry in hist_low:
         game_id = entry.get("game_id")
-        if not state.meta_valid(game_id, now, ttl, empty_ttl):
+        if entry_needs_detail(entry, state, cfg, now, is_new=_is_new_today(entry, now)):
             need.append(entry)
-        elif state.has_appid(game_id) and not state.title_zh(game_id):
+        elif game_id and not state.unlisted(game_id) \
+                and state.has_appid(game_id) and not state.title_zh(game_id):
             need.append(entry)
     need.sort(key=_start_key, reverse=True)
     targets = need[:max(0, budget)]
@@ -972,6 +1123,10 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     # 1) 批量详情管线：lookup → GetItems → info/v2 降级（缓存命中不发请求，断点续传）
     detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse)
     fetched = detail_stats["fetched"]
+    state.save(now)
+    # 1.5) 分档落库（S6 决策 17）：预抓抓到的详情同样要过 unlisted 收敛
+    listing = apply_listing(state, targets, cfg, now)
+    state.save(now)
 
     # 2) Steam 中文名：正常已被 GetItems 批量写入（_write_browse_meta）；
     #    仍缺的（GetItems 失效走了 info/v2 降级等）逐游戏单请求补，永久缓存
@@ -980,6 +1135,8 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     done = 0
     for entry in targets:
         game_id = entry.get("game_id")
+        if state.unlisted(game_id):
+            continue   # 本轮刚被收敛为未入列表：不进列表的游戏补中文名没有消费方
         if state.has_appid(game_id) and not state.title_zh(game_id):
             appid = int(state.meta(game_id).get("appid"))
             try:
@@ -1020,6 +1177,8 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
             "prefetch_targets": target_info["chosen"],
             "detail_fetched": fetched,
             "detail_fallback_fetched": detail_stats["fallback_fetched"],
+            "detail_unlisted_marked": listing["unlisted"],
+            "detail_relisted": listing["relisted"],
             "title_zh_fetched": title_fetched,
             "detail_backlog": backlog,
             "limiter": client.limiter.stats(),

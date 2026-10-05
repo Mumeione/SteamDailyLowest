@@ -10,7 +10,7 @@
 
 选择规则（与 ``run.detail_targets`` 派生式欠账**同口径**）：
 - game_id 已不在 ``seen_deal``（被留存清理吃掉了）→ 跳过：孤儿 meta 没有消费方，不制造
-- 已有有效详情（``meta_valid``）→ 跳过：**幂等**，重跑零请求
+- 动态数据 7 天内抓过（``detail_fetched_recently``）→ 跳过：**幂等**，重跑零请求
 - ``detail_recently_failed``（3 天冷却内失败）→ 跳过：坏 uuid 不反复重试
 其余进 :func:`run.fetch_details` 批量管线（lookup → GetItems → info/v2 降级，
 请求量 ≈ 清单数/250 + 1 次 lookup）。
@@ -39,7 +39,7 @@ from src.steam_browse import SteamBrowseClient  # noqa: E402
 
 
 def select_targets(entries: list[dict], state: State, now: datetime,
-                   ttl: int, empty_ttl: int) -> tuple[list[dict], dict]:
+                   ttl: int, cooldown: int) -> tuple[list[dict], dict]:
     """从清单里挑出本轮要回填的条目（规则见模块 docstring），保持清单顺序。"""
     gids = {e.get("game_id") for e in state.seen_deal.values()}
     targets: list[dict] = []
@@ -50,9 +50,9 @@ def select_targets(entries: list[dict], state: State, now: datetime,
             continue
         if gid not in gids:
             stats["orphan_skipped"] += 1
-        elif state.meta_valid(gid, now, ttl, empty_ttl):
+        elif state.detail_fetched_recently(gid, now, ttl):
             stats["valid_skipped"] += 1
-        elif state.detail_recently_failed(gid, now, empty_ttl):
+        elif state.detail_recently_failed(gid, now, cooldown):
             stats["cooldown_skipped"] += 1
         else:
             targets.append(entry)
@@ -91,8 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg["detail_fallback_budget"] = args.fallback_budget
     tz = classify.zone(cfg["timezone"])
     now = datetime.now(tz)
-    ttl = int(cfg.get("reviews_ttl_days", 7))
-    empty_ttl = int(cfg.get("reviews_empty_ttl_days", 3))
+    ttl = 7   # 幂等窗口：动态数据 7 天内抓过即跳过（一次性工具，不用折扣感知口径）
+    cooldown = int(cfg.get("detail_retry_cooldown_days", 3))
 
     state = State(Path(args.state), tz=tz).load()
     entries = [json.loads(line)
@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
                if line.strip()]
     gids_before, appid_before, reviews_before = coverage(state)
 
-    targets, stats = select_targets(entries, state, now, ttl, empty_ttl)
+    targets, stats = select_targets(entries, state, now, ttl, cooldown)
     remaining = 0
     if args.limit > 0 and len(targets) > args.limit:
         remaining = len(targets) - args.limit
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
 
     gids_after, appid_after, reviews_after = coverage(state)
     still_missing = sum(1 for e in targets
-                        if not state.meta_valid(e.get("game_id"), now, ttl, empty_ttl))
+                        if not state.detail_fetched_recently(e.get("game_id"), now, ttl))
     report = "\n".join([
         "## S3 欠账回填报告",
         f"- 清单 {len(entries)} 条 → 本轮处理 **{len(targets)}** 条"

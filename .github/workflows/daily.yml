@@ -109,6 +109,11 @@ jobs:
           else
             echo "data 分支无状态文件，按空库起步"
           fi
+          # 动态重要数据（重构 S6）：reviews/stats/失败簿记，缺失按空起步（可重抓自愈）
+          if [ -f statedata/data/dynamic.json ]; then
+            cp statedata/data/dynamic.json data/dynamic.json
+            echo "动态库 $(wc -c < data/dynamic.json) 字节"
+          fi
           # 可重建缓存（重构 S4）：缺失不报错，丢了重拉
           if [ -f statedata/data/cache.json ]; then
             cp statedata/data/cache.json data/cache.json
@@ -151,6 +156,11 @@ jobs:
           mkdir -p data
           cp ../data/state.json data/state.json
           git add data/state.json
+          # 动态重要数据（重构 S6）：与 state 同一份保存，存在才提交
+          if [ -f ../data/dynamic.json ]; then
+            cp ../data/dynamic.json data/dynamic.json
+            git add data/dynamic.json
+          fi
           # 可重建缓存（重构 S4）：与 state 同一份保存，存在才提交
           if [ -f ../data/cache.json ]; then
             cp ../data/cache.json data/cache.json
@@ -208,6 +218,11 @@ jobs:
           else
             echo "data 分支无状态文件，按空库起步"
           fi
+          # 动态重要数据（重构 S6）：reviews/stats/失败簿记，缺失按空起步（可重抓自愈）
+          if [ -f statedata/data/dynamic.json ]; then
+            cp statedata/data/dynamic.json data/dynamic.json
+            echo "动态库 $(wc -c < data/dynamic.json) 字节"
+          fi
           # 可重建缓存（重构 S4）：缺失不报错，丢了重拉
           if [ -f statedata/data/cache.json ]; then
             cp statedata/data/cache.json data/cache.json
@@ -238,6 +253,11 @@ jobs:
           mkdir -p data
           cp ../data/state.json data/state.json
           git add data/state.json
+          # 动态重要数据（重构 S6）：与 state 同一份保存，存在才提交
+          if [ -f ../data/dynamic.json ]; then
+            cp ../data/dynamic.json data/dynamic.json
+            git add data/dynamic.json
+          fi
           # 可重建缓存（重构 S4）：与 state 同一份保存，存在才提交
           if [ -f ../data/cache.json ]; then
             cp ../data/cache.json data/cache.json
