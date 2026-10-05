@@ -636,8 +636,8 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
 
     ``enrich_hook`` 只在**最后一版**传（首版里的条目大多还没有 appid，
     补不出东西，白白发 Steam 请求）；接收 ``(当日新增, 即将过期, info)``
-    两个集合，跨区比价在两者间合并 appid 去重并走 `appid|expiry` 缓存
-    （2026-09-27 方案 B：同一折扣期内不重拉外区价）。
+    两个集合，跨区比价在两者间合并 appid 去重后现价真查（S7 换模型：
+    原价 `appid|cc` 永久缓存 + 真查即校准）。
 
     ``upcoming``：「即将过期」视图的候选条目（调用方按
     :func:`classify.in_view` 筛好）；``None`` = 本轮不产出该视图。
@@ -905,7 +905,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
                                     upcoming=upcoming_shown)
         log(f"      中文名：新取 {facts['title_fetched']} 个 · 命中缓存 {facts['title_cached']} 个"
             f"；跨区比价批量 {facts['compare_batches']} 次"
-            f"（缓存命中 {facts['compare_cache_hits']} · 新拉 {facts['compare_fetched']}）"
+            f"（现价真查 {facts['compare_fetched']} 个 · 重定价校准 {facts['compare_repriced']} 次）"
             + (f"；Steam 请求合计 {steam_client.calls} 次" if steam_client.calls else ""))
         if facts["price_mismatch"]:
             for item in facts["price_mismatch"]:
@@ -949,7 +949,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             "detail_pending": final["tier"].get(classify.TIER_PENDING, 0),
             "title_zh_fetched": (final.get("steam") or {}).get("title_fetched", 0),
             "title_zh_cached": (final.get("steam") or {}).get("title_cached", 0),
-            "compare_cache_hits": (final.get("steam") or {}).get("compare_cache_hits", 0),
+            "compare_repriced": (final.get("steam") or {}).get("compare_repriced", 0),
             "compare_fetched": (final.get("steam") or {}).get("compare_fetched", 0),
             "price_mismatch": (final.get("steam") or {}).get("price_mismatch") or [],
             "deduped_versions": len(final["deduped"]),

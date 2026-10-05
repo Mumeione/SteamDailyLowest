@@ -43,6 +43,12 @@ _CACHE_KEYS = ("compare_cache", "low_time_cache")
 _DYN_KEYS = ("reviews", "stats", "fetched_at", "detail_failed_at", "detail_attempts")
 
 
+def _is_cc_suffix(suffix: str) -> bool:
+    """compare_cache 新键（S7）后缀须为两位大写地区码（UA/IN/…）；
+    旧方案 B 键的后缀是 ISO 时间戳或空串，据此在 load 自迁移时识别丢弃。"""
+    return len(suffix) == 2 and suffix.isalpha() and suffix.isupper()
+
+
 def _atomic_write_json(path: Path, payload: dict) -> None:
     """紧凑 JSON + 原子写（先写临时文件再替换），State 与 Cache 共用。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +206,18 @@ class State:
                     target.setdefault(k, v)
         if legacy_found:
             self.cache.save()
+        # ---- 重构 S7 代码自迁移：旧版 compare_cache（方案 B）键 ``<appid>|<expiry>``
+        # 存的是**折扣现价**（price_overview.final），与现模型（``<appid>|<cc>``
+        # 存区域**原价** initial）不是同一个量 —— 收编会把折扣价当原价、污染
+        # 重定价校准基线，直接丢弃（用户 2026-10-05 裁决清空重建；新缓存由每轮
+        # 真查响应里的 initial 零成本自建，无额外请求）。幂等：合法键（后缀为
+        # 两位大写地区码）不受影响。
+        stale = [k for k in self.cache.data["compare_cache"]
+                 if not _is_cc_suffix(k.rsplit("|", 1)[-1])]
+        if stale:
+            for k in stale:
+                del self.cache.data["compare_cache"][k]
+            self.cache.save()
         self.data = raw
         # ---- 重构 S6 代码自迁移：旧版 game_meta 里混存的动态键（reviews /
         # stats / fetched_at / 失败簿记）→ 收编进 dynamic.json 后从 game_meta
@@ -275,8 +293,11 @@ class State:
     def cleanup_expired(self, now: datetime, retention_days: int) -> int:
         """删除 expiry 已超过保留期的条目（§5 留存清理）。
 
-        「折扣期暂存」的两块缓存（比价 / 上次史低时间，键都含 expiry）
-        随 seen_deal 同一保留期一起清理，不单独设 TTL。
+        「折扣期暂存」的缓存（上次史低时间，键含 expiry）随 seen_deal 同一
+        保留期一起清理，不单独设 TTL。**S7 起比价缓存不参与清理**：它已换
+        永久键 ``<appid>|<cc>``（存区域原价），键不含 expiry —— 若仍走 expiry
+        清理逻辑，地区码后缀解析不成时间会被当成「绑定不了折扣期」误删
+        （S7 头号坑，handoff 明确警告过）。
         **S6 起 dynamic.json 同步收缩**：被清条目的 game_id 若已不在任何
         seen_deal 条目里，其动态数据（reviews/stats/失败簿记）一并删除 ——
         动态数据的消费方（欠账派生、报表合并）都源自 seen_deal。
@@ -290,7 +311,6 @@ class State:
         dropped_gids = {self.seen_deal[key].get("game_id") for key in drop}
         for key in drop:
             del self.seen_deal[key]
-        self._cleanup_expiry_keyed(self.compare_cache, deadline)
         self._cleanup_expiry_keyed(self.low_time_cache, deadline)
         live_gids = {e.get("game_id") for e in self.seen_deal.values()}
         for gid in dropped_gids:
@@ -530,37 +550,54 @@ class State:
         self.low_time_cache[self.low_time_key(game_id, expiry)] = ts
 
     # ------------------------------------------------------------------
-    # 比价缓存（2026-09-27，方案 B）：键 ``<appid>|<expiry>`` —— 同一折扣期内
-    # 不重拉外区价（48h 窗口里的条目每天重复拉是纯浪费）。
-    # ⚠️ 只缓存**原币种**数据（cc/label/currency/final）；``cny_minor`` 与
-    # ``diff_pct`` 依赖当天汇率，渲染时现算 —— 汇率债不进缓存。
-    # 拉取失败（rows 为空）不落缓存，下轮自然重试（宁可留空不猜）。
-    # 过期清理跟随 :meth:`cleanup_expired`（与 seen_deal 同一保留期）。
+    # 跨区比价（重构 S7 换模型）：**区域原价永久缓存**，键 ``<appid>|<cc>``。
+    # 存 price_overview.initial（该区常规原价）—— 原价不随折扣期失效，永久
+    # 积累；现价（final）每轮真查、不进缓存。
+    # 真查即校准：每轮真查响应里的 initial 与缓存比对，不一致 = Valve 区域
+    # 重定价，回写自愈并由 enrich 层记日志（验收要求「捕获并记日志」）。
+    # 旧方案 B（键 ``<appid>|<expiry>`` 存折扣现价 final）语义废弃：final 与
+    # initial 不是同一个量，旧格式键在 :meth:`load` 自迁移丢弃（收编会污染
+    # 校准基线，用户 2026-10-05 裁决清空重建）。
+    # ⚠️ 本缓存**不在** :meth:`cleanup_expired` 的清理范围里 —— 永久键不含
+    # expiry，被 expiry 清理扫到会因后缀解析不了而误删（S7 头号坑）。
     # ------------------------------------------------------------------
     @property
     def compare_cache(self) -> dict:
         return self.cache.data["compare_cache"]
 
     @staticmethod
-    def compare_key(appid: int, expiry: str | None) -> str:
-        return f"{appid}|{expiry or ''}"
+    def compare_key(appid: int, cc: str) -> str:
+        return f"{appid}|{cc}"
 
-    def compare_cached(self, appid: int, expiry: str | None) -> list[dict] | None:
-        """命中返回缓存的原始比价行（不含换算字段），未命中返回 None。"""
-        entry = self.compare_cache.get(self.compare_key(appid, expiry))
-        return entry.get("rows") if entry else None
+    def compare_original(self, appid: int, cc: str) -> int | None:
+        """缓存里的区域原价（price_overview.initial），没有则 None。"""
+        entry = self.compare_cache.get(self.compare_key(appid, cc))
+        return entry.get("initial") if entry else None
 
-    def set_compare(self, appid: int, expiry: str | None, rows: list[dict],
-                    now: datetime) -> None:
-        if not appid or not rows:
-            return
-        self.compare_cache[self.compare_key(appid, expiry)] = {
-            "rows": [
-                {k: row[k] for k in ("cc", "label", "currency", "final") if k in row}
-                for row in rows
-            ],
+    def set_compare_original(self, appid: int, cc: str,
+                             initial: int | str | None, currency: str | None,
+                             now: datetime) -> int | None:
+        """记录区域原价（真查即校准）。
+
+        返回**旧值** = 发生区域重定价（Valve 调价，调用方据此记日志）；
+        首见写入或值未变返回 None。原价缺失（None/非法）不落缓存 ——
+        宁可留空不猜。"""
+        if not appid or not cc or initial is None:
+            return None
+        try:
+            initial = int(initial)
+        except (TypeError, ValueError):
+            return None
+        key = self.compare_key(appid, cc)
+        entry = self.compare_cache.get(key)
+        if entry and entry.get("initial") == initial:
+            return None
+        self.compare_cache[key] = {
+            "initial": initial,
+            "currency": currency,
             "fetched_at": now.isoformat(timespec="seconds"),
         }
+        return entry.get("initial") if entry else None
 
     # ------------------------------------------------------------------
     # run_log

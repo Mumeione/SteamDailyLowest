@@ -205,45 +205,68 @@ class StateTest(unittest.TestCase):
         self.assertEqual(self.state.run_log[0]["run_at"], "5")
 
     # ------------------------------------------------------------------
-    # 比价缓存（2026-09-27 方案 B）：appid|expiry 键，同一折扣期内不重拉
+    # 跨区比价（S7 换模型）：appid|cc 永久键，存区域原价（initial）；
+    # 现价（final）每轮真查、不进缓存
     # ------------------------------------------------------------------
-    def test_compare_cache_roundtrip(self):
-        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
-        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
-        cached = self.state.compare_cached(111, "2026-09-28T19:00:00+02:00")
-        self.assertEqual(cached[0]["cc"], "UA")
-        self.assertEqual(cached[0]["final"], 4500)
+    def test_compare_original_roundtrip(self):
+        self.assertIsNone(self.state.set_compare_original(111, "UA", 2500, "UAH", NOW))
+        self.assertEqual(self.state.compare_original(111, "UA"), 2500)
+        self.assertIsNone(self.state.compare_original(222, "UA"))
 
-    def test_compare_cache_only_keeps_raw_fields(self):
-        """缓存只存原币种数据；cny_minor/diff_pct 依赖当天汇率，不能进缓存。"""
-        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500,
-                 "cny_minor": 674, "diff_pct": -22}]
-        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
-        self.state.save(NOW)
-        cached = State(self.path, tz=TZ).load().compare_cached(111, "2026-09-28T19:00:00+02:00")
-        self.assertNotIn("cny_minor", cached[0])
-        self.assertNotIn("diff_pct", cached[0])
-        self.assertEqual(cached[0]["final"], 4500)
+    def test_compare_original_unchanged_write_is_noop(self):
+        """值未变：不写盘语义上无变化（返回 None，不覆盖 fetched_at）。"""
+        self.state.set_compare_original(111, "UA", 2500, "UAH", NOW)
+        stamp = self.state.compare_cache["111|UA"]["fetched_at"]
+        self.assertIsNone(self.state.set_compare_original(111, "UA", 2500, "UAH", NOW))
+        self.assertEqual(self.state.compare_cache["111|UA"]["fetched_at"], stamp)
 
-    def test_compare_cache_empty_rows_not_stored(self):
-        """拉取失败（空 rows）不落缓存 —— 下轮自然重试，宁可留空不猜。"""
-        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", [], NOW)
-        self.assertIsNone(self.state.compare_cached(111, "2026-09-28T19:00:00+02:00"))
+    def test_compare_original_repricing_returns_old_value(self):
+        """区域重定价：回写新原价并返回旧值（调用方据此记日志）。"""
+        self.state.set_compare_original(111, "UA", 2500, "UAH", NOW)
+        self.assertEqual(self.state.set_compare_original(111, "UA", 2100, "UAH", NOW), 2500)
+        self.assertEqual(self.state.compare_original(111, "UA"), 2100)
 
-    def test_compare_cache_expiry_is_part_of_key(self):
-        """同一游戏新折扣（expiry 变了）不算命中 —— 旧折扣价不能串到新折扣上。"""
-        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
-        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
-        self.assertIsNone(self.state.compare_cached(111, "2026-10-28T19:00:00+02:00"))
-        self.assertIsNone(self.state.compare_cached(222, "2026-09-28T19:00:00+02:00"))
+    def test_compare_original_missing_initial_not_stored(self):
+        """原价缺失（price_overview 无 initial）不落缓存 —— 宁可留空不猜。"""
+        self.assertIsNone(self.state.set_compare_original(111, "UA", None, "UAH", NOW))
+        self.assertEqual(self.state.compare_cache, {})
 
-    def test_cleanup_expired_drops_stale_compare_cache(self):
-        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
-        self.state.set_compare(111, (NOW - timedelta(days=10)).isoformat(), rows, NOW)
-        self.state.set_compare(222, (NOW - timedelta(days=3)).isoformat(), rows, NOW)
+    def test_compare_cache_survives_cleanup_expired(self):
+        """S7 头号坑回归：永久键（appid|cc）不能被 expiry 清理误删 ——
+        地区码后缀解析不成时间，若仍在清理范围里会被整把清光。"""
+        self.state.set_compare_original(111, "UA", 2500, "UAH", NOW)
+        self.state.set_compare_original(222, "IN", 1800, "INR", NOW)
         self.state.cleanup_expired(NOW, retention_days=7)
-        self.assertIsNone(self.state.compare_cached(111, (NOW - timedelta(days=10)).isoformat()))
-        self.assertIsNotNone(self.state.compare_cached(222, (NOW - timedelta(days=3)).isoformat()))
+        self.assertEqual(self.state.compare_original(111, "UA"), 2500)
+        self.assertEqual(self.state.compare_original(222, "IN"), 1800)
+
+    def test_load_drops_legacy_compare_cache_format(self):
+        """旧方案 B 键（appid|expiry 存折扣现价 final）在 load 时自迁移丢弃：
+        final 与 initial 不是同一个量，收编会污染重定价校准基线（清空重建）。"""
+        cache = {"version": 1, "updated_at": None,
+                 "compare_cache": {
+                     "111|2026-09-28T19:00:00+02:00": {"rows": [{"cc": "UA", "final": 4500}],
+                                                       "fetched_at": "t"},
+                     "222|": {"rows": [{"cc": "IN", "final": 900}], "fetched_at": "t"},
+                     "333|UA": {"initial": 2500, "currency": "UAH", "fetched_at": "t"},
+                 },
+                 "low_time_cache": {}}
+        # 先有 state.json（load 才会走自迁移段），cache.json 在 save 之后写
+        # （save 会用内存里的空缓存覆盖它）
+        self.state.record_seen(entry(), NOW)
+        self.state.save(NOW)
+        self.path.with_name("cache.json").write_text(
+            json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+
+        state = State(self.path, tz=TZ).load()
+        # 旧格式键（ISO 时间戳后缀 / 空后缀）丢弃；新格式键（地区码后缀）保留
+        self.assertNotIn("111|2026-09-28T19:00:00+02:00", state.compare_cache)
+        self.assertNotIn("222|", state.compare_cache)
+        self.assertEqual(state.compare_original(333, "UA"), 2500)
+        # 幂等：再 load 一次结果一致
+        again = State(self.path, tz=TZ).load()
+        self.assertEqual(again.compare_original(333, "UA"), 2500)
+        self.assertEqual(len(again.compare_cache), 1)
 
     # ------------------------------------------------------------------
     # 上次史低时间（2026-09-27 起为折扣期暂存，键 game_id|expiry）
@@ -288,8 +311,7 @@ class StateTest(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_split_save_writes_two_files(self):
         """缓存落到 cache.json，state.json 不再含缓存键；重载后两族方法照常工作。"""
-        rows = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 4500}]
-        self.state.set_compare(111, "2026-09-28T19:00:00+02:00", rows, NOW)
+        self.state.set_compare_original(111, "UA", 4500, "UAH", NOW)
         self.state.set_last_low_at("uuid-1", "2026-09-28T19:00:00+02:00", "2026-06-01T12:00:00+02:00")
         self.state.record_seen(entry(), NOW)
         self.state.save(NOW)
@@ -305,20 +327,21 @@ class StateTest(unittest.TestCase):
         self.assertEqual(len(cache_raw["low_time_cache"]), 1)
 
         reloaded = State(self.path, tz=TZ).load()
-        self.assertEqual(reloaded.compare_cached(111, "2026-09-28T19:00:00+02:00")[0]["cc"], "UA")
+        self.assertEqual(reloaded.compare_original(111, "UA"), 4500)
         self.assertEqual(reloaded.last_low_at("uuid-1", "2026-09-28T19:00:00+02:00"),
                          "2026-06-01T12:00:00+02:00")
         self.assertEqual(len(reloaded.seen_deal), 1)
         self.assertEqual(reloaded.cache.data["updated_at"], NOW.isoformat(timespec="seconds"))
 
     def test_split_legacy_state_cache_keys_adopted(self):
-        """旧版 state.json（带缓存键）加载时自动收编进 cache.json（代码自迁移）。"""
+        """旧版 state.json（带缓存键）加载时自动收编进 cache.json（代码自迁移）。
+        compare_cache 用 S7 新格式键值（旧格式键会被自迁移丢弃，见上）。"""
         legacy = {
             "version": 1,
             "updated_at": "2026-10-01T03:00:00+08:00",
             "seen_deal": {},
             "game_meta": {},
-            "compare_cache": {"111|e": {"rows": [{"cc": "UA", "final": 1}], "fetched_at": "t"}},
+            "compare_cache": {"111|UA": {"initial": 1, "currency": "UAH", "fetched_at": "t"}},
             "low_time_cache": {"uuid-old|e": "ts"},
             "run_log": [],
         }
@@ -326,36 +349,36 @@ class StateTest(unittest.TestCase):
         state = State(self.path, tz=TZ).load()
 
         # 收编进 Cache 并立即落盘 cache.json；state.json 里不再有缓存键
-        self.assertEqual(state.compare_cached(111, "e")[0]["final"], 1)
+        self.assertEqual(state.compare_original(111, "UA"), 1)
         self.assertEqual(state.last_low_at("uuid-old", "e"), "ts")
         cache_raw = json.loads(self.path.with_name("cache.json").read_text(encoding="utf-8"))
-        self.assertEqual(cache_raw["compare_cache"]["111|e"]["rows"][0]["final"], 1)
+        self.assertEqual(cache_raw["compare_cache"]["111|UA"]["initial"], 1)
         state.save(NOW)
         state_raw = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertNotIn("compare_cache", state_raw)
         self.assertNotIn("low_time_cache", state_raw)
         # 幂等：再 load 一次结果一致
         again = State(self.path, tz=TZ).load()
-        self.assertEqual(again.compare_cached(111, "e")[0]["final"], 1)
+        self.assertEqual(again.compare_original(111, "UA"), 1)
 
     def test_split_cache_json_priority_over_legacy(self):
         """cache.json 已有的键不被旧 state.json 的遗留键覆盖（cache 是权威来源）。"""
         cache = {"version": 1, "updated_at": None,
-                 "compare_cache": {"111|e": {"rows": [{"cc": "UA", "final": 2}], "fetched_at": "new"}},
+                 "compare_cache": {"111|UA": {"initial": 2, "currency": "UAH", "fetched_at": "new"}},
                  "low_time_cache": {}}
         self.path.with_name("cache.json").write_text(
             json.dumps(cache, ensure_ascii=False), encoding="utf-8")
         legacy = {
             "version": 1, "updated_at": None, "seen_deal": {}, "game_meta": {},
-            "compare_cache": {"111|e": {"rows": [{"cc": "UA", "final": 1}], "fetched_at": "old"},
-                              "222|e": {"rows": [{"cc": "IN", "final": 3}], "fetched_at": "old"}},
+            "compare_cache": {"111|UA": {"initial": 1, "currency": "UAH", "fetched_at": "old"},
+                              "222|IN": {"initial": 3, "currency": "INR", "fetched_at": "old"}},
             "low_time_cache": {}, "run_log": [],
         }
         self.path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
         state = State(self.path, tz=TZ).load()
-        # 111：cache.json 优先（final=2）；222：cache.json 缺，从遗留键收编
-        self.assertEqual(state.compare_cached(111, "e")[0]["final"], 2)
-        self.assertEqual(state.compare_cached(222, "e")[0]["final"], 3)
+        # 111：cache.json 优先（initial=2）；222：cache.json 缺，从遗留键收编
+        self.assertEqual(state.compare_original(111, "UA"), 2)
+        self.assertEqual(state.compare_original(222, "IN"), 3)
 
     def test_split_missing_cache_json_starts_empty(self):
         """cache.json 缺失：按空缓存起步（可重建，丢了重拉），state 不受影响。"""

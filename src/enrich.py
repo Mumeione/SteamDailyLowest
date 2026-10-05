@@ -8,7 +8,10 @@
 
 1. **中文名只能逐游戏取**（多 appid 时 `appdetails` 只接受 `filters=price_overview`，
    而那个值不返回 `name`）→ 所以给它**永久缓存**进 `game_meta`，只在第一次遇到时请求。
-2. **各区价格可以批量**（每区 1 次请求即可覆盖整个列表）→ 每次运行实时拉，不进缓存。
+2. **各区价格可以批量**（每区 1 次请求即可覆盖整个列表）→ **现价每轮真查**
+   （S7 换模型）：现价（final）不进缓存；区域**原价**（initial）永久缓存进
+   `cache.json`（键 `appid|cc`）—— 真查响应里的原价回写校准（区域重定价
+   自愈并记日志），原价缓存不随折扣期失效。
 """
 
 from __future__ import annotations
@@ -20,9 +23,9 @@ from . import fx as fx_module
 from .httpclient import HttpError
 from .steam import SteamClient
 
-#: 比价地区的显示名（§7.2）
-COMPARE_LABELS = {"UA": "乌克兰区", "IN": "印度区", "CN": "国区", "US": "美区",
-                  "TR": "土耳其区", "BR": "巴西区", "RU": "俄区"}
+#: 比价地区的显示名（§7.2）。区域已收敛为 ua+in（config `compare_countries`）；
+#: 未列出的 cc 回落显示地区码 —— 新增比价区时在这里补显示名
+COMPARE_LABELS = {"UA": "乌克兰区", "IN": "印度区"}
 
 
 def load_fx(cfg: dict, today: str, log: Callable[[str], None]) -> dict | None:
@@ -55,17 +58,17 @@ def enrich_steam(
 
     只处理**进列表**的条目 —— 没进列表的游戏一个 Steam 请求都不发。
 
-    跨区比价走 `appid|expiry` 缓存（2026-09-27 方案 B）：同一折扣期内不重拉。
-    即将过期条目大多不是当日新增、此前从没拉过，首次开启当天有一波回填，
-    之后每天只拉「新进入窗口且无缓存」的条目。两个集合的 appid 合并去重后
-    一次批量拉取（20 个/批），缓存只存**原币种**价，CNY 换算与差价百分比
-    按当天汇率现算 —— 汇率不进缓存，永远新鲜。
+    跨区比价（S7 换模型）：现价（final）每轮对进列表条目**真查**（每区 1 次
+    批量/20 个 appid）；真查响应里的区域原价（initial）回写 `appid|cc` 永久
+    缓存 —— 与缓存不一致即 Valve 区域重定价，记日志自愈。真查失败的区域
+    该轮直接缺行（不回落，下轮自愈）。CNY 换算与差价百分比按当天汇率现算
+    —— 汇率不进缓存，永远新鲜。
     """
     facts = {
         "title_fetched": 0,
         "title_cached": 0,
         "compare_batches": 0,
-        "compare_cache_hits": 0,
+        "compare_repriced": 0,
         "compare_fetched": 0,
         "price_mismatch": [],
         "errors": 0,
@@ -108,69 +111,52 @@ def enrich_steam(
                     "steam_price_int": int(steam_final),
                 })
 
-    # ---- 2. 跨区价格：先查缓存，miss 的才发请求（每区 1 次批量/20 个 appid）----
+    # ---- 2. 跨区价格：现价每轮真查（每区 1 次批量/20 个 appid）----
     countries = [c for c in (cfg.get("compare_countries") or []) if c]
     raw_by_appid: dict[int, dict[str, dict]] = {}   # appid -> cc -> price_overview
+    for cc in countries:
+        try:
+            prices = client.prices(appids, cc)
+        except HttpError as exc:
+            log(f"[warn] 跨区价格取失败（{cc}）：{exc}，该区本轮缺行，下轮自愈")
+            facts["errors"] += 1
+            continue
+        for appid, price in prices.items():
+            raw_by_appid.setdefault(appid, {})[cc] = price
+        facts["compare_batches"] += 1
 
-    need_fetch: dict[int, list[dict]] = {}          # appid -> 需要它的条目（含 expiry）
+    # ---- 3. 真查即校准：响应里的区域原价回写 appid|cc 永久缓存 ----
+    # 与缓存不一致 = Valve 区域重定价，回写自愈并记日志（验收要求）；
+    # 首见写入不算重定价，不记日志。
+    for appid, by_cc in raw_by_appid.items():
+        for cc, price in by_cc.items():
+            old = state.set_compare_original(appid, cc, price.get("initial"),
+                                             price.get("currency"), now)
+            if old is not None:
+                facts["compare_repriced"] += 1
+                log(f"      [info] 区域重定价（{cc}）：appid={appid} "
+                    f"原价 {old} → {price.get('initial')}（已回写校准）")
+
+    # ---- 4. 拼成卡片要用的比价行（含相对国区的差价百分比）----
     for entry in all_entries:
         appid = entry.get("appid")
         if not appid:
             continue
-        expiry = entry.get("expiry")
-        cached_rows = state.compare_cached(appid, expiry)
-        if cached_rows is not None:
-            entry["compare"] = _assemble_rows(cached_rows, entry, fx)
-            facts["compare_cache_hits"] += 1
-            continue
-        need_fetch.setdefault(appid, []).append(entry)
-
-    cacheable = True
-    if need_fetch:
-        fetched_appids = list(need_fetch)
-        failed_ccs: set[str] = set()
-        for cc in countries:
-            try:
-                prices = client.prices(fetched_appids, cc)
-            except HttpError as exc:
-                log(f"[warn] 跨区价格取失败（{cc}）：{exc}")
-                facts["errors"] += 1
-                failed_ccs.add(cc)
-                prices = {}
-            for appid, price in prices.items():
-                raw_by_appid.setdefault(appid, {})[cc] = price
-            facts["compare_batches"] += 1
-        # ⚠️ 只要有一个区整批失败就不落缓存：否则失败区在整个折扣期内
-        # 都不会重试（缓存键到折扣结束才过期）。本轮照常用成功区的数据渲染，
-        # 缓存推迟到下轮全部区都成功时再写。
-        cacheable = not failed_ccs
-        if failed_ccs:
-            log(f"[warn] 跨区比价有整区失败（{', '.join(sorted(failed_ccs))}），"
-                f"本轮不落比价缓存，下轮整批重试")
-
-    # ---- 3. 拼成卡片要用的比价行（含相对国区的差价百分比），并写入缓存 ----
-    for appid, entries in need_fetch.items():
-        rows_written = False
-        for entry in entries:
-            raw_rows = [
-                {"cc": cc,
-                 "label": COMPARE_LABELS.get(cc, cc),
-                 "currency": (raw_by_appid.get(appid, {}).get(cc) or {}).get("currency"),
-                 "final": (raw_by_appid.get(appid, {}).get(cc) or {}).get("final")}
-                for cc in countries if raw_by_appid.get(appid, {}).get(cc)
-            ]
-            entry["compare"] = _assemble_rows(raw_rows, entry, fx)
-            if cacheable:
-                state.set_compare(appid, entry.get("expiry"), raw_rows, now)
-            if raw_rows:
-                rows_written = True
-        if rows_written:
-            facts["compare_fetched"] += 1   # 按去重后的 appid 计数
+        by_cc = raw_by_appid.get(appid) or {}
+        raw_rows = [
+            {"cc": cc,
+             "label": COMPARE_LABELS.get(cc, cc),
+             "currency": (by_cc.get(cc) or {}).get("currency"),
+             "final": (by_cc.get(cc) or {}).get("final")}
+            for cc in countries if by_cc.get(cc)
+        ]
+        entry["compare"] = _assemble_rows(raw_rows, entry, fx)
+    facts["compare_fetched"] = sum(1 for by_cc in raw_by_appid.values() if by_cc)
     return facts
 
 
 def _assemble_rows(raw_rows: list[dict], entry: dict, fx: dict | None) -> list[dict]:
-    """把缓存/拉取到的原币种行换算成卡片要展示的行。
+    """把真查到的原币种行换算成卡片要展示的行。
 
     ``cny_minor`` 与 ``diff_pct`` 按当前传入的汇率现算（不进缓存）；
     汇率缺失时只显示原币种价（与旧行为一致）。
