@@ -34,21 +34,22 @@ GROUP_COLLAPSED = {
 #: 视图开关（§7.2）。
 #: 批 F2：「已过期」已删除 —— 折扣过期后毫无价值（用户：过期折扣犹如砒霜），
 #: 不配占一个分类按钮的位置。相关数据仍照常入库，只是不上页面。
-#: 2026-09-27：「即将过期」上线（48h 窗口，``upcoming_expiry_hours``）——
-#: 数据走 ``payload["view_groups"]["upcoming"]``，与当日新增的 ``groups`` 并列；
-#: 「本周 / 折扣中」仍未上线，数据照常攒库。
-#: 即将过期卡片同样带跨区比价：走 ``appid|expiry`` 暂存（同一折扣期内不重拉），
-#: 当日新增与 upcoming 的 appid 合并去重后批量拉取。
+#: 2026-09-27：「即将过期」上线（48h 窗口，``upcoming_expiry_hours``）。
+#: 重构 S5（2026-10-05）：开放「本周 / 折扣中」，新增「全部」入口 ——
+#: 这三个视图的数据量大（今日筛选链全量，约 5 千条、大促峰值 3 万），
+#: 拆到独立 ``all.js`` 首次点击时懒加载（spec §1 决策 9），
+#: 服务端只在 data.js 里预置按钮 count。
 VIEWS = [
     {"key": "new_today", "label": "当日新增", "enabled": True},
-    {"key": "week", "label": "本周(14天)", "enabled": False},
-    {"key": "active", "label": "折扣中", "enabled": False},
+    {"key": "week", "label": "本周(14天)", "enabled": True},
+    {"key": "active", "label": "折扣中", "enabled": True},
     {"key": "upcoming", "label": "即将过期", "enabled": True},
+    {"key": "all", "label": "全部", "enabled": True},
 ]
 
-#: 各视图「进列表条数」的取数来源（payload 里的对应集合）。
-#: 新视图上线时在这里登记 —— render() 据此给按钮填 count。
-VIEW_COUNT_SOURCES = {"new_today": "items", "upcoming": "upcoming_items"}
+#: 走 all.js 懒加载的视图（数据不在 data.js 里，前端首次点击时 fetch）。
+#: 「全部」本身也在其中 —— 它就是 all.js 的原始分组。
+LAZY_VIEWS = ("week", "active", "all")
 
 #: 「剩 X 天」的凌晨宽容阈值（北京时间的整点小时）：local expiry 落在
 #: 00:00~02:59 的折扣按「前一天深夜收摊」计天数。Steam 折扣的全球统一
@@ -247,6 +248,56 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
 
 
 
+#: 重构 S5 默认精选排序（spec §1 决策 8 / §3.3）：**分层 + 多键字典序**，
+#: 不用加权求和 —— 权重没有可解释性，字典序每一键都答得出「为什么排前面」：
+#: ① 新史低在前、平史低在后（史低待确认殿后）② 折扣力度降序 ③ 评价数降序。
+FEATURED_LAYERS = {
+    classify.STEAM_LOW_NEW: 0,
+    classify.STEAM_LOW_TIE: 1,
+    classify.STEAM_LOW_UNKNOWN: 2,
+}
+
+
+def featured_sort_key(card: dict) -> tuple:
+    """「当日新增 · 精选」扁平列表的排序键（验收 §6：单测锁定）。"""
+    reviews_count = (card.get("reviews") or {}).get("count") or 0
+    return (
+        FEATURED_LAYERS.get(card.get("low_class") or classify.STEAM_LOW_UNKNOWN, 2),
+        -(card.get("cut") or 0),
+        -reviews_count,
+        card.get("title") or "",  # 稳定收尾键：同分时 deterministic，不随字典序漂移
+    )
+
+
+def _majority_start(items: list[dict]) -> str | None:
+    """组内「折扣开始」按**多数派**上提（批 E spec E5 / 2026-09-25 实测口径）。
+
+    并列时取较晚的，保证组头不会显示得比实际更早
+    （比较的是 ``%Y-%m-%d %H:%M`` 定宽字符串，字典序即时序）。
+    """
+    starts = [item["start_text"] for item in items if item.get("start_text")]
+    counts = Counter(starts)
+    return max(counts, key=lambda text: (counts[text], text)) if counts else None
+
+
+def build_featured_group(cards: list[dict]) -> dict:
+    """「当日新增」视图改为**扁平精选列表**（重构 S5，用户裁决 2026-10-05）。
+
+    不再按口碑分档分组 —— 分层字典序要跨组扁排，与 tier 分组互斥；
+    「好评达标 / 高热度」降级为卡片标签（前端在 featured 组内渲染 tier 标签）。
+    """
+    ordered = sorted(cards, key=featured_sort_key)
+    return {
+        "key": "featured",
+        "label": "精选",
+        "criteria": "新史低 → 折扣力度 → 评价数",
+        "collapsed": False,
+        "count": len(ordered),
+        "start_text": _majority_start(ordered),
+        "items": ordered,
+    }
+
+
 def build_groups(items: list[dict], cfg: dict) -> list[dict]:
     groups = []
     for spec in group_specs(cfg):
@@ -254,16 +305,6 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
         if not group_items:
             continue
         group_items.sort(key=lambda i: (-(i["cut"] or 0), i["title"] or ""))
-        # 批 E spec E5：全组「折扣开始」相同时上提到分组头，卡片里不再每行重复；
-        # 2026-09-25 起改为**按多数派**上提（卡片一律不渲染该行）—— 实测 quality 组
-        # 121 张里 113 张同是 01:20，另 8 张真的不同；若坚持「唯一才上提」，整组会退回
-        # null，前端给每张卡插一行「折扣开始」，详情区从两栏变三栏。
-        # 用户口径：开始时刻只看个大概（知道是当天的新折扣），精确与否不重要，结束时刻才重要。
-        starts = [item["start_text"] for item in group_items if item.get("start_text")]
-        # 并列时取较晚的那个，保证组头不会显示得比实际更早
-        # （比较的是 strftime("%Y-%m-%d %H:%M") 定宽字符串，字典序即时序）
-        counts = Counter(starts)
-        group_start = max(counts, key=lambda text: (counts[text], text)) if counts else None
         groups.append(
             {
                 "key": spec["key"],
@@ -271,7 +312,7 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
                 "criteria": spec["criteria"],
                 "collapsed": spec["collapsed"],
                 "count": len(group_items),
-                "start_text": group_start,
+                "start_text": _majority_start(group_items),
                 "items": group_items,
             }
         )
@@ -280,12 +321,24 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
 
 def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
            *, fx: dict | None = None, steam: dict | None = None,
-           upcoming_items: list[dict] | None = None) -> dict:
+           upcoming_items: list[dict] | None = None,
+           featured: bool = False,
+           all_cards: list[dict] | None = None,
+           extra_counts: dict | None = None) -> dict:
     """写出一整套静态文件，返回产出路径。
 
     ``upcoming_items``：「即将过期」视图已进列表的卡片数据（调用方先跑完同一条
     分档管线再传进来）；``None`` 表示本轮不产出该视图（payload 不带 ``view_groups``，
     前端按钮点了也是空态）。
+
+    ``featured``（重构 S5）：「当日新增」走扁平精选列表（``build_featured_group``），
+    ``items`` 为当日新增的原始卡片即可，排序在组内现做；
+    ``False``（默认）维持旧的口碑分档分组（兼容直接调用 render 的测试与工具）。
+
+    ``all_cards``：「全部」视图的数据 —— 今日筛选链通过的全量卡片，每张带
+    ``views`` 列表（week/active/new_today/upcoming 成员标志，run.py 计算）；
+    传了就写出 ``all.js``（本周 / 折扣中 / 全部三个视图懒加载它），
+    并启用这三个视图按钮；``extra_counts`` 给出它们的按钮 count。
     """
     output_dir = Path(cfg["output_dir"])
     if not output_dir.is_absolute():
@@ -297,16 +350,27 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         shutil.copyfile(STATIC_DIR / name, output_dir / "static" / name)
 
     version = str(int(now.timestamp()))
-    groups = build_groups(items, cfg)
+    groups = [build_featured_group(items)] if featured else build_groups(items, cfg)
     upcoming_groups = (
         build_groups(upcoming_items, cfg) if upcoming_items is not None else None
     )
-    # 视图按钮的 count：按 key 从对应集合取数（来源登记在 VIEW_COUNT_SOURCES）
-    view_counts = {"items": len(items), "upcoming_items": len(upcoming_items or [])}
+    # 视图按钮的 count：new_today / upcoming 从本集合取；week / active / all
+    # 由调用方统计好经 ``extra_counts`` 传入（懒加载视图的数据不在本 payload 里）
+    view_counts = {
+        "new_today": len(items),
+        "upcoming": len(upcoming_items or []),
+        **(extra_counts or {}),
+    }
+    lazy_ready = all_cards is not None
     views = []
     for view in VIEWS:
         item = dict(view)
-        item["count"] = view_counts.get(VIEW_COUNT_SOURCES[view["key"]]) if view["enabled"] else None
+        enabled = view["enabled"] and (
+            view["key"] not in LAZY_VIEWS or lazy_ready
+        )
+        item["enabled"] = enabled
+        item["count"] = view_counts.get(view["key"]) if enabled else None
+        item["lazy"] = enabled and view["key"] in LAZY_VIEWS
         views.append(item)
 
     # 批 E spec E4：概览的「史低构成」色点 —— 直接数 cards，
@@ -336,11 +400,34 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
             "desktop": int(cfg.get("page_size_desktop", 20)),
             "breakpoint": int(cfg.get("mobile_breakpoint_px", 768)),
         },
-        "notice": "「即将过期」= 48 小时内到期的史低，比价数据随折扣期暂存；其余视图的数据继续攒库",
+        "notice": "「本周 / 折扣中 / 全部」数据量较大，首次点击时加载；"
+                  "「即将过期」= 48 小时内到期的史低，比价数据随折扣期暂存",
     }
 
     data_js = "window.REPORT_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n"
     (output_dir / "data.js").write_text(data_js, encoding="utf-8")
+
+    paths = {
+        "index": str(output_dir / "index.html"),
+        "data_js": str(output_dir / "data.js"),
+        "latest_json": str(output_dir / "latest.json"),
+        "item_count": len(items),
+    }
+
+    # 重构 S5：「全部」视图的懒加载数据（今日筛选链全量，含视图成员标志）。
+    # 与 data.js 同一次渲染写出，保证两份产物的 generated_at 一致。
+    # ⚠️ 产物是 all.js（window.ALL_DATA = {...}）而不是 .json —— 前端用动态
+    # <script> 标签加载，不受 CORS 限制，本地 file:// 直开也能用；fetch 会失败
+    if all_cards is not None:
+        all_payload = {
+            "generated_at": payload["generated_at"],
+            "generated_at_text": payload["generated_at_text"],
+            "groups": build_groups(all_cards, cfg),
+        }
+        (output_dir / "all.js").write_text(
+            "window.ALL_DATA = " + json.dumps(all_payload, ensure_ascii=False) + ";\n",
+            encoding="utf-8")
+        paths["all_js"] = str(output_dir / "all.js")
 
     latest = {
         "generated_at": payload["generated_at"],
@@ -386,9 +473,4 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     )
     (output_dir / "index.html").write_text(html, encoding="utf-8")
 
-    return {
-        "index": str(output_dir / "index.html"),
-        "data_js": str(output_dir / "data.js"),
-        "latest_json": str(output_dir / "latest.json"),
-        "item_count": len(items),
-    }
+    return paths

@@ -27,12 +27,13 @@
 
   var pageSize = currentPageSize();
   var pages = {};          // groupKey -> 当前页码
-  var sorts = {};          // groupKey -> { mode: "cut"|"price"|"score", min: 0|500|5000 }
+  var sorts = {};          // groupKey -> { mode: "featured"|"cut"|"price"|"score", min: 0|500|5000 }
   var groupOrder = [];     // 分组展示顺序（groupKey）
   var groupsByKey = {};
   var sectionsByKey = {};  // groupKey -> <section>
   var renderersByKey = {}; // groupKey -> 该组重画函数
   var activeGroupKey = null; // R7：最近一次被点击翻页按钮/卡片的分组
+  var mountedGroupsCount = 0; // 当前视图挂载的分组数（构成色点只在多组时显示）
 
   // R4：链接图标用 inline SVG 常量内嵌，不下载 favicon、不发外链；
   // 链接语义靠 aria-label / title 文字。
@@ -48,7 +49,10 @@
   };
 
   // R1：组内排序三维度 + 好评数量筛选 chips
+  // 重构 S5：「精选」= 服务端分层字典序（新史低 → 折扣力度 → 评价数），
+  // 是当日新增（featured 组）的默认序，直接用 payload 里的服务端顺序
   var SORT_MODES = [
+    { key: "featured", label: "精选" },
     { key: "cut", label: "折扣降序" },
     { key: "price", label: "价格升" },
     { key: "score", label: "好评率降" }
@@ -141,7 +145,12 @@
   }
 
   function getSort(groupKey) {
-    if (!sorts[groupKey]) sorts[groupKey] = { mode: "cut", min: 0, newOnly: false };
+    if (!sorts[groupKey]) {
+      sorts[groupKey] = {
+        mode: groupKey === "featured" ? "featured" : "cut",
+        min: 0, newOnly: false
+      };
+    }
     return sorts[groupKey];
   }
 
@@ -149,11 +158,11 @@
     return !!(item.reviews && item.reviews.score !== null && item.reviews.score !== undefined);
   }
 
-  // R1：组内排序。默认（cut）直接用 payload 里服务端排好的顺序；
+  // R1：组内排序。默认（featured / cut）直接用 payload 里服务端排好的顺序；
   // 无 reviews 的「详情待补」不参与好评率排序，固定排组尾。
   function sortGroupItems(group) {
     var s = getSort(group.key);
-    if (s.mode === "cut") return group.items;
+    if (s.mode === "featured" || s.mode === "cut") return group.items;
     var arr = group.items.slice();
     if (s.mode === "price") {
       arr.sort(function (a, b) {
@@ -190,7 +199,7 @@
     });
   }
 
-  function buildCard(item) {
+  function buildCard(item, showTierTag) {
     // 批 E spec E1：史低类型只有「新 / 平」两档（Steam 口径），
     // 「店史低」已退役 —— 本页全是 Steam 店史低，用它会产生「那别家呢」的误读
     var lowClass = item.low_class || "unknown";
@@ -198,8 +207,14 @@
       : lowClass === "tie" ? "tag-low-tie" : "tag-low-unknown";
     // 卡片标签里**不再放档位名**（好评达标）：同一分组内必然相同，
     // 分组头已经写明入组条件（批 E spec E2）
+    // 重构 S5 例外：精选扁平列表没有档位分组了 —— 「好评达标 / 高热度」
+    // 降级为卡片标签，信息不丢（featured 组才传 showTierTag）
     var tags = [tag(item.low_label, lowTagClass)];
     if (item.tier === "pending") tags.push(tag("详情待补", "tag-pending"));
+    if (showTierTag && item.tier_label
+        && (item.tier === "quality" || item.tier === "notable")) {
+      tags.push(tag(item.tier_label, item.tier === "notable" ? "tag-tier-notable" : "tag-tier"));
+    }
 
     // Steam / 小黑盒链接：放在**档位标签右侧、同一行内**（批 C2，原「前置到价格区之前」）——
     // 与标签同行天然对齐，不受价格位数影响；点击图标不应触发展开/收起，iconLink 内阻断冒泡
@@ -333,6 +348,9 @@
     var s = getSort(group.key);
     var bar = el("div", { class: "group-tools" });
     SORT_MODES.forEach(function (mode) {
+      // review-s5 P1-3：「精选」只属于当日新增（featured 组）——
+      // spec 仅定义该视图的默认精选序，别的组的默认序就是折扣降序
+      if (mode.key === "featured" && group.key !== "featured") return;
       var b = el("button", {
         type: "button", class: "filter sort-btn", text: mode.label,
         onclick: function () {
@@ -413,7 +431,7 @@
     ]);
     var metaBox = el("span", { class: "group-meta" }, [
       el("span", { class: "count", text: group.count + " 条" }),
-      groupsForView(currentView).length > 1 ? lowPointsNode(group.items, true) : null
+      mountedGroupsCount > 1 ? lowPointsNode(group.items, true) : null
     ]);
     var head = el("div", { class: "group-head" }, [titleBox, metaBox]);
     var section = el("section", { class: "group" }, [head, toolsBox, cardsBox, pagerBox]);
@@ -427,7 +445,7 @@
       var start = (pages[group.key] - 1) * pageSize;
       cardsBox.textContent = "";
       ordered.slice(start, start + pageSize).forEach(function (item) {
-        var card = buildCard(item);
+        var card = buildCard(item, group.key === "featured");
         card.addEventListener("click", function () { activeGroupKey = group.key; }); // R7
         cardsBox.appendChild(card);
       });
@@ -460,32 +478,95 @@
   }
 
   // ----------------------------------------------------------------
-  // 视图切换（2026-09-27「即将过期」上线）：当日新增走 data.groups，
-  // 其余视图走 data.view_groups[key]。切视图 = 清空注册表重建列表；
-  // 排序 / 筛选 / 页码状态随重建一起清零（视图之间互不干扰，行为可预期）。
+  // 视图切换：当日新增走 data.groups（精选扁排），即将过期走
+  // data.view_groups[key]；重构 S5 起「本周 / 折扣中 / 全部」的数据在
+  // all.js（今日筛选链全量），首次点击时懒加载一次、三个视图共用缓存。
+  // 「本周 / 折扣中」按服务端预打的 views 成员标志在前端过滤。
+  // 排序 / 筛选 / 页码状态随切换重建（视图之间互不干扰，行为可预期）。
   // ----------------------------------------------------------------
   var currentView = "new_today";
-  var EMPTY_TEXTS = {
-    new_today: "今天没有符合条件的史低新增。",
-    upcoming: "未来 48 小时内没有到期的史低。"
-  };
   var viewButtons = Array.prototype.slice.call(
     document.querySelectorAll("#filters [data-view]")
   );
+  var EMPTY_TEXTS = {
+    new_today: "今天没有符合条件的史低新增。",
+    upcoming: "未来 48 小时内没有到期的史低。",
+    week: "本周（近 14 天）没有进行中的史低。",
+    active: "当前没有折扣中的史低。",
+    all: "今日没有通过筛选链的史低。"
+  };
+  var LOADING_TEXT = "正在加载全部数据（首次点击时下载，之后走浏览器缓存）…";
+
+  function isLazyView(key) {
+    return (data.views || []).some(function (view) {
+      return view.key === key && view.lazy;
+    });
+  }
+
+  // 重构 S5：数据文件是 all.js（window.ALL_DATA = {...}），前端用动态 <script>
+  // 标签懒加载 —— 不用 fetch：本地 file:// 直开会被 CORS 拦截（fetch Failed to
+  // fetch），<script> 标签不受限制，本地预览与 Pages 线上行为一致
+  var allCache = null;
+  var allRequested = false;
+  var allCallbacks = [];
+  function loadAll(done) {
+    // 单文件预览（tools/make_preview.py）会把 all.js 内联进 HTML —— 已有
+    // window.ALL_DATA 就直接用，不再注入 <script>（手机上没有伴生文件可加载）
+    if (!allCache && window.ALL_DATA) allCache = window.ALL_DATA;
+    if (allCache) { done(allCache, null); return; }
+    allCallbacks.push(done);
+    if (allRequested) return;
+    allRequested = true;
+    var script = document.createElement("script");
+    script.src = "all.js";
+    script.onload = function () {
+      var cbs = allCallbacks.splice(0);
+      allCache = window.ALL_DATA || null;
+      // review-s5 P0-1：数据为空（文件被截断/写坏）时同样允许下次点击重试，
+      // 不复位 allRequested 会把重试回调晾在队列里永久卡死
+      if (!allCache) allRequested = false;
+      cbs.forEach(function (cb) {
+        cb(allCache, allCache ? null : new Error("all.js 加载成功但数据为空"));
+      });
+    };
+    script.onerror = function () {
+      allRequested = false; // 复位：下次点击重新加载，否则重试回调永远没人触发
+      var cbs = allCallbacks.splice(0);
+      cbs.forEach(function (cb) { cb(null, new Error("all.js 加载失败")); });
+    };
+    document.head.appendChild(script);
+  }
+
+  // 本周 / 折扣中：从全量分组里按视图标志过滤（空组不渲染，组头 count 重算）；
+  // 「全部」就是原始分组本身
+  function groupsFromAll(key) {
+    var groups = allCache.groups || [];
+    if (key === "all") return groups;
+    return groups.map(function (group) {
+      var items = (group.items || []).filter(function (item) {
+        return (item.views || []).indexOf(key) !== -1;
+      });
+      var copy = {};
+      for (var field in group) copy[field] = group[field];
+      copy.items = items;
+      copy.count = items.length;
+      return copy;
+    }).filter(function (group) { return group.items.length; });
+  }
 
   function groupsForView(key) {
     if (key === "new_today") return data.groups || [];
     return (data.view_groups && data.view_groups[key]) || [];
   }
 
-  function renderListView() {
-    var groups = groupsForView(currentView);
+  function mountGroups(groups) {
     pages = {};
     groupOrder.length = 0;
     groupsByKey = {};
     sectionsByKey = {};
     renderersByKey = {};
     activeGroupKey = null;
+    mountedGroupsCount = groups.length;
     listBox.textContent = "";
     groups.forEach(function (group) {
       listBox.appendChild(buildGroup(group));
@@ -495,6 +576,40 @@
     if (!groups.length) {
       empty.textContent = EMPTY_TEXTS[currentView] || EMPTY_TEXTS.new_today;
     }
+  }
+
+  function renderListView() {
+    pages = {};
+    groupOrder.length = 0;
+    groupsByKey = {};
+    sectionsByKey = {};
+    renderersByKey = {};
+    activeGroupKey = null;
+
+    if (!isLazyView(currentView)) {
+      mountGroups(groupsForView(currentView));
+      return;
+    }
+    if (allCache) {
+      mountGroups(groupsFromAll(currentView));
+      return;
+    }
+    // 懒加载视图：先占位提示，加载完成后再挂载（回调里防视图切换串台）
+    var requestedView = currentView;
+    var empty = document.getElementById("empty");
+    listBox.textContent = "";
+    empty.hidden = false;
+    empty.textContent = LOADING_TEXT;
+    loadAll(function (json, err) {
+      if (currentView !== requestedView) return; // 用户已经切走，丢弃这次结果
+      if (err) {
+        empty.textContent = "全部数据加载失败（"
+          + (err && err.message ? err.message : "网络错误")
+          + "），可切到其他视图后重试。";
+        return;
+      }
+      mountGroups(groupsFromAll(currentView));
+    });
   }
 
   function switchView(key) {

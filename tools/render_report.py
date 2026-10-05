@@ -194,10 +194,11 @@ def main(argv: list[str] | None = None) -> int:
 
     info = render_pass(state, candidates, cfg, now, stats_of(0, backlog),
                        announce_merges=False, enrich_hook=None, fx=fx,
-                       upcoming=upcoming)
+                       upcoming=upcoming, all_entries=hist_low_all)
     grafted = graft_compare(output_dir, old_compare, log)
     log(f"测试报表已渲染：进列表 {info['shown']} 条（分档 {info['tier']}）；"
         f"即将过期进列表 {info['upcoming_shown']} 条；"
+        f"全部视图数据 {info.get('all_shown', 0)} 条；"
         f"比价行回收 {grafted} 条（本工具不发请求，比价只回收自旧产物/缓存；"
         f"即将过期的比价待正式跑写入 low_time/compare 暂存后才有）")
     log(f"  index.html : {info['paths']['index']}")

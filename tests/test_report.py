@@ -323,5 +323,168 @@ class CardTest(unittest.TestCase):
         self.assertIsNone(report.build_card(bare, self.now)["banner"])
 
 
+class FeaturedSortTest(unittest.TestCase):
+    """重构 S5：默认精选排序 = 分层字典序（验收 §6：单测锁定）。
+
+    键序：①新史低在前、平史低在后（史低待确认殿后）②折扣力度降序
+    ③评价数降序 ④标题（稳定收尾键）。
+    """
+
+    def card(self, low_class, cut, count, title):
+        return {
+            "low_class": low_class, "cut": cut, "title": title,
+            "reviews": {"score": 80, "count": count} if count is not None else None,
+        }
+
+    def test_new_layer_before_tie_before_unknown(self):
+        cards = [self.card("tie", 90, 5000, "B"),
+                 self.card("unknown", 95, 9000, "C"),
+                 self.card("new", 10, 10, "A")]
+        ordered = sorted(cards, key=report.featured_sort_key)
+        self.assertEqual([c["low_class"] for c in ordered],
+                         ["new", "tie", "unknown"],
+                         "折扣力度再大、评价再多，平史低也排不到新史低前面")
+
+    def test_cut_desc_within_layer(self):
+        cards = [self.card("new", 30, 9000, "B"),
+                 self.card("new", 80, 10, "A")]
+        ordered = sorted(cards, key=report.featured_sort_key)
+        self.assertEqual([c["cut"] for c in ordered], [80, 30])
+
+    def test_review_count_desc_breaks_cut_tie(self):
+        cards = [self.card("new", 50, 300, "B"),
+                 self.card("new", 50, 9000, "A")]
+        ordered = sorted(cards, key=report.featured_sort_key)
+        self.assertEqual([c["title"] for c in ordered], ["A", "B"])
+
+    def test_missing_reviews_sort_last_within_same_cut(self):
+        """无 reviews（详情待补）在同层同折扣力度下按 0 条计，排有数据的后面。"""
+        cards = [self.card("new", 50, None, "PENDING"),
+                 self.card("new", 50, 100, "RATED")]
+        ordered = sorted(cards, key=report.featured_sort_key)
+        self.assertEqual([c["title"] for c in ordered], ["RATED", "PENDING"])
+
+    def test_title_is_stable_final_key(self):
+        cards = [self.card("new", 50, 100, "B"),
+                 self.card("new", 50, 100, "A")]
+        ordered = sorted(cards, key=report.featured_sort_key)
+        self.assertEqual([c["title"] for c in ordered], ["A", "B"])
+
+    def test_build_featured_group_shape(self):
+        cards = [self.card("tie", 90, 5000, "B"),
+                 self.card("new", 20, 100, "A")]
+        cards[0]["start_text"] = "2026-10-05 01:20"
+        cards[1]["start_text"] = "2026-10-05 01:20"
+        group = report.build_featured_group(cards)
+        self.assertEqual(group["key"], "featured")
+        self.assertEqual(group["criteria"], "新史低 → 折扣力度 → 评价数")
+        self.assertFalse(group["collapsed"])
+        self.assertEqual([c["low_class"] for c in group["items"]], ["new", "tie"])
+        self.assertEqual(group["start_text"], "2026-10-05 01:20")
+
+
+class LazyViewsTest(unittest.TestCase):
+    """重构 S5：本周 / 折扣中 / 全部 走 all.js 懒加载。
+
+    - 未传 all_cards：三个视图按钮禁用（数据不可用时不给可点的空按钮）
+    - 传了 all_cards：按钮启用 + 带服务端预统计 count + lazy 标志；
+      all.js 落盘（分组形态与 data.js 同构，条目带 views 成员标志）
+    """
+
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=classify.zone("Asia/Shanghai"))
+
+    def _entry(self, game_id, appid, expiry, start=None):
+        return {"game_id": game_id, "title": game_id, "appid": appid,
+                "price_int": 100, "regular_int": 200, "cut": 50,
+                "currency": "CNY", "flag": "N",
+                "start": start or "2026-09-21T10:00:00+08:00",
+                "expiry": expiry, "tier": classify.TIER_QUALITY,
+                "reviews": {"score": 80, "count": 500}}
+
+    def test_lazy_views_disabled_without_all_cards(self):
+        out = _render([], self.now)
+        payload = _load_payload(out)
+        lazy = {v["key"]: v for v in payload["views"] if v["key"] in report.LAZY_VIEWS}
+        self.assertEqual(set(lazy), {"week", "active", "all"})
+        for view in lazy.values():
+            self.assertFalse(view["enabled"])
+            self.assertIsNone(view["count"])
+            self.assertFalse(view["lazy"])
+
+    def test_lazy_views_enabled_with_counts_and_all_json(self):
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        entries = [
+            # 折扣中（9-28 过期）+ 本周（9-21 开始，落在本周窗口）
+            self._entry("g-active", 1, "2026-09-28T10:00:00+08:00"),
+            # 已过期：不 active 不 week，只进「全部」
+            self._entry("g-expired", 2, "2026-09-20T10:00:00+08:00",
+                        start="2026-09-13T10:00:00+08:00"),
+        ]
+        all_cards = []
+        for entry in entries:
+            card = report.build_card(entry, self.now)
+            card["views"] = [key for key in classify.VIEW_KEYS
+                             if classify.in_view(key, entry, self.now, CFG)]
+            all_cards.append(card)
+        extra = {"week": sum(1 for c in all_cards if "week" in c["views"]),
+                 "active": sum(1 for c in all_cards if "active" in c["views"]),
+                 "all": len(all_cards)}
+        cfg = dict(CFG, output_dir=str(out))
+        report.render(cfg, [], _STATS, self.now, featured=True,
+                      all_cards=all_cards, extra_counts=extra)
+        payload = _load_payload(out)
+        by_key = {v["key"]: v for v in payload["views"]}
+        self.assertTrue(by_key["week"]["enabled"])
+        self.assertTrue(by_key["week"]["lazy"])
+        self.assertEqual(by_key["week"]["count"], 1)     # 只有 g-active 在本周窗口
+        self.assertEqual(by_key["active"]["count"], 1)   # 只有 g-active 未过期
+        self.assertEqual(by_key["all"]["count"], 2)
+
+        # all.js 是 window.ALL_DATA = {...} 形态（非纯 JSON），解析时剥前缀
+        all_payload = json.loads(
+            (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
+        items = {i["game_id"]: i for g in all_payload["groups"] for i in g["items"]}
+        self.assertEqual(set(items), {"g-active", "g-expired"})
+        self.assertIn("active", items["g-active"]["views"])
+        self.assertIn("week", items["g-active"]["views"])
+        self.assertNotIn("active", items["g-expired"]["views"])
+        self.assertNotIn("week", items["g-expired"]["views"])
+
+    def test_all_json_groups_by_tier(self):
+        """「全部」沿用现有分组交互：all.js 里仍是口碑分档组（组头带条件文案）。"""
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        entry = self._entry("g-good", 1, "2026-09-28T10:00:00+08:00")
+        card = report.build_card(entry, self.now)
+        card["views"] = ["week", "active", "new_today", "upcoming"]
+        cfg = dict(CFG, output_dir=str(out))
+        report.render(cfg, [], _STATS, self.now, featured=True,
+                      all_cards=[card], extra_counts={"week": 1, "active": 1, "all": 1})
+        all_payload = json.loads(
+            (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
+        self.assertEqual([g["key"] for g in all_payload["groups"]],
+                         [classify.TIER_QUALITY])
+        self.assertEqual(all_payload["groups"][0]["criteria"],
+                         "好评率 ≥ 70% 且 评价数 ≥ 100")
+
+    def test_featured_flag_switches_group_shape(self):
+        """featured=True：当日新增变单一精选组；False：维持口碑分档分组（兼容旧调用）。"""
+        import tempfile
+        card = {"tier": classify.TIER_QUALITY, "cut": 50, "title": "A",
+                "title_zh": None, "appid": 1, "low_class": "new",
+                "low_label": "新史低", "price_text": "¥1", "start_text": None}
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        cfg = dict(CFG, output_dir=str(out))
+        report.render(cfg, [card], _STATS, self.now, featured=True)
+        payload = _load_payload(out)
+        self.assertEqual([g["key"] for g in payload["groups"]], ["featured"])
+
+        out2 = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        report.render(dict(CFG, output_dir=str(out2)), [card], _STATS, self.now)
+        payload2 = _load_payload(out2)
+        self.assertEqual([g["key"] for g in payload2["groups"]], [classify.TIER_QUALITY])
+
+
 if __name__ == "__main__":
     unittest.main()

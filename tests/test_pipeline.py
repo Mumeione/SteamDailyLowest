@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from run import render_pass  # noqa: E402
-from src import classify  # noqa: E402
+from src import classify, report  # noqa: E402
 from src.state import State  # noqa: E402
 
 TZ = classify.zone("Asia/Shanghai")
@@ -105,14 +105,23 @@ class RenderPassTest(unittest.TestCase):
         )
         return info, payload
 
-    def test_groups_and_card_labels_agree(self):
+    def test_featured_single_group_with_card_labels(self):
+        """重构 S5：当日新增 = 扁平精选列表（单一 featured 组）；
+        档位信息降级为卡片 tier_label，不得丢失或漂移。"""
         _, payload = self._run()
-        group_labels = {g["key"]: g["label"] for g in payload["groups"]}
+        self.assertEqual([g["key"] for g in payload["groups"]], ["featured"])
         card_labels = {i["tier"]: i["tier_label"]
                        for g in payload["groups"] for i in g["items"]}
-        self.assertEqual(group_labels, card_labels)
-        self.assertEqual(group_labels.get(classify.TIER_QUALITY), "好评达标")
-        self.assertEqual(group_labels.get(classify.TIER_NOTABLE), "高热度 · 口碑不一")
+        self.assertEqual(card_labels.get(classify.TIER_QUALITY), "好评达标")
+        self.assertEqual(card_labels.get(classify.TIER_NOTABLE), "高热度 · 口碑不一")
+
+    def test_featured_order_is_layered_dict_order(self):
+        """精选列表顺序 = 分层字典序：新史低在前、平史低在后（验收 §6）。"""
+        _, payload = self._run()
+        items = payload["groups"][0]["items"]
+        layers = [report.FEATURED_LAYERS[i["low_class"]] for i in items]
+        self.assertEqual(layers, sorted(layers),
+                         "新史低必须整体排在平史低 / 待确认之前")
 
     def test_no_evaluative_wording_anywhere(self):
         self._run()
@@ -120,12 +129,12 @@ class RenderPassTest(unittest.TestCase):
         self.assertNotIn("优质", text)
         self.assertNotIn("热门 · 褒贬不一", text)
 
-    def test_groups_carry_criteria(self):
+    def test_featured_group_carries_criteria(self):
         _, payload = self._run()
         for group in payload["groups"]:
             self.assertTrue(group["criteria"], group["label"])
-        quality = next(g for g in payload["groups"] if g["key"] == classify.TIER_QUALITY)
-        self.assertIn("好评率 ≥ 70%", quality["criteria"])
+        self.assertEqual(payload["groups"][0]["criteria"],
+                         "新史低 → 折扣力度 → 评价数")
 
     def test_cold_game_is_not_shown(self):
         info, _ = self._run()
@@ -228,8 +237,13 @@ class RenderPassTest(unittest.TestCase):
         payload = json.loads(
             (self.out / "data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
         )
-        self.assertEqual([g["key"] for g in payload["groups"]], [classify.TIER_PENDING])
-        self.assertIn("下次运行会自动补上", payload["groups"][0]["criteria"])
+        # 重构 S5：扁平精选列表里「详情待补」不丢 —— 卡片仍在（tier 标签标注），
+        # 排在评价数维度之后（无 reviews），但不被吞掉
+        self.assertEqual([g["key"] for g in payload["groups"]], ["featured"])
+        items = payload["groups"][0]["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["tier"], classify.TIER_PENDING)
+        self.assertEqual(items[0]["tier_label"], "详情待补")
 
 
 if __name__ == "__main__":

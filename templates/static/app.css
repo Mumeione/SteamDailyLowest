@@ -216,6 +216,10 @@ body.no-image .thumb { display: none; }
 .tag-low-tie { background: #eef1f5; color: var(--store-low); }
 .tag-low-unknown { background: #eef1f5; color: var(--store-low); }
 .tag-pending { background: #f1f0ff; color: #5b4bd6; }
+/* 重构 S5：精选扁平列表没有档位分组 —— 「好评达标 / 高热度 · 口碑不一」
+   降级为卡片标签（featured 组才渲染）。口碑不一用暖色提醒，好评达标保持中性 */
+.tag-tier { background: #eef1f5; color: var(--muted); }
+.tag-tier-notable { background: #fff4e5; color: #b26a00; }
 
 /* 折扣力度条（批 E spec E2）：填充宽 = cut%，颜色沿用原有的折扣绿，
    取代原来那个和 N/H/S 抢注意力的绿色 -XX% pill。

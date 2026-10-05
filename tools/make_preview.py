@@ -38,8 +38,14 @@ def load_breakpoint(data_js: str, fallback: int = 768) -> int:
     return int(m.group(1)) if m else fallback
 
 
-def build_single(index_html: str, css: str, js: str, data_js: str) -> str:
-    """把外链的 css / js / data.js 内联进 HTML。"""
+def build_single(index_html: str, css: str, js: str, data_js: str,
+                 all_js: str | None = None) -> str:
+    """把外链的 css / js / data.js 内联进 HTML。
+
+    重构 S5 起顺带内联 all.js（可重建视图的懒加载数据，``window.ALL_DATA``）——
+    app.js 的 loadAll 检测到 window.ALL_DATA 就直接用，不再注入 <script>，
+    单文件预览里「本周 / 折扣中 / 全部」三视图照常可点。
+    """
     # <link rel="stylesheet" href="static/app.css?v=...">  → <style>
     html = re.sub(
         r'<link[^>]*rel="stylesheet"[^>]*href="[^"]*app\.css[^"]*"[^>]*>',
@@ -61,6 +67,14 @@ def build_single(index_html: str, css: str, js: str, data_js: str) -> str:
         html,
         flags=re.IGNORECASE,
     )
+    # all.js（window.ALL_DATA）内联：放在 data.js 之后、app.js 之前均可 ——
+    # loadAll 是点击时才读 window.ALL_DATA
+    if all_js:
+        html = html.replace(
+            "</head>",
+            "<script>\n" + all_js + "\n</script>\n</head>",
+            1,
+        )
     return html
 
 
@@ -118,6 +132,7 @@ def main() -> int:
     css_path = OUTPUT / "static" / "app.css"
     js_path = OUTPUT / "static" / "app.js"
     data_path = OUTPUT / "data.js"
+    all_path = OUTPUT / "all.js"  # 重构 S5：可重建视图的懒加载数据，缺失不阻断
 
     missing = [p.name for p in (index_path, css_path, js_path, data_path) if not p.exists()]
     if missing:
@@ -125,7 +140,12 @@ def main() -> int:
         return 1
 
     data_js = _read(data_path)
-    single = build_single(_read(index_path), _read(css_path), _read(js_path), data_js)
+    all_js = _read(all_path) if all_path.exists() else None
+    if all_js is None:
+        print("[warn] 没有 all.js：「本周 / 折扣中 / 全部」三视图在预览里不可用"
+              "（先跑一次带 S5 渲染的报表）")
+    single = build_single(_read(index_path), _read(css_path), _read(js_path),
+                          data_js, all_js=all_js)
     (OUTPUT / "preview_single.html").write_text(single, encoding="utf-8")
 
     breakpoint = load_breakpoint(data_js)

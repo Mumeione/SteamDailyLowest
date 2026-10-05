@@ -484,7 +484,8 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
                 stats_of: Callable[[dict], dict], *, announce_merges: bool,
                 enrich_hook: Callable[[list[dict], list[dict], dict], dict] | None = None,
                 fx: dict | None = None,
-                upcoming: list[dict] | None = None) -> dict:
+                upcoming: list[dict] | None = None,
+                all_entries: list[dict] | None = None) -> dict:
     """合并缓存 → 多版本去重 → 分档 →（补 Steam 展示数据）→ 出报表。**可以调用多次**。
 
     第一次调用发生在详情还没抓的时候（缺的标「详情待补」，页面立刻可看），
@@ -500,6 +501,10 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
 
     ``upcoming``：「即将过期」视图的候选条目（调用方按
     :func:`classify.in_view` 筛好）；``None`` = 本轮不产出该视图。
+
+    ``all_entries``（重构 S5）：今日筛选链通过的**全量**史低（hist_low），
+    用于「全部」视图的 all.js 与「本周 / 折扣中」的按钮 count；
+    ``None`` = 不产出（三个懒加载视图按钮自动禁用）。
     """
     def build_view(entries: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
         merged = merge_details(state, entries, cfg)
@@ -542,10 +547,37 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
         info["steam"] = enrich_hook(shown, upcoming_shown, info)
     stats = stats_of(info)
     labels = report.tier_labels(cfg)
+
+    # ---- 重构 S5：「全部」视图数据 = 今日筛选链全量（含当日新增），逐条打视图标志 ----
+    # 懒加载三视图（本周 / 折扣中 / 全部）的数据源；count 也从这里统计。
+    # 比价数据只覆盖 enrich 过的当日新增 + 即将过期（全量补比价 = 上千次 Steam 请求，
+    # 不做）—— 其余条目详情区由前端回落单栏。
+    all_cards: list[dict] | None = None
+    extra_counts: dict | None = None
+    if all_entries is not None:
+        _, _, all_shown = build_view(all_entries)
+        all_cards = []
+        for entry in all_shown:
+            card = report.build_card(entry, now, labels)
+            card["views"] = [
+                key for key in classify.VIEW_KEYS
+                if classify.in_view(key, entry, now, cfg)
+            ]
+            all_cards.append(card)
+        extra_counts = {
+            "week": sum(1 for c in all_cards if "week" in c["views"]),
+            "active": sum(1 for c in all_cards if "active" in c["views"]),
+            "all": len(all_cards),
+        }
+        info["all_shown"] = len(all_shown)
+
     cards = [report.build_card(entry, now, labels) for entry in shown]
     upcoming_cards = [report.build_card(entry, now, labels) for entry in upcoming_shown]
-    info["paths"] = report.render(cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
-                                  upcoming_items=upcoming_cards if has_upcoming else None)
+    info["paths"] = report.render(
+        cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
+        upcoming_items=upcoming_cards if has_upcoming else None,
+        featured=True, all_cards=all_cards, extra_counts=extra_counts,
+    )
     return info
 
 
@@ -697,9 +729,10 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
 
     # ---- 首版报表：不等详情（§3.3）----
     first = render_pass(state, candidates, cfg, now, stats_of(0, count_backlog(hist_low, state, cfg, now)),
-                        announce_merges=False, fx=fx_rates, upcoming=upcoming_entries)
+                        announce_merges=False, fx=fx_rates, upcoming=upcoming_entries,
+                        all_entries=hist_low)
     log(f"[5/{total_steps}] 首版报表已生成（缺详情的标「详情待补」，页面立刻可看）："
-        f"{first['paths']['index']}")
+        f"{first['paths']['index']}；全部视图数据 {first.get('all_shown', 0)} 条")
 
     # ---- 慢的部分放最后 ----
     detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse_client)
@@ -735,9 +768,9 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
 
     final = render_pass(state, candidates, cfg, now, stats_of(detail_fetched, backlog),
                         announce_merges=True, enrich_hook=do_enrich, fx=fx_rates,
-                        upcoming=upcoming_entries)
+                        upcoming=upcoming_entries, all_entries=hist_low)
     log(f"[7/{total_steps}] 完整版报表已覆盖：进列表 {final['shown']} 条（分档 {final['tier']}）"
-        f"；即将过期进列表 {final['upcoming_shown']} 条")
+        f"；即将过期进列表 {final['upcoming_shown']} 条；全部视图数据 {final.get('all_shown', 0)} 条")
 
     errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
     state.add_run_log(
