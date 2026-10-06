@@ -14,6 +14,8 @@
 - 概览统计：state.run_log 最近一次 mode=daily 的记录，缺的用可推导值补。
 
 用法：`python tools/render_report.py`（可选 `--config 路径`，同 run.py）
+      `python tools/render_report.py --at 2026-10-06`：把「今天」固定成那一天
+      （取当天 20:00），本地 data/ 不是当天时**直接用这个** —— 否则 0 候选、退出码 1。
 """
 
 from __future__ import annotations
@@ -139,6 +141,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="全本地只重渲染测试报表（零网络请求）")
     parser.add_argument("--config", default=None, help="配置文件路径（默认 config.json）")
+    parser.add_argument(
+        "--at", default=None, metavar="YYYY-MM-DD",
+        help="把「今天」固定成某一天，用那天落盘的数据重建当日新增。"
+             "本地 data/ 不是当天时必用（否则 0 候选、退出码 1）——"
+             "报表是测试产物，不影响线上。",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -148,8 +156,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     tz = classify.zone(cfg["timezone"])
-    now = datetime.now(tz)
+    if args.at:
+        try:
+            # 取当天 20:00（晚于主跑 03:14 CST，确保那天的条目都已入库）
+            now = datetime.strptime(args.at, "%Y-%m-%d").replace(hour=20, tzinfo=tz)
+        except ValueError:
+            log(f"[错误] --at 需要 YYYY-MM-DD 格式，收到：{args.at}")
+            return 2
+    else:
+        now = datetime.now(tz)
     today = now.date()
+    log(f"参照时刻：{now.isoformat(timespec='minutes')}")
 
     state = State(resolve_path(cfg, "state_path"), tz=tz).load()
     candidates = pick_today_from_state(state, tz, today)

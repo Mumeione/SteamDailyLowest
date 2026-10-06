@@ -482,17 +482,20 @@ html, body {
   background: rgba(0,0,0,.62); color: #fff; font-size: 12px; font-weight: 700;
   display: flex; align-items: center; justify-content: center; padding: 0 8px;
 }
-.pick-body { padding: 9px 10px 11px; }
+/* 大卡信息区：**白底**（用户 2026-10-07 反馈深色不合适，改回白色）。
+   排版：标题两行 → 力度条/价格一行 → 链接/划线原价一行，两行左右都有内容。 */
+.pick-body { padding: 9px 10px 10px; }
 .pick-title {
   font-size: 13px; font-weight: 600; line-height: 1.35; min-height: 2.7em;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.pick-foot { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
-.pick-from { font-size: 11px; color: var(--muted); }
+.pick-foot { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
 .pick-price { font-size: 16px; font-weight: 700; color: var(--price-now); margin-left: auto; }
-.pct {
-  display: inline-block; background: #4c6b22; color: #beee11; font-weight: 700;
-  font-size: 11px; padding: 2px 5px; border-radius: 3px;
+.pick-meta { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.pick-meta .links svg { fill: #9aa1ab; }
+.pick-meta .links a:hover svg { fill: var(--accent); }
+.pick-was {
+  margin-left: auto; font-size: 12px; color: var(--muted); text-decoration: line-through;
 }
 /* 史低标签：**沿用 S9 之前的口径** —— 新史低是**红**（与行左侧色条同色），
    平史低/待确认用中性灰。
@@ -505,8 +508,10 @@ html, body {
 .hl.hl-new { background: #fdecec; color: var(--new-low); }
 
 /* ---- 四板块两栏 ---- */
-.sections { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 28px; align-items: start; }
-.section { min-width: 0; }
+.sections { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; align-items: start; }
+.section-col { min-width: 0; }
+/* 同一列内相邻板块的竖直间距 —— 分栏搬到 JS 之后，grid 的 row-gap 没人接手了 */
+.section { min-width: 0; margin-bottom: 12px; }
 .sec-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 0 8px; }
 .sec-title { font-size: 15px; font-weight: 600; margin: 0; }
 .sec-count { font-size: 12px; color: var(--muted); }
@@ -518,7 +523,8 @@ html, body {
 /* ---- 行列表（一行一个游戏）---- */
 .row {
   background: var(--card); border-left: 6px solid var(--line); border-radius: 8px;
-  margin-bottom: 6px; overflow: hidden; box-shadow: var(--shadow-card);
+  /* 行间距 6 -> 8px：两列并排时 6px 显得糊成一片（refs.md C3/C4） */
+  margin-bottom: 8px; overflow: hidden; box-shadow: var(--shadow-card);
   transition: transform .15s ease, box-shadow .15s ease;
 }
 .row.l-new { border-left-color: var(--new-low); }
@@ -526,8 +532,9 @@ html, body {
 .row:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
 .row-main { display: flex; align-items: center; gap: 12px; padding: 8px 10px; cursor: pointer; }
 .row-thumb {
-  width: 40px; height: 56px; flex: 0 0 40px; object-fit: cover;
-  border-radius: 4px; background: #eceff3; display: block;
+  /* 40×56 -> 44×62：refs.md B8 用户原话「图片太小了…留足位置」 */
+  width: 44px; height: 62px; flex: 0 0 44px; object-fit: cover;
+  border-radius: 5px; background: #eceff3; display: block;
 }
 /* 精简模式见文件末尾（body.compact） */
 .row-info { min-width: 0; flex: 1 1 auto; }
@@ -538,8 +545,9 @@ html, body {
 }
 .row-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-tags { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
-/* 行里的力度条比卡片窄一点，别把标题挤没 */
-.row-tags .cut-bar { width: 72px; }
+/* 力度条按 refs.md B10 自适应：原 72px 电脑上「有点细有点短」，
+   给到 96px（与旧卡片档一致），手机上再收窄，别把标题挤没 */
+.row-tags .cut-bar { width: 96px; }
 .row-price { text-align: right; flex: 0 0 auto; padding-left: 4px; }
 .row-price .now { font-size: 18px; font-weight: 700; color: var(--price-now); }
 .row-price .was { font-size: 12px; color: var(--muted); text-decoration: line-through; }
@@ -553,9 +561,17 @@ html, body {
 .lv-count { font-size: 12px; color: var(--muted); }
 .listview .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; align-items: start; }
 
+/* 四板块两列在 900 以下收单列（1080 视口本来就能看两列，原来 1100 就收，
+   于是 1000px 宽的单行里中间空一大片 —— 用户截图反馈）。
+   ⚠️ 只动 .sections：.deck-track / .listview 的断点保持 1100，别一起挪。
+   单列时 .section-col 变 display:contents，让 4 个 section 直接成为网格项，
+   JS 打的 order 才生效（顺序复原成「新史低→即将到期→热门→大额折扣」）。 */
+@media (max-width: 900px) {
+  .sections { grid-template-columns: 1fr; }
+  .section-col { display: contents; }
+}
 @media (max-width: 1100px) {
   .deck-track { grid-template-columns: repeat(3, 1fr); }
-  .sections { grid-template-columns: 1fr; }
   .listview .rows { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
@@ -669,3 +685,15 @@ body.compact .row-sub { flex: 1 1 100%; }
   .floaters { right: 12px; bottom: 14px; }
   .btn-float { width: 42px; height: 42px; }
 }
+
+
+/* S9-3 收尾：窄屏下行内力度条收窄（refs.md B10「手机上看刚好合适」），
+   桌面用上面那条 96px 的自适应档 */
+@media (max-width: 768px) {
+  .row-tags .cut-bar { width: 72px; }
+  .row-thumb { width: 40px; height: 56px; flex-basis: 40px; }
+}
+
+
+/* 大卡窄（约 200px），力度条用行列表那档 96px 会挤掉百分比 —— 单独收一档 */
+.pick .cut-bar { width: 64px; }

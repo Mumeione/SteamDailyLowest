@@ -152,7 +152,7 @@
 
     var thumb = item.banner
       ? el("img", { class: "row-thumb", src: item.banner, alt: "",
-                    loading: "lazy", decoding: "async", width: "40", height: "56" })
+                    loading: "lazy", decoding: "async", width: "44", height: "62" })
       : el("div", { class: "row-thumb" });
 
     var summary = el("div", { class: "row-main" }, [
@@ -228,12 +228,23 @@
                                 decoding: "async" }) : null,
       el("span", { class: "pick-rank", text: "#" + rank })
     ]);
+    // 大卡也补齐**力度条**与 **Steam / 小黑盒链接**（与行列表元素对齐）。
+    // 信息区**白底** —— 深色那版用户 2026-10-07 反馈不合适，已改回白色。
     var body = el("div", { class: "pick-body" }, [
       el("div", { class: "pick-title", text: displayTitle(item), title: displayTitle(item) }),
       el("div", { class: "pick-foot" }, [
-        el("span", { class: "pct", text: "-" + (item.cut || 0) + "%" }),
-        el("span", { class: "pick-from", text: "现价" }),
+        cutBar(item.cut),
         el("span", { class: "pick-price", text: item.price_text })
+      ]),
+      // 底部两行各自**左右都有内容**，不会出现「一行只剩两个小图标」的空洞：
+      //   第一行：左 力度条 + 百分比 ｜ 右 现价
+      //   第二行：左 Steam / 小黑盒  ｜ 右 划线原价
+      el("div", { class: "pick-meta" }, [
+        el("span", { class: "links" }, [
+          iconLink(item.steam_url, "Steam 商店页", ICONS.steam),
+          iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
+        ]),
+        el("span", { class: "pick-was", text: item.regular_text })
       ])
     ]);
     var card = el("article", { class: "pick" }, [art, body]);
@@ -267,20 +278,40 @@
   // ------------------------------------------------------------------
   var sectionsBox = document.getElementById("sections");
 
+  function buildSection(sec) {
+    var head = el("div", { class: "sec-head" }, [
+      el("h2", { class: "sec-title", text: sec.label }),
+      el("span", { class: "sec-count", text: sec.count + " 条" }),
+      el("button", { type: "button", class: "sec-more", text: "查看更多 ›",
+                     onclick: function () { openSection(sec.key); } })
+    ]);
+    var rows = el("div", { class: "rows" });
+    fillRows(rows, sec.items || []);
+    return el("section", { class: "section" }, [head, rows]);
+  }
+
+  // 两列**按估算高度均衡分配**（组头算 1 行高度，每行算 1）：
+  // 之前直接交给 CSS grid 两列，某个板块条数少时它下面会留一大块空白，
+  // 把下面那个板块顶得老远（1080 视口收到单列时更明显）。
   function renderSections() {
+    var sections = data.sections || [];
+    var emptyBox = document.getElementById("empty");
     sectionsBox.textContent = "";
-    (data.sections || []).forEach(function (sec) {
-      var head = el("div", { class: "sec-head" }, [
-        el("h2", { class: "sec-title", text: sec.label }),
-        el("span", { class: "sec-count", text: sec.count + " 条" }),
-        el("button", { type: "button", class: "sec-more", text: "查看更多 ›",
-                       onclick: function () { openSection(sec.key); } })
-      ]);
-      var rows = el("div", { class: "rows" });
-      fillRows(rows, sec.items || []);
-      sectionsBox.appendChild(el("section", { class: "section" }, [head, rows]));
+    if (!sections.length) { emptyBox.hidden = false; return; }
+    var cols = [el("div", { class: "section-col" }), el("div", { class: "section-col" })];
+    var heights = [0, 0];
+    sections.forEach(function (sec, idx) {
+      var i = heights[0] <= heights[1] ? 0 : 1;
+      var node = buildSection(sec);
+      // 单列（≤900px）时 .section-col 变成 display:contents，这 4 个 section 就成了
+      // .sections 的网格项 —— 靠 order 把顺序复原成「新史低→即将到期→热门→大额折扣」。
+      // 不复原的话会按分栏结果排成「新史低→热门→即将到期→大额折扣」（review 抓到的回归）。
+      if (node.style) node.style.order = idx;
+      cols[i].appendChild(node);
+      heights[i] += 1 + (sec.items || []).length;
     });
-    document.getElementById("empty").hidden = !!(data.sections || []).length;
+    cols.forEach(function (col) { sectionsBox.appendChild(col); });
+    emptyBox.hidden = true;
   }
 
   // ------------------------------------------------------------------
