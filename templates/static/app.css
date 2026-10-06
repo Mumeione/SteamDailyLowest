@@ -11,6 +11,12 @@
   /* 现价用促销红（超市促销逻辑，用户反馈绿色不显眼）；
      与比价的「便宜绿/贵红」语义色分开 —— diff-cheap 仍绿，避免贵贱分不清 */
   --price-now: #d92b2b;
+  /* ===== S9-1（2026-10-06）新增：卡片阴影两档 =====
+     静止极淡、悬停加深。方向稿 v2 定稿值（A 的底色 + B 的浮动）。
+     字号定稿：中文名 14 / 现价 18 / 英文名·评价·史低标签 11 /
+     剩余天数·折扣百分比·划线原价 12 / 板块标题 14 */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow-card-hover: 0 6px 16px rgba(16, 24, 40, .13);
 }
 
 * { box-sizing: border-box; }
@@ -24,7 +30,14 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
-.wrap { max-width: 900px; margin: 0 auto; padding: 0 12px; }
+.wrap {
+  /* S9：容器从 900px 放宽到 1440px —— 用户 2026-10-06 反馈
+     「900px 限制太大」，参照 gg.deals（1080 视口下内容约 970px，基本流式全宽）。
+     留白用 clamp 随视口伸缩，手机上仍是 12px。 */
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 clamp(12px, 4vw, 56px);
+}
 
 /* 顶栏 */
 .topbar { background: var(--card); border-bottom: 1px solid var(--line); }
@@ -117,7 +130,8 @@ html, body {
 .filter.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .filter:disabled { opacity: .45; cursor: not-allowed; }
 
-.notice { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+/* ⚠️ 原 `.notice`（筛选栏下面那行灰色说明）已随 S9 删除 ——
+   页面上的消费者没了，`report.py` 里那个 `notice` 字段也一并去掉了（review-s9-01 #4）。 */
 
 .toggle { margin-left: auto; font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
 
@@ -160,30 +174,46 @@ html, body {
 /* 卡片 */
 .card {
   background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 8px;
   margin-bottom: 8px;
   overflow: hidden;
+  /* S9-1：去掉原来的 1px 描边，改用阴影分层（描边+阴影同时上会显脏） */
+  box-shadow: var(--shadow-card);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+/* S9-1：悬停上浮 2px + 阴影加深（方向稿里的「B 的浮动效果」）。
+   手机没有 hover，这条只在电脑/鼠标设备上生效。 */
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+}
+/* 系统开了「减少动态效果」时不位移，只保留阴影变化 */
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: box-shadow .15s ease; }
+  .card:hover { transform: none; }
 }
 /* 批 E spec E2：左侧色条 = 史低类型，页面的**主视觉锚点** ——
    N/H/S 原本只体现在 11px 小标签的字体色上，几乎看不出来 */
-.card { border-left: 4px solid var(--line); }
+.card { border-left: 6px solid var(--line); }
 .card.low-new { border-left-color: var(--new-low); }
 .card.low-tie { border-left-color: var(--store-low); }
-.card.low-unknown { border-left: 4px dashed var(--store-low); }
-.card-summary { display: flex; gap: 10px; padding: 8px; align-items: center; cursor: pointer; }
+.card.low-unknown { border-left: 6px dashed var(--store-low); }
+/* S9：用户反馈缩窄后偏紧凑 —— 卡内整体间距 10 -> 14px */
+.card-summary { display: flex; gap: 14px; padding: 8px; align-items: center; cursor: pointer; }
 /* boxart 是 2:3 竖图，框跟着竖过来，不再裁切（卡片随之变高一点） */
-.thumb { width: 44px; height: 66px; flex: 0 0 44px; object-fit: cover; border-radius: 6px; background: #eceff3; }
+.thumb { width: 56px; height: 84px; flex: 0 0 56px; object-fit: cover; border-radius: 6px; background: #eceff3; }
 body.no-image .thumb { display: none; }
-.card-main { min-width: 0; flex: 1; }
+/* S9：再把「标签行末尾的力度条」与「右侧价格列」之间单独多留一点（6px），
+   否则力度条的 -95% 会和价格贴在一起 */
+.card-main { min-width: 0; flex: 1; padding-right: 6px; }
 .card-title { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-price { text-align: right; flex: 0 0 auto; }
-.price-now { color: var(--price-now); font-weight: 700; font-size: 17px; }
+.price-now { color: var(--price-now); font-weight: 700; font-size: 18px; }
 .price-regular { font-size: 12px; color: var(--muted); text-decoration: line-through; }
 /* 批 F：改回 11px —— 批 E 第三轮把它提到 13px 近黑，用户反馈太大，
    价格区三行（现价 / 原价 / 剩 X 天）里它不该抢现价的视觉 */
-.days-left { font-size: 11px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+.days-left { font-size: 12px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
 
 /* 链接图标：并入档位标签行（.tags 内、紧跟「好评达标」等档位标签右侧）——
    与标签同行天然对齐（批 C2，替代此前的「沉底对齐」方案） */
@@ -202,6 +232,11 @@ body.no-image .thumb { display: none; }
 
 /* 默认一行两卡；窄屏（≤断点，与分页断点一致）收成单列 */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
+/* S9：容器放宽到 1440px 后，宽屏一行放 3 张（900px 时代放不下，
+   现在限制取消了）。1100px 以下仍保持 2 列。 */
+@media (min-width: 1100px) {
+  .cards { grid-template-columns: repeat(3, 1fr); }
+}
 .cards .card { margin-bottom: 0; }
 
 /* 无封面图：保留占位空块（.thumb 自带浅灰底），双列网格不错位，只是没有图片 */
@@ -225,7 +260,7 @@ body.no-image .thumb { display: none; }
    取代原来那个和 N/H/S 抢注意力的绿色 -XX% pill。
    位置在**链接图标之后**（第二轮调整），宽度给足让它真正能当「力度」读 */
 .cut-bar {
-  display: inline-block; width: 96px; height: 5px; vertical-align: middle;
+  display: inline-block; width: 88px; height: 5px; vertical-align: middle;
   border-radius: 3px; background: #eceff3; overflow: hidden;
 }
 .cut-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--price); }
@@ -278,10 +313,9 @@ body.no-image .thumb { display: none; }
   .group-head .group-title { flex: 1 1 auto; }
   .group-head .group-meta { flex: 1 1 100%; margin-left: 18px; }
   .group-head .group-criteria { white-space: normal; }
-  .thumb { width: 40px; height: 60px; flex-basis: 40px; }
-  .card-title { font-size: 13px; }
-  /* 单列时横向空间反而更宽，但力度条也别长到挤掉标题 */
-  .cut-bar { width: 80px; }
+  /* S9-1：封面 / 中文名字号 / 力度条**不再在手机端单独缩小** ——
+     统一沿用桌面档（方向稿 v2 就是这一档，字号也是在这基础上定的）。
+     手机验证后如果觉得卡片太高，再单独给手机收一档。 */
 
   /* 布局收单列 = 每页条数切到手机档，两者永远同断点（§7.3） */
   .cards { grid-template-columns: 1fr; }
@@ -293,4 +327,293 @@ body.no-image .thumb { display: none; }
     border-left: 0; padding-left: 0;
     border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 6px;
   }
+}
+
+/* ==================================================================
+   S9 首页布局（参照 gg.deals）：吸顶导航 + 顶部大卡横排 + 四板块两栏行列表
+   ================================================================== */
+
+/* ---- 吸顶导航 ---- */
+.topbar { position: sticky; top: 0; z-index: 20; }
+.topbar-inner { display: flex; align-items: center; gap: 18px; }
+/* ---- 站点名（标识化，refs.md B1「艺术字体」）----
+   ⚠️ 页面要能**离线双击打开**、不联网不打包 → **没有字体文件可用**
+   （内联字体会让 CSS 涨几十 KB，用户明确不要）。所以这里用纯 CSS 拼标识感：
+   一个自绘小标记（向下的箭头落在底线上 = 价格探底）+ 双色分段 +
+   「Steam」段渐变裁字。不支持渐变裁字的浏览器会退回纯蓝字，不会变透明看不见。 */
+.brand {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 19px; font-weight: 800; letter-spacing: -.5px;
+  text-decoration: none; color: var(--text); flex: 0 0 auto;
+}
+.brand-mark { width: 22px; height: 22px; display: block; color: #1d4ed8; flex: 0 0 auto; }
+.brand-mark path, .brand-mark rect { fill: currentColor; }
+.brand-text { display: inline-flex; align-items: baseline; }
+.brand-a { color: #1d4ed8; }
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .brand-a {
+    background: linear-gradient(180deg, #60a5fa 0%, #1d4ed8 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+}
+.brand-b { color: var(--text); }
+.brand:hover .brand-b { color: var(--accent); }
+.nav { display: flex; gap: 4px; flex: 1 1 auto; flex-wrap: wrap; }
+
+/* ---- 手机端导航折叠（汉堡按钮 → 竖排浮层）----
+   电脑端这个按钮是 display:none、导航保持横排（只在 ≤768px 的媒体查询里出现）。 */
+.nav-toggle {
+  display: none;
+  width: 38px; height: 34px; flex: 0 0 auto;
+  align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--card); padding: 0; cursor: pointer;
+}
+.nav-toggle .bars { display: block; width: 17px; }
+.nav-toggle .bars i {
+  display: block; height: 2px; margin: 3px 0; border-radius: 1px;
+  background: var(--text); transition: transform .18s ease, opacity .18s ease;
+}
+/* 展开时三条线转成 ×，比"箭头旋转"更像安卓上的返回/收起 */
+.nav-toggle[aria-expanded="true"] .bars i:nth-child(1) { transform: translateY(5px) rotate(45deg); }
+.nav-toggle[aria-expanded="true"] .bars i:nth-child(2) { opacity: 0; }
+.nav-toggle[aria-expanded="true"] .bars i:nth-child(3) { transform: translateY(-5px) rotate(-45deg); }
+.nav-item {
+  font: inherit; font-size: 14px; padding: 6px 12px; border: 0; background: none;
+  color: var(--text); border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.nav-item:hover { background: #eef1f5; }
+.nav-item.active { background: var(--accent); color: #fff; }
+.topbar .generated { flex: 0 0 auto; }
+
+/* ---- 筛选胶囊行 ---- */
+.filterbar { display: flex; align-items: center; gap: 6px; margin: 14px 0 4px; }
+.chip {
+  font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer;
+}
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.filterbar .summary { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+/* ---- 底部抽屉筛选（refs.md §6.7）----
+   手机上从屏幕底部滑出（安卓习惯），电脑上同一个面板改成右侧浮层。
+   好处是维度可以随便加，不会把顶栏挤爆。 */
+.filter-open { display: inline-flex; align-items: center; gap: 6px; }
+.f-badge {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.chip.primary, .chip.opt.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.drawer-mask { position: fixed; inset: 0; background: rgba(16, 24, 40, .42); z-index: 40; }
+.drawer {
+  position: fixed; z-index: 41; background: var(--card);
+  display: flex; flex-direction: column;
+  box-shadow: 0 -8px 24px rgba(16, 24, 40, .18);
+}
+/* ⚠️ .drawer 自带 display:flex，会盖掉 [hidden] 的默认 display:none —— 必须显式写回来 */
+.drawer[hidden], .drawer-mask[hidden], .f-badge[hidden] { display: none; }
+.drawer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+}
+.drawer-close {
+  border: 0; background: none; font-size: 16px; color: var(--muted);
+  cursor: pointer; padding: 4px 6px; font-family: inherit;
+}
+.drawer-body { overflow-y: auto; padding: 4px 14px 14px; flex: 1 1 auto; }
+.fgroup { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.fgroup:last-child { border-bottom: 0; }
+.fgroup-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.fgroup-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.drawer-foot {
+  display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line);
+}
+.drawer-foot .chip { flex: 1 1 0; text-align: center; padding: 9px 12px; }
+
+  /* ---- 抽屉：手机底部滑出 / 电脑右侧浮层 ---- */
+  .drawer {
+    left: 0; right: 0; bottom: 0; max-height: 78vh;
+    border-radius: 14px 14px 0 0;
+  }
+@media (min-width: 769px) {
+  .drawer {
+    right: 0; top: 0; bottom: 0; left: auto; width: 380px;
+    max-height: none; border-radius: 0;
+    border-left: 1px solid var(--line);
+  }
+}
+
+/* ---- 顶部大卡横排 ---- */
+.picks { margin: 14px 0 26px; }
+.deck-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.deck-title { font-size: 17px; font-weight: 600; margin: 0; }
+.deck-sub { font-size: 12px; color: var(--muted); }
+.deck-nav { margin-left: auto; display: flex; gap: 6px; }
+.round {
+  width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--card); color: var(--text); font-size: 16px; line-height: 1;
+  cursor: pointer; padding: 0;
+}
+.round:hover:not(:disabled) { background: #eef1f5; }
+.round:disabled { opacity: .35; cursor: not-allowed; }
+.deck-track { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+.pick {
+  background: var(--card); border-radius: 8px; overflow: hidden; cursor: pointer;
+  box-shadow: var(--shadow-card); position: relative;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.pick:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+.pick-art { position: relative; aspect-ratio: 3 / 4; background: #eceff3; }
+.pick-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pick-rank {
+  position: absolute; left: 8px; top: 8px; min-width: 26px; height: 26px; border-radius: 13px;
+  background: rgba(0,0,0,.62); color: #fff; font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; padding: 0 8px;
+}
+.pick-body { padding: 9px 10px 11px; }
+.pick-title {
+  font-size: 13px; font-weight: 600; line-height: 1.35; min-height: 2.7em;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.pick-foot { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.pick-from { font-size: 11px; color: var(--muted); }
+.pick-price { font-size: 16px; font-weight: 700; color: var(--price-now); margin-left: auto; }
+.pct {
+  display: inline-block; background: #4c6b22; color: #beee11; font-weight: 700;
+  font-size: 11px; padding: 2px 5px; border-radius: 3px;
+}
+/* 史低标签：**沿用 S9 之前的口径** —— 新史低是**红**（与行左侧色条同色），
+   平史低/待确认用中性灰。
+   ⚠️ **别用绿色** —— 绿在本站专属「折扣力度」（`.cut-bar` / `.cut-num`），
+   混用会让"新史低"和"折扣"串味（S9 犯过这个错，见 handoff §4.1）。 */
+.hl {
+  display: inline-block; background: #eef1f5; color: var(--store-low); font-weight: 700;
+  font-size: 11px; padding: 1px 5px; border-radius: 3px;
+}
+.hl.hl-new { background: #fdecec; color: var(--new-low); }
+
+/* ---- 四板块两栏 ---- */
+.sections { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 28px; align-items: start; }
+.section { min-width: 0; }
+.sec-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 0 8px; }
+.sec-title { font-size: 15px; font-weight: 600; margin: 0; }
+.sec-count { font-size: 12px; color: var(--muted); }
+.sec-more {
+  margin-left: auto; font-size: 12px; color: var(--accent); background: none; border: 0;
+  cursor: pointer; padding: 0; font-family: inherit;
+}
+
+/* ---- 行列表（一行一个游戏）---- */
+.row {
+  background: var(--card); border-left: 6px solid var(--line); border-radius: 8px;
+  margin-bottom: 6px; overflow: hidden; box-shadow: var(--shadow-card);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.row.l-new { border-left-color: var(--new-low); }
+.row.l-unk { border-left: 6px dashed var(--store-low); }
+.row:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+.row-main { display: flex; align-items: center; gap: 12px; padding: 8px 10px; cursor: pointer; }
+.row-thumb {
+  width: 40px; height: 56px; flex: 0 0 40px; object-fit: cover;
+  border-radius: 4px; background: #eceff3; display: block;
+}
+body.no-image .row-thumb { display: none; }
+.row-info { min-width: 0; flex: 1 1 auto; }
+.row-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-en {
+  font-size: 11px; color: var(--muted); min-height: 1.3em; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.row-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-tags { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+/* 行里的力度条比卡片窄一点，别把标题挤没 */
+.row-tags .cut-bar { width: 72px; }
+.row-price { text-align: right; flex: 0 0 auto; padding-left: 4px; }
+.row-price .now { font-size: 18px; font-weight: 700; color: var(--price-now); }
+.row-price .was { font-size: 12px; color: var(--muted); text-decoration: line-through; }
+.row-detail { border-top: 1px dashed var(--line); padding: 8px 10px 10px; font-size: 13px; display: none; }
+.row.open .row-detail { display: block; }
+
+/* ---- 板块完整列表页 ---- */
+.listview { margin-top: 18px; }
+.lv-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.lv-title { font-size: 17px; font-weight: 600; margin: 0; }
+.lv-count { font-size: 12px; color: var(--muted); }
+.listview .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; align-items: start; }
+
+@media (max-width: 1100px) {
+  .deck-track { grid-template-columns: repeat(3, 1fr); }
+  .sections { grid-template-columns: 1fr; }
+  .listview .rows { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  /* 顶栏在手机上收成**一行**：站点名 | 生成时间 | 汉堡按钮；
+     导航改成绝对定位的竖排浮层（盖上内容，点空白处/按 Esc 收起）。
+     ⚠️ 之前是「导航占第二行 + 横向滚动」，不符合 B1 要的折叠面板。 */
+  .topbar-inner { position: relative; flex-wrap: nowrap; gap: 8px; align-items: center; }
+  .brand { margin-right: auto; font-size: 17px; }
+  .brand-mark { width: 20px; height: 20px; }
+  .topbar .generated { font-size: 11px; }
+  .nav-toggle { display: inline-flex; }
+  .nav {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 30;
+    display: none; flex-direction: column; gap: 2px;
+    padding: 6px; margin: 0;
+    background: var(--card);
+    border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 10px 10px;
+    box-shadow: 0 10px 20px rgba(16, 24, 40, .14);
+  }
+  .nav.open { display: flex; }
+  .nav-item {
+    width: 100%; text-align: left; padding: 11px 12px;
+    font-size: 15px; border-radius: 8px;
+  }
+  /* 大卡：手机上每页 4 张（2 列 × 2 排，没有落单的第三排），
+     封面从 3:4 收成 1:1 —— 单卡矮约 20%、整块从 3 排降到 2 排（约 45%） */
+  .deck-track { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .pick-art { aspect-ratio: 1 / 1; }
+  .pick-title { min-height: 2.6em; }
+  .pick-price { font-size: 15px; }
+
+  /* 行列表：手机上把「史低标签 + 两个图标 + 力度条」整条挪到第二行，
+     第一行是 封面 + 名称 + 价格。
+     ⚠️ 之前是靠在手机上隐藏 `.row-tags .links` 来腾地方 ——
+     用户 2026-10-07 指出手机上两个链接不见了，改成换行而不是藏。 */
+  .row-main { flex-wrap: wrap; gap: 8px 9px; }
+  .row-info { flex: 1 1 auto; }
+  .row-price { order: 2; }
+  .row-tags { order: 3; flex: 1 1 100%; }
+}
+
+
+/* ===== S9：「关于网站」页 ===== */
+.about { padding-top: 6px; }
+.about h1 { font-size: 22px; margin: 12px 0 6px; }
+.about .lead { color: var(--muted); font-size: 13px; margin: 0; }
+.about .block {
+  background: var(--card); border-radius: 8px; box-shadow: var(--shadow-card);
+  padding: 14px 16px; margin-bottom: 12px;
+}
+.about .block h2 { font-size: 15px; margin: 0 0 10px; }
+.about table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+.about table.kv th,
+.about table.kv td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
+.about table.kv tr:last-child th,
+.about table.kv tr:last-child td { border-bottom: 0; }
+.about table.kv th { color: var(--muted); font-weight: 400; white-space: nowrap; width: 110px; }
+.about table.logs { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--muted); }
+.about table.logs th,
+.about table.logs td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #eef1f5; white-space: nowrap; }
+.about table.logs th { font-weight: 600; color: var(--text); }
+.about .num { font-variant-numeric: tabular-nums; }
+.about a, .foot-links a { color: var(--accent); text-decoration: none; }
+.about a:hover, .foot-links a:hover { text-decoration: underline; }
+.foot-links .sep { color: var(--muted); margin: 0 4px; }
+@media (max-width: 768px) {
+  .about table.kv th { width: 88px; font-size: 12px; }
+  .about table.logs { display: block; overflow-x: auto; }
 }

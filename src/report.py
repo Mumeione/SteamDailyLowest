@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import shutil
 from collections import Counter
 from datetime import datetime
@@ -128,18 +130,17 @@ CURRENCY_SYMBOLS = {
 def format_amount(amount_int: int | None, currency: str | None) -> str:
     """把「分」格式化成展示金额。
 
-    **整元才省小数**：12700 分 → `¥127`、1200 分 → `¥12`；非整元保留两位
-    （1270 分 → `¥12.70`）。原先统一 `rstrip("0")` 会把 12.70 砍成 12.7，
-    不符合金额两位小数的惯例（2026-09-25 检查报告问题 3）。
+    **一律保留两位小数**：12700 分 → `¥127.00`、1200 分 → `¥12.00`、
+    1270 分 → `¥12.70`。
+
+    演进：原先统一 `rstrip("0")` 会把 12.70 砍成 12.7（2026-09-25 改为
+    「整元才省小数」）；但那样 `¥127` / `¥12.7` / `¥12.70` 三种长度会混排，
+    价格区右边缘参差不齐（S9-1 用户反馈「价格长短不一致」），故统一两位小数。
     """
     if amount_int is None:
         return "—"
     symbol = CURRENCY_SYMBOLS.get(currency or "", "")
-    if amount_int % 100 == 0:
-        text = f"{amount_int // 100:,}"
-    else:
-        text = f"{amount_int / 100:,.2f}"
-    return f"{symbol}{text}"
+    return f"{symbol}{amount_int / 100:,.2f}"
 
 
 def compare_rows(entry: dict) -> list[dict]:
@@ -168,6 +169,58 @@ def tier_labels(cfg: dict | None = None) -> dict:
     if cfg is None:
         return {key: classify.TIER_LABELS[key] for key in classify.TIER_LABELS}
     return {spec["key"]: spec["label"] for spec in group_specs(cfg)}
+
+
+#: Steam schinese 标题里常见的商标符号，比较时先去掉
+_TITLE_NOISE_RE = re.compile(r"[\u00ae\u2122\u00a9]")
+#: 剥完必须还剩中文（>= 2 个汉字）才认，见 clean_title_zh 里的硬约束
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+#: 剥完英文后可能剩下的吊诡残留：空括号、首尾分隔符、连续空格
+_EMPTY_BRACKET_RE = re.compile(r"\s*[\(（\[【]\s*[\)）\]】]")
+_SEP_CHARS = "\\s\\-\\u2013\\u2014:：,，、/\\|()（）\\[\\]【】®™©"
+
+
+def clean_title_zh(title_zh: str | None, title: str | None) -> str | None:
+    """去掉中文名里夹带的英文原名（S9，2026-10-06）。
+
+    Steam 的 schinese 标题有时会把英文原名一起塞进来，实测 7380 条里 **946 条**
+    是这种，例：``Lords of the Fallen 堕落之主``、``Cities: Skylines II 都市：天际线2``、
+    ``大富翁10 (RichMan 10)``、``Wo Long: Fallen Dynasty （卧龙：苍天陨落）``。
+    后果是中文名那行被英文撑长截断，而下面「英文名」那行又把同一个英文显示一遍。
+
+    **只在能精确对上英文原名时才剥，对不上就原样返回**（不猜、不乱切）——
+    所以 ``《镜之边缘：Catalyst》``（原名 ``Mirror's Edge™ Catalyst``）这种
+    中文名里带个英文副标题的会保持原样。
+    """
+    if not title_zh or not title:
+        return title_zh
+    zh, en = title_zh.strip(), title.strip()
+    if not zh or not en or zh == en:
+        return title_zh  # 压根没有中文名（Steam 回退到英文），保持原样
+    candidates = {en}
+    stripped = _TITLE_NOISE_RE.sub("", en).strip()
+    if len(stripped) >= 4:
+        candidates.add(stripped)
+    low = zh.casefold()
+    for variant in sorted(candidates, key=len, reverse=True):
+        if len(variant) < 4:
+            continue
+        idx = low.find(variant.casefold())
+        if idx < 0:
+            continue
+        cleaned = zh[:idx] + zh[idx + len(variant):]
+        cleaned = _EMPTY_BRACKET_RE.sub("", cleaned)
+        cleaned = re.sub("^[" + _SEP_CHARS + "]+", "", cleaned)
+        cleaned = re.sub("[" + _SEP_CHARS + "]+$", "", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        # ⚠️ 硬约束：剥完**必须还剩中文**，否则一律不动。
+        # 反例（不加这条就会被切坏）：`Pure Farming 2018`（原名 Pure Farming）
+        # 只剩 "2018"、`Kingdom Rush  - Tower Defense` 只剩 "Tower Defense"、
+        # `MX Nitro: Unleashed` 只剩 "Unleashed" —— 这些其实是"本该显示英文的条"，
+        # 剥掉前缀只是把尾巴留下，比不剥更糟。
+        if cleaned != zh and len(_CJK_RE.findall(cleaned)) >= 2:
+            return cleaned
+    return title_zh
 
 
 def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
@@ -199,6 +252,10 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
     # 前端悬停/点按显示（last_low_date）。取不到就不渲染这一行（JS 对空值自动跳过），不猜。
     last_low_date = None
     last_low_text = None
+    # 权重公式 v2 的「间隔」项要的是**数值天数**（refs.md §10.2）。
+    # 只在平史低时有意义 —— 新史低的「上次史低」就是本次，天数恒等于折扣已开的天数，
+    # 不是"间隔"，故留空（留空 = 该项不计分，见 recommend_score 的归一化）。
+    last_low_days = None
     if low_class == classify.STEAM_LOW_NEW:
         # 批 F5：文本由「本次刷新历史记录」改为「本次新史低」（用户定案：只改文本、标签仍为「距上次史低」）
         last_low_text = "本次新史低"
@@ -207,13 +264,17 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         if low_at is not None:
             # 批 E 第二轮：主文本就是「N 天」（标签侧已改为「距上次史低」，
             # 再写「N 天前」语义重复）；具体日期由前端悬停/点按显示
-            last_low_text = f"{max(0, (now.date() - low_at.date()).days)} 天"
+            last_low_days = max(0, (now.date() - low_at.date()).days)
+            last_low_text = f"{last_low_days} 天"
             last_low_date = low_at.strftime("%Y-%m-%d")
     return {
         "game_id": entry.get("game_id"),
         "title": entry.get("title"),
         # Steam 偶尔会把本地化标题存成带尾随空格（例："时之刃 "），渲染前统一清掉
-        "title_zh": (entry.get("title_zh") or "").strip() or None,
+        # S9：剥掉中文名里夹带的英文原名（Steam 的 schinese 标题常带），
+        # 否则中文名那行被撑长截断、下面英文名那行还重复一遍
+        "title_zh": clean_title_zh((entry.get("title_zh") or "").strip() or None,
+                                   entry.get("title")),
         "appid": appid,
         # R8：卡片缩略图只有几十像素宽，用小图 boxart 即可；banner600/400 不再使用
         "banner": entry.get("boxart") or entry.get("banner"),
@@ -227,6 +288,8 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         "low_label": classify.steam_low_label(low_class),
         "days_left": days_left,
         "last_low_text": last_low_text,
+        # 权重公式 v2「间隔」项用的数值天数（平史低有值，新史低/取不到为 None）
+        "last_low_days": last_low_days,
         # 有日期才渲染悬停/点按交互（new=新纪录没有具体日期）
         "last_low_date": last_low_date,
         # 批 E spec E3：原来这三条删掉了 —— 进报表的前提就是正处史低、storeLow 又已含
@@ -234,6 +297,11 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         # 「全周期 / 近一年最低」则是 ITAD 全商店口径，与「本报告只看 Steam」冲突。
         "compare": compare_rows(entry),
         "start_text": start_dt.astimezone(now.tzinfo).strftime("%Y-%m-%d %H:%M") if start_dt else None,
+        # S9：首页四板块的「近 7 天新增」判据（按日历天差，与 start_text 同源）
+        "start_days_ago": (
+            max(0, (now.date() - start_dt.astimezone(now.tzinfo).date()).days)
+            if start_dt is not None else None
+        ),
         "expiry_text": expiry_dt.astimezone(now.tzinfo).strftime("%Y-%m-%d %H:%M") if expiry_dt else None,
         "reviews": reviews,
         "reviews_text": (
@@ -248,6 +316,21 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
 
 
 
+def review_count(card: dict) -> int:
+    """卡片的评价数（没有详情 = 0）。
+
+    ``reviews:{score,count}`` 是一组**总结伴出现**的字段，取值的写法散在
+    `_in_section` / `_section_sort` / `recommend_*` 里容易写歪
+    （漏一层 `or {}` 就是 AttributeError）—— 统一从这里取。
+    """
+    return ((card.get("reviews") or {}).get("count")) or 0
+
+
+def review_score(card: dict) -> float | None:
+    """卡片的好评率（没有详情 = None）。"""
+    return (card.get("reviews") or {}).get("score")
+
+
 #: 重构 S5 默认精选排序（spec §1 决策 8 / §3.3）：**分层 + 多键字典序**，
 #: 不用加权求和 —— 权重没有可解释性，字典序每一键都答得出「为什么排前面」：
 #: ① 新史低在前、平史低在后（史低待确认殿后）② 折扣力度降序 ③ 评价数降序。
@@ -260,7 +343,7 @@ FEATURED_LAYERS = {
 
 def featured_sort_key(card: dict) -> tuple:
     """「当日新增 · 精选」扁平列表的排序键（验收 §6：单测锁定）。"""
-    reviews_count = (card.get("reviews") or {}).get("count") or 0
+    reviews_count = review_count(card)
     return (
         FEATURED_LAYERS.get(card.get("low_class") or classify.STEAM_LOW_UNKNOWN, 2),
         -(card.get("cut") or 0),
@@ -319,12 +402,326 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
     return groups
 
 
+#: 首页四板块（S9 定案 2026-10-06）。顺序由用户拍板：新史低 → 即将到期 → 热门游戏 → 大额折扣。
+#: ⚠️ **池子必须是「全部」视图那批卡片（``all_cards`` / ``all_shown``）** ——
+#: 绝不能用 ``seen_deal`` 全量（里面有同一游戏的历史价格变体，条数会放大十几倍）。
+HOME_SECTIONS = [
+    {"key": "new_low", "label": "新史低", "criteria": "近 7 天新增的新史低"},
+    {"key": "expiring", "label": "即将到期", "criteria": "48 小时内到期"},
+    {"key": "popular", "label": "热门游戏", "criteria": "评价数 ≥ 10000"},
+    {"key": "big_cut", "label": "大额折扣", "criteria": "折扣 ≥ 80%"},
+]
+
+
+def _is_fresh(card: dict, days: int) -> bool:
+    """「近 N 天新增」：按折扣开始日距今天数。取不到 start 的一律不算。"""
+    ago = card.get("start_days_ago")
+    return ago is not None and ago <= days
+
+
+def _is_live(card: dict) -> bool:
+    """折扣是否还在有效期内。
+
+    ⚠️ **首页三板块（新史低/热门/大额折扣）必须叠加这条** —— 「全部」视图的池子
+    （``all_shown``）里含已过期留存的条目（实测 new 类里 inactive 有 215 条），
+    不筛就会把「已经买不到」的折扣摆到首页。没有 ``views`` 标志时
+    （非 ``all_cards`` 的调用路径）按 True 处理，不误杀。
+    """
+    views = card.get("views")
+    return views is None or "active" in views
+
+
+def _in_section(key: str, card: dict, cfg: dict) -> bool:
+    """单卡是否属于某个板块。**只判"性质"，不判日期窗口** ——
+    日期窗口（近 N 天）交给调用方，这样前端点「全部」胶囊时能跳过窗口看全量。"""
+    if key == "new_low":
+        return (card.get("low_class") == classify.STEAM_LOW_NEW) and _is_live(card)
+    if key == "expiring":
+        # 按「到期」这一维筛，**不叠加近 7 天**：7 天前开始的老折扣照样马上要过期，
+        # 按新增日期筛会把最紧急的那批漏掉（实测 107 → 23）。
+        views = card.get("views")
+        if views is not None:
+            return "upcoming" in views
+        # 没有 views 标志时（非 all_cards 的调用路径）按「剩 ≤2 天」近似
+        left = card.get("days_left")
+        return left is not None and left <= 2
+    if key == "popular":
+        return review_count(card) >= int(cfg.get("notable_review_count", 10000)) and _is_live(card)
+    if key == "big_cut":
+        return (card.get("cut") or 0) >= int(cfg.get("big_cut_percent", 80)) and _is_live(card)
+    return False
+
+
+def section_keys(card: dict, cfg: dict) -> list[str]:
+    """这张卡片属于哪几个板块（同一游戏可跨板块，允许重复）。
+    写进 all.js 的每张卡（``card["sections"]``），前端按它筛出板块的完整列表。"""
+    return [spec["key"] for spec in HOME_SECTIONS if _in_section(spec["key"], card, cfg)]
+
+
+def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
+    days = int(cfg.get("home_new_low_days", 7))
+    members = [c for c in cards if _in_section(key, c, cfg)]
+    # 「即将到期」不叠加日期窗口（见 _in_section 注释），其余三个要
+    if key == "expiring":
+        return members
+    return [c for c in members if _is_fresh(c, days)]
+
+
+def _section_sort(key: str):
+    """每个板块用最合理的顺序（都带 title 收尾键，保证 deterministic）。"""
+    if key == "expiring":
+        return lambda c: (c.get("days_left") if c.get("days_left") is not None else 99,
+                          -(c.get("cut") or 0), c.get("title") or "")
+    if key == "popular":
+        return lambda c: (-review_count(c), -(c.get("cut") or 0), c.get("title") or "")
+    if key == "big_cut":
+        return lambda c: (-(c.get("cut") or 0), -review_count(c), c.get("title") or "")
+    return featured_sort_key  # 新史低：沿用精选的分层字典序
+
+
+def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
+    """首页四板块。``items`` 只放前 N 条（``home_section_preview``），
+    完整条数放 ``count``，前端「查看更多」按需展开（数据在 all.js 里）。"""
+    preview = int(cfg.get("home_section_preview", 10))
+    out = []
+    for spec in HOME_SECTIONS:
+        members = _section_members(spec["key"], cards, cfg)
+        members.sort(key=_section_sort(spec["key"]))
+        out.append({
+            "key": spec["key"],
+            "label": spec["label"],
+            "criteria": spec["criteria"],
+            "count": len(members),
+            "items": members[:preview],
+        })
+    return out
+
+
+#: 顶部大卡（轮播）的推荐权重 —— refs.md **§10.2 的 v2「轮播版」**（名气优先）。
+#: 每项先归一到 0~1 再乘权重，满分 100；改档位优先改 ``config.json`` 的
+#: ``recommend_weights``（只写要改的那几项即可），不必动代码。
+#: 间隔（gap）缺数据时**不计分、按剩余权重归一化**（refs.md §10.3 + Q-A：
+#: 用户裁决不扩抓「上次史低时间」，等数据自然累积）。
+RECOMMEND_WEIGHTS = {
+    "fame": 35,     # 名气：对数压缩，20 万评价封顶
+    "cut": 25,      # 折扣：95% 满分
+    "review": 15,   # 口碑：50% → 0 分，90% → 满分
+    "gap": 15,      # 间隔：距上次史低天数，一年以上满分
+    "urgent": 5,    # 紧迫：快到期
+    "fresh": 5,     # 新鲜：折扣刚开始
+}
+#: 前置门槛（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
+RECOMMEND_MIN_RATE = 70
+RECOMMEND_MIN_COUNT = 100
+#: 名气 / 间隔 的封顶值（达到即满分）
+RECOMMEND_FAME_CAP = 200_000
+RECOMMEND_GAP_CAP_DAYS = 366
+
+
+def _clamp01(value: float) -> float:
+    return 0.0 if value < 0 else (1.0 if value > 1 else float(value))
+
+
+def recommend_weights(cfg: dict | None) -> dict:
+    """配置里的权重覆盖默认档（缺的项沿用默认，不要求写全）。"""
+    weights = dict(RECOMMEND_WEIGHTS)
+    for key, value in ((cfg or {}).get("recommend_weights") or {}).items():
+        if key in weights and value is not None:
+            weights[key] = float(value)
+    return weights
+
+
+def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
+    """顶部大卡的推荐分（0~100）。**不满足前置门槛返回 ``None``** = 不进推荐位。
+
+    六项归一（refs.md §10.2 轮播版）：
+
+    - 名气 ``log10(评价数+1) / log10(20 万+1)`` —— 用对数压，否则 156 万评价
+      的游戏会把其余项压成噪声（§7.1 实测：彩虹六号 35% 折扣霸榜就是这么来的）
+    - 折扣 ``折扣% / 95``
+    - 口碑 ``(好评率 − 50) / 40``
+    - 间隔 ``log10(距上次史低天数 + 1) / log10(367)`` —— **只有平史低有这个数**
+    - 紧迫 剩 ≤1 天 1.0 / ≤2 天 0.6 / ≤7 天 0.2 / 更久 0
+      （原文按小时给档，卡片只有「剩 X 天」的日历天，按天近似）
+    - 新鲜 折扣开始 ≤2 天 1.0 / ≤7 天 0.6 / 更早 0
+
+    ⚠️ **缺数据的项不计分，并把总分按"可用权重之和"归一化回 100** ——
+    这样「有数据的项」不会被平白稀释，也不会因为缺一项就系统性吃亏。
+    """
+    count = review_count(card)
+    rate = review_score(card)
+    min_count = int((cfg or {}).get("recommend_min_count", RECOMMEND_MIN_COUNT))
+    min_rate = float((cfg or {}).get("recommend_min_rate", RECOMMEND_MIN_RATE))
+    if not count or rate is None:            # 没有详情 → 不进推荐位（宁可少推，不瞎推）
+        return None
+    if count < min_count or rate < min_rate:
+        return None
+
+    weights = recommend_weights(cfg)
+    days_left = card.get("days_left")          # ⚠️ 别写 `or 99`：0 天是合法值
+    left = days_left if days_left is not None else 99
+    start_ago = card.get("start_days_ago")
+    ago = start_ago if start_ago is not None else 99
+    parts = {
+        "fame": _clamp01(math.log10(count + 1) / math.log10(RECOMMEND_FAME_CAP + 1)),
+        "cut": _clamp01((card.get("cut") or 0) / 95.0),
+        "review": _clamp01((float(rate) - 50.0) / 40.0),
+        "urgent": 1.0 if left <= 1 else 0.6 if left <= 2 else 0.2 if left <= 7 else 0.0,
+        "fresh": 1.0 if ago <= 2 else 0.6 if ago <= 7 else 0.0,
+    }
+    gap = card.get("last_low_days")
+    if gap is not None and gap >= 0:
+        parts["gap"] = _clamp01(
+            math.log10(gap + 1) / math.log10(RECOMMEND_GAP_CAP_DAYS + 1))
+    total = sum(weights[key] for key in parts)
+    if total <= 0:
+        return 0.0
+    return sum(weights[key] * parts[key] for key in parts) / total * 100.0
+
+
+def recommend_sort_key(card: dict, cfg: dict | None = None) -> tuple:
+    """推荐位排序键：分高在前；平手比 折扣% → 评价数 → 价格低 → appid。
+
+    最后一项（appid）是为了**结果稳定可复现** —— 不加的话每次跑出来顺序会抖。
+    """
+    score = recommend_score(card, cfg)
+    return (
+        -(score if score is not None else -1.0),
+        -(card.get("cut") or 0),
+        -review_count(card),
+        card.get("price_int") if card.get("price_int") is not None else 10 ** 9,
+        card.get("appid") or 0,
+    )
+
+
+def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
+    """首页顶部「今日最值」大卡横排的候选（前端每页 5 张、可左右翻页）。
+
+    池子 = 近 N 天（``home_new_low_days``）的新史低 ∩ 还在折扣期内，
+    再过一遍 **§10.2 权重公式 v2**（名气/折扣/口碑/间隔/紧迫/新鲜 + 前置门槛），
+    取前 ``home_picks`` 张。
+
+    ⚠️ 门槛（好评率 ≥70% 且评价数 ≥100）把「详情待补」的条目也挡在外面 ——
+    推荐位不能推没数据的游戏。万一整池都没过门槛（详情大面积缺失的极端情况），
+    退回老的字典序，保证大卡这一块不会整块消失。
+    """
+    days = int(cfg.get("home_new_low_days", 7))
+    pool = [c for c in cards
+            if c.get("low_class") == classify.STEAM_LOW_NEW
+            and _is_fresh(c, days) and _is_live(c)]
+    scored = [c for c in pool if recommend_score(c, cfg) is not None]
+    if not scored:
+        pool.sort(key=featured_sort_key)
+        return pool[: int(cfg.get("home_picks", 15))]
+    scored.sort(key=lambda c: recommend_sort_key(c, cfg))
+    return scored[: int(cfg.get("home_picks", 15))]
+
+
+#: 站点链接默认值（配置里可覆盖，`config.example.json` 有这两个键）
+DEFAULT_REPO_URL = "https://github.com/Mumeione/SteamDailyLowest"
+DEFAULT_ACTIONS_URL = DEFAULT_REPO_URL + "/actions"
+
+
+def site_links(cfg: dict) -> dict:
+    return {
+        "repo": cfg.get("site_repo_url") or DEFAULT_REPO_URL,
+        "actions": cfg.get("site_actions_url") or DEFAULT_ACTIONS_URL,
+    }
+
+
+#: 底部抽屉筛选的**排序**维度（refs.md §6.7 推荐方案的第一个分组）。
+#: 「精选」= 保持服务端给的顺序（板块自己的排序 / 大卡的权重分），不在这里重排。
+FILTER_SORTS = [
+    {"value": "featured", "label": "精选"},
+    {"value": "cut", "label": "折扣降序"},
+    {"value": "price", "label": "价格升序"},
+    {"value": "rate", "label": "好评率降序"},
+]
+
+
+def filter_specs(cfg: dict) -> list[dict]:
+    """底部抽屉式筛选的分组与选项（refs.md §6.7 的推荐方案）。
+
+    维度：**排序 / 日期 / 折扣区间 / 好评数量 / 仅新史低**。
+    之所以做成抽屉而不是顶栏一排胶囊 —— 维度一多顶栏就挤爆，而且手机上找不到。
+
+    ⚠️ 阈值一律**从配置来**（同 group_specs 的思路）：改 `big_cut_percent`
+    / `notable_review_count` / `home_new_low_days`，选项文案跟着变，
+    不会出现「选项写着 ≥80%、实际按 75% 筛」这种撒谎。
+    """
+    days = int(cfg.get("home_new_low_days", 7))
+    big = int(cfg.get("big_cut_percent", 80))
+    notable = int(cfg.get("notable_review_count", 10000))
+    cuts = sorted({50, 70, big, 90})
+    counts = sorted({500, 5000, notable})
+    return [
+        {"key": "sort", "label": "排序", "options": [dict(o) for o in FILTER_SORTS]},
+        {"key": "date", "label": "日期", "options": [
+            {"value": "0", "label": "今天"},
+            {"value": "1", "label": "昨天"},
+            {"value": "2", "label": "前天"},
+            {"value": f"d{days}", "label": f"近 {days} 天"},
+            {"value": "all", "label": "全部"},
+        ]},
+        {"key": "cut", "label": "折扣区间", "options":
+            [{"value": "all", "label": "不限"}]
+            + [{"value": str(v), "label": f"≥ {v}%"} for v in cuts]},
+        {"key": "reviews", "label": "好评数量", "options":
+            [{"value": "all", "label": "不限"}]
+            + [{"value": str(v), "label": f"≥ {v:,}"} for v in counts]},
+        {"key": "only_new", "label": "史低类型", "options": [
+            {"value": "all", "label": "不限"},
+            {"value": "new", "label": "仅新史低"},
+        ]},
+    ]
+
+
+def filter_defaults(cfg: dict) -> dict:
+    """筛选的默认值 —— 前端 `state.filters` 的初始状态，也是「已选 N 项」角标的基准。
+
+    「日期」默认跟着 `home_new_low_days` 走（现在 7 天），不写死 d7。
+    """
+    return {
+        "sort": "featured",
+        "date": f"d{int(cfg.get('home_new_low_days', 7))}",
+        "cut": "all",
+        "reviews": "all",
+        "only_new": "all",
+    }
+
+
+def criteria_notes(cfg: dict) -> list[dict]:
+    """「关于网站」页的筛选口径 —— **从配置生成**，改阈值页面自动跟着变
+    （同 group_specs 的思路：别把阈值文案写死在模板里，否则改了配置就对不上）。"""
+    pct = int(round(float(cfg.get("min_positive_ratio", 0.7)) * 100))
+    min_count = int(cfg.get("min_review_count", 100))
+    notable = int(cfg.get("notable_review_count", 10000))
+    scope = "只收 type=game 的本体折扣，排除免费游戏"
+    if cfg.get("exclude_mature"):
+        scope += "与成人内容"
+    return [
+        {"k": "收录范围", "v": scope},
+        {"k": "史低判定", "v": "用 IsThereAnyDeal 的 flag（N=新史低 / H=平史低）。"
+                              "**不靠比价格** —— Steam 店史低已含本次折扣，比价会把新史低也判成相等"},
+        {"k": "展示门槛", "v": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}；低于此不入列表"},
+        {"k": "高热度档", "v": f"评价数 ≥ {notable:,}，不看好评率（热门游戏板块用它）"},
+        {"k": "大额折扣档", "v": f"折扣 ≥ {int(cfg.get('big_cut_percent', 80))}%"},
+        {"k": "板块时间窗", "v": f"首页三板块（新史低/热门/大额折扣）只看近 "
+                                f"{int(cfg.get('home_new_low_days', 7))} 天新增；"
+                                "「即将到期」按到期时间算，不叠加时间窗"},
+        {"k": "即将到期", "v": f"距折扣结束 ≤ {int(cfg.get('upcoming_expiry_hours', 48))} 小时"},
+        {"k": "多版本去重", "v": "同一 appid 只保留价格最低的那条"},
+        {"k": "留存", "v": f"折扣过期后仍保留 {int(cfg.get('expired_retention_days', 7))} 天"},
+    ]
+
+
 def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
            *, fx: dict | None = None, steam: dict | None = None,
            upcoming_items: list[dict] | None = None,
            featured: bool = False,
            all_cards: list[dict] | None = None,
-           extra_counts: dict | None = None) -> dict:
+           extra_counts: dict | None = None,
+           run_log: list[dict] | None = None) -> dict:
     """写出一整套静态文件，返回产出路径。
 
     ``upcoming_items``：「即将过期」视图已进列表的卡片数据（调用方先跑完同一条
@@ -381,6 +778,11 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         key = item.get("low_class") or classify.STEAM_LOW_UNKNOWN
         low_points[key] = low_points.get(key, 0) + 1
 
+    # ---- S9 首页四板块 + 顶部大卡：池子优先用「全部」视图那批（all_cards）----
+    home_pool = all_cards if all_cards is not None else items
+    sections = build_sections(home_pool, cfg)
+    picks = pick_top(home_pool, cfg)
+
     payload = {
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_text": now.strftime("%Y-%m-%d %H:%M"),
@@ -392,16 +794,24 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "groups": groups,
         #: 即将过期等辅助视图的分组数据（key 与 VIEWS 对应；当日新增走顶层 groups）
         "view_groups": {"upcoming": upcoming_groups} if upcoming_groups is not None else {},
+        #: S9 首页四板块（池子 = 「全部」视图那批卡片，见 build_sections 注释）
+        "sections": sections,
+        #: S9 顶部「今日最值」大卡横排候选（前端每页 5 张、可翻页）
+        "picks": picks,
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
+        #: 底部抽屉筛选的分组/选项与默认值（refs.md §6.7）；前端 state.filters 用
+        "filter_specs": filter_specs(cfg),
+        "filter_defaults": filter_defaults(cfg),
         #: 断点必须与 app.css 的 @media 一致，否则「布局按手机、每页按桌面」会错位
         "page_size": {
             "mobile": int(cfg.get("page_size_mobile", 10)),
             "desktop": int(cfg.get("page_size_desktop", 20)),
             "breakpoint": int(cfg.get("mobile_breakpoint_px", 768)),
         },
-        "notice": "「本周 / 折扣中 / 全部」数据量较大，首次点击时加载；"
-                  "「即将过期」= 48 小时内到期的史低，比价数据随折扣期暂存",
+        # ⚠️ 原 `notice`（「本周 / 折扣中 / 全部」那句灰字说明）已随 S9 删除：
+        # 页面上唯一的消费者 `<p class="notice">` 没了，而文案讲的又是已经不存在的
+        # 五个视图 —— 留着就是死数据（review-s9-01 #4）。
     }
 
     data_js = "window.REPORT_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n"
@@ -459,18 +869,41 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    # S9 导航栏：四个板块 + 「全部折扣」（首页 = 点站点名，不占导航栏位置）
+    nav = ([{"key": spec["key"], "label": spec["label"]} for spec in HOME_SECTIONS]
+           + [{"key": "__all__", "label": "全部折扣"}])
+
+    links = site_links(cfg)
     template = env.get_template("index.html.j2")
     html = template.render(
         payload=payload,
         assets_version=version,
         views=views,
+        nav=nav,
+        links=links,
         overview=stats,
         fx=payload["fx"],
         low_points=low_points,
         generated_at_text=payload["generated_at_text"],
         stale_banner_hours=payload["stale_banner_hours"],
-        notice=payload["notice"],
+        filter_groups=filter_specs(cfg),
+        filter_defaults=payload["filter_defaults"],
     )
     (output_dir / "index.html").write_text(html, encoding="utf-8")
+
+    # ---- S9：「关于网站」页（其余概览数字 / 筛选口径 / 数据来源 / 汇率 / 更新日志）----
+    about_tpl = env.get_template("about.html.j2")
+    about_html = about_tpl.render(
+        generated_at_text=payload["generated_at_text"],
+        overview=stats,
+        low_points=low_points,
+        fx=payload["fx"],
+        criteria=criteria_notes(cfg),
+        run_log=list(reversed((run_log or [])[-10:])),   # 最近 10 次，新的在前
+        links=links,
+        assets_version=version,
+    )
+    (output_dir / "about.html").write_text(about_html, encoding="utf-8")
+    paths["about"] = str(output_dir / "about.html")
 
     return paths

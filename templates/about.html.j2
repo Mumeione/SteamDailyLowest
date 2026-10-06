@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>关于本站 · SteamDailyLowest</title>
+<link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    {# 与首页同一套站点名标识（纯 CSS，不引外部字体） #}
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16.4L6.6 11L9.7 11L9.7 4.6L14.3 4.6L14.3 11L17.4 11Z"/>
+        <rect x="4.4" y="18.2" width="15.2" height="2.6" rx="1.3"/>
+      </svg>
+      <span class="brand-text"><span class="brand-a">Steam</span><span class="brand-b">DailyLowest</span></span>
+    </a>
+    <nav class="nav">
+      <a class="nav-item" href="index.html">← 回首页</a>
+    </nav>
+    <div class="generated">生成时间 {{ generated_at_text }}</div>
+  </div>
+</header>
+
+{# S9（2026-10-06）：从首页搬过来的那一堆数字与说明都在这儿。
+   筛选口径由 report.criteria_notes(cfg) 生成 —— 改阈值这里自动跟着变，别写死。 #}
+<main class="wrap about">
+
+  <h1>关于本站</h1>
+  <p class="lead">
+    每天自动抓取 Steam 折扣，筛出「当日新增的史低」和正在进行的史低，
+    生成静态页面。第一次上线是 2026-09-21。
+  </p>
+
+  <section class="block">
+    <h2>本轮抓取概览</h2>
+    <table class="kv">
+      <tr><th>抓取口径</th><td>{{ overview.sweep or '—' }}</td></tr>
+      <tr><th>抓到折扣</th><td class="num">{{ overview.deals_fetched }} 条</td></tr>
+      <tr><th>其中史低</th><td class="num">{{ overview.hist_low_total }} 条</td></tr>
+      <tr><th>当日新增</th><td class="num">{{ overview.new_today_raw }} 条（过筛后进列表 {{ overview.new_today_shown }} 条）</td></tr>
+      <tr><th>本轮抓详情</th><td class="num">{{ overview.detail_fetched }} 条{% if overview.detail_targets %}（目标 {{ overview.detail_targets }} 条）{% endif %}</td></tr>
+      <tr><th>目录待补</th><td class="num">{{ overview.detail_backlog if overview.detail_backlog is not none else '—' }} 条</td></tr>
+      <tr><th>详情待补</th><td class="num">{{ overview.detail_pending }} 条</td></tr>
+      <tr><th>多版本合并</th><td class="num">{{ overview.deduped_versions }} 组</td></tr>
+      <tr><th>中文名</th><td class="num">新取 {{ overview.title_fetched }} · 命中缓存 {{ overview.title_cached }}</td></tr>
+      <tr><th>比价批次</th><td class="num">{{ overview.compare_batches }}</td></tr>
+      <tr><th>价格对不上</th><td class="num">{{ overview.price_mismatch | length }} 条</td></tr>
+      <tr><th>最近一次运行</th><td>{{ overview.last_run_at or '—' }}</td></tr>
+    </table>
+  </section>
+
+  <section class="block">
+    <h2>史低构成（本轮进列表）</h2>
+    <table class="kv">
+      <tr><th>新史低</th><td class="num">{{ low_points["new"] }} 条</td></tr>
+      <tr><th>平史低</th><td class="num">{{ low_points["tie"] }} 条</td></tr>
+      <tr><th>史低待确认</th><td class="num">{{ low_points["unknown"] }} 条</td></tr>
+    </table>
+  </section>
+
+  <section class="block">
+    <h2>筛选口径</h2>
+    <table class="kv">
+      {% for row in criteria %}
+      <tr><th>{{ row.k }}</th><td>{{ row.v }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="block">
+    <h2>数据来源</h2>
+    <table class="kv">
+      <tr><th>折扣与史低</th><td><a href="https://isthereanydeal.com" target="_blank" rel="noopener">IsThereAnyDeal</a>
+        —— 史低判定（flag）、上次史低时间、uuid→appid 映射。历史价只能靠它，Steam 官方不提供。</td></tr>
+      <tr><th>游戏元数据</th><td>Steam 官方接口（<code>IStoreBrowseService/GetItems</code>）
+        —— 中文名、好评率、评价数、厂商、价格。</td></tr>
+      <tr><th>跨区比价</th><td>Steam 侧取价（不用 ITAD —— 它对不认识的国家会静默回退美国价）。</td></tr>
+    </table>
+  </section>
+
+  {% if fx %}
+  <section class="block">
+    <h2>汇率</h2>
+    <p class="lead">取数日期 {{ fx.date }}（基准 {{ fx.base }}）：</p>
+    <table class="kv">
+      {% for r in fx.rates %}
+      <tr><th>{{ r.code }}</th><td class="num">1 {{ fx.base }} = {{ r.rate }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  <section class="block">
+    <h2>每日更新日志</h2>
+    {% if run_log %}
+    <table class="logs">
+      <tr><th>运行时间</th><th>模式</th><th>抓到</th><th>史低</th><th>ITAD 请求</th><th>Steam 请求</th></tr>
+      {% for entry in run_log %}
+      <tr>
+        <td>{{ (entry.get('run_at') or '—')[:16].replace('T', ' ') }}</td>
+        <td>{{ entry.get('mode') or '—' }}</td>
+        <td class="num">{{ entry.get('deals_fetched', '—') }}</td>
+        <td class="num">{{ entry.get('hist_low_total', '—') }}</td>
+        <td class="num">{{ entry.get('itad_requests', '—') }}</td>
+        <td class="num">{{ entry.get('steam_requests', '—') }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="lead">还没有运行记录。</p>
+    {% endif %}
+  </section>
+
+  <section class="block">
+    <h2>免责</h2>
+    <p class="lead">
+      价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准，且不代表可购买。
+      本站与 Valve、IsThereAnyDeal 无隶属关系。
+    </p>
+  </section>
+
+  <section class="block">
+    <h2>仓库与运行状态</h2>
+    <p class="foot-links">
+      <a href="{{ links.repo }}" target="_blank" rel="noopener">源码仓库</a>
+      <span class="sep">·</span>
+      <a href="{{ links.actions }}" target="_blank" rel="noopener">Actions 运行记录（判断今天有没有正常跑）</a>
+    </p>
+  </section>
+
+</main>
+
+<footer class="wrap footer">
+  <p class="foot-links"><a href="index.html">← 回首页</a></p>
+</footer>
+
+</body>
+</html>

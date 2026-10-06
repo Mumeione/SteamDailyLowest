@@ -761,6 +761,8 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
                 key for key in classify.VIEW_KEYS
                 if classify.in_view(key, entry, now, cfg)
             ]
+            # S9：首页四板块归属（前端按它筛板块的完整列表；同一游戏可跨板块）
+            card["sections"] = report.section_keys(card, cfg)
             all_cards.append(card)
         extra_counts = {
             "week": sum(1 for c in all_cards if "week" in c["views"]),
@@ -775,6 +777,7 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
         cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
         upcoming_items=upcoming_cards if has_upcoming else None,
         featured=True, all_cards=all_cards, extra_counts=extra_counts,
+        run_log=state.run_log,   # S9：「关于网站」页的每日更新日志
     )
     return info
 

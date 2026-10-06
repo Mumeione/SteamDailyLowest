@@ -208,13 +208,15 @@ class RenderPassTest(unittest.TestCase):
         self.assertTrue(upcoming_view["enabled"])
         self.assertEqual(upcoming_view["count"], 0)
 
-    def test_overview_renders_as_stat_boxes(self):
-        """批 F：顶部概览是多个独立小框（窄屏自动换行），不再是并排大框。"""
+    def test_overview_is_one_summary_line(self):
+        """S9（2026-10-06，用户定案）：首页撤掉 6 个小框概览，只留一行
+        「今日新增：新史低 X · 平史低 Y」；其余数字搬到「关于网站」（尚未做）。
+        批 F 那套 stat-box 随 S9 退场 —— 别再让它回来。"""
         self._run()
         html = (self.out / "index.html").read_text(encoding="utf-8")
-        self.assertIn("stat-box", html)
-        self.assertIn("今日列表新增", html)
-        self.assertNotIn("top-row", html)
+        self.assertIn('class="summary"', html)
+        self.assertIn("今日新增：新史低", html)
+        self.assertNotIn("stat-box", html)
 
     def test_pending_group_when_details_missing(self):
         """没抓到详情的条目要进「详情待补」，而不是被丢掉（§3.3）。"""

@@ -164,17 +164,18 @@ class GroupSpecsTest(unittest.TestCase):
 
 
 class FormatAmountTest(unittest.TestCase):
-    """金额展示（2026-09-25 检查报告问题 3）：原来用 rstrip("0") 砍尾零，
-    1270 分会显示成 `¥12.7`，破坏金额两位小数的惯例。"""
+    """金额展示。演进：rstrip("0") 砍尾零（12.70→12.7）→ 2026-09-25 改为
+    「整元才省小数」→ S9-1（2026-10-06）用户反馈 `¥127` / `¥12.7` / `¥12.70`
+    三种长度混排、价格区参差，**统一成一律两位小数**。"""
 
     def test_keeps_two_decimals_when_cents_nonzero(self):
         self.assertEqual(report.format_amount(1270, "CNY"), "¥12.70")
         self.assertEqual(report.format_amount(12050, "CNY"), "¥120.50")
         self.assertEqual(report.format_amount(3976, "CNY"), "¥39.76")
 
-    def test_drops_decimals_only_when_whole_yuan(self):
-        self.assertEqual(report.format_amount(1200, "CNY"), "¥12")
-        self.assertEqual(report.format_amount(12700, "CNY"), "¥127")
+    def test_whole_yuan_also_two_decimals(self):
+        self.assertEqual(report.format_amount(1200, "CNY"), "¥12.00")
+        self.assertEqual(report.format_amount(12700, "CNY"), "¥127.00")
 
     def test_missing_amount_stays_dash(self):
         self.assertEqual(report.format_amount(None, "CNY"), "—")
@@ -217,7 +218,7 @@ class CompareRowsTest(unittest.TestCase):
         ]}
         rows = report.compare_rows(entry)
         self.assertEqual(rows[0]["label"], "乌克兰区")
-        self.assertEqual(rows[0]["price_text"], "₴45")
+        self.assertEqual(rows[0]["price_text"], "₴45.00")   # S9-1：一律两位小数
         self.assertEqual(rows[0]["cny_text"], "≈ ¥6.74")
         self.assertEqual(rows[0]["diff_pct"], -55)   # 正负号与颜色由前端渲染
 
@@ -256,7 +257,7 @@ class CardTest(unittest.TestCase):
         # 批 E spec E1/E6：卡片标签改用 Steam 口径的 low_class / low_label
         self.assertEqual(card["low_class"], "new")
         self.assertEqual(card["low_label"], "新史低")
-        self.assertEqual(card["price_text"], "¥149")
+        self.assertEqual(card["price_text"], "¥149.00")   # S9-1：一律两位小数
         self.assertEqual(card["steam_url"], "https://store.steampowered.com/app/1091500/")
         self.assertEqual(card["xiaoheihe_url"], "https://www.xiaoheihe.cn/games/detail/1091500")
         self.assertEqual(card["tier_label"], classify.TIER_LABELS[classify.TIER_QUALITY])
@@ -488,3 +489,282 @@ class LazyViewsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeSectionsTest(unittest.TestCase):
+    """S9 首页四板块（2026-10-06）。锁定口径：近 7 天窗口、必须还在折扣期内、
+    「即将到期」不叠加近 7 天、预览条数、以及各板块的排序。"""
+
+    CFG = {
+        "home_new_low_days": 7,
+        "big_cut_percent": 80,
+        "notable_review_count": 10000,
+        "home_section_preview": 3,
+        "home_picks": 15,
+    }
+
+    @staticmethod
+    def card(title, *, ago=1, cut=50, count=0, live=True, upcoming=False, low="new"):
+        views = [k for k, ok in (("active", live), ("upcoming", upcoming)) if ok]
+        return {
+            "title": title, "title_zh": title, "cut": cut,
+            "low_class": low, "start_days_ago": ago, "days_left": 3 if live else 0,
+            "reviews": {"score": 90, "count": count} if count else None,
+            "views": views,
+        }
+
+    def sections(self, cards):
+        return {s["key"]: s for s in report.build_sections(cards, self.CFG)}
+
+    def test_seven_day_window(self):
+        got = self.sections([self.card("在窗口内", ago=7), self.card("刚出窗口", ago=8)])
+        titles = [i["title"] for i in got["new_low"]["items"]]
+        self.assertIn("在窗口内", titles)
+        self.assertNotIn("刚出窗口", titles)
+
+    def test_expired_is_excluded(self):
+        """首页不能摆「已经买不到」的折扣（all_shown 里含过期留存）。"""
+        got = self.sections([self.card("还活着"), self.card("已过期", live=False)])
+        self.assertEqual([i["title"] for i in got["new_low"]["items"]], ["还活着"])
+
+    def test_expiring_does_not_stack_seven_day_window(self):
+        """20 天前开始、但马上到期的老折扣必须进「即将到期」。"""
+        got = self.sections([self.card("老折扣快到期", ago=20, upcoming=True)])
+        self.assertEqual([i["title"] for i in got["expiring"]["items"]], ["老折扣快到期"])
+
+    def test_popular_threshold_and_big_cut_threshold(self):
+        got = self.sections([self.card("够热", count=10000),
+                             self.card("不够热", count=9999)])
+        self.assertEqual([i["title"] for i in got["popular"]["items"]], ["够热"])
+        got = self.sections([self.card("够深", cut=80), self.card("不够深", cut=79)])
+        self.assertEqual([i["title"] for i in got["big_cut"]["items"]], ["够深"])
+
+    def test_preview_limit_and_count(self):
+        cards = [self.card(f"G{i}", cut=90 - i) for i in range(10)]
+        got = self.sections(cards)
+        self.assertEqual(len(got["new_low"]["items"]), 3)   # home_section_preview
+        self.assertEqual(got["new_low"]["count"], 10)       # 完整条数照实报
+
+    def test_big_cut_sorted_by_discount_desc(self):
+        got = self.sections([self.card("低", cut=85), self.card("高", cut=95)])
+        self.assertEqual([i["title"] for i in got["big_cut"]["items"]], ["高", "低"])
+
+    def test_picks_only_live_new_lows(self):
+        # 推荐位有前置门槛（好评率 ≥70% 且 评价数 ≥100），所以这里要带上评价数
+        picks = report.pick_top([self.card("A", count=1000),
+                                 self.card("B", count=1000, live=False),
+                                 self.card("C", count=1000, low="tie")], self.CFG)
+        self.assertEqual([i["title"] for i in picks], ["A"])
+
+
+class RecommendScoreTest(unittest.TestCase):
+    """refs.md §10.2 权重公式 v2（轮播版，名气优先）。
+
+    钉四件事：① 门槛挡掉没数据/低口碑的；② 名气优先但**不是线性**（对数列压，
+    156 万评价不能把其余项压成噪声）；③ **缺间隔分时归一化**，不是当 0 分；
+    ④ 平手顺序稳定可复现（折扣% → 评价数 → 价格低 → appid）。
+    """
+
+    CFG = {"home_new_low_days": 7, "home_picks": 15}
+
+    @staticmethod
+    def card(title, *, cut=50, count=1000, rate=90, days_left=3, ago=1,
+             gap=None, price=10000, appid=1):
+        return {
+            "title": title, "title_zh": title, "cut": cut,
+            "low_class": "new", "start_days_ago": ago, "days_left": days_left,
+            "reviews": {"score": rate, "count": count},
+            "last_low_days": gap, "price_int": price, "appid": appid,
+            "views": ["active"],
+        }
+
+    def test_gate_blocks_no_detail_and_low_score(self):
+        self.assertIsNone(report.recommend_score(self.card("没详情", count=0)))
+        self.assertIsNone(report.recommend_score(self.card("评价太少", count=99)))
+        self.assertIsNone(report.recommend_score(self.card("口碑不够", rate=69)))
+        self.assertIsNotNone(report.recommend_score(self.card("合格")))
+
+    def test_fame_is_logarithmic_not_linear(self):
+        """1 万评价不该只拿 200 万评价的 1/200 —— 对数列压过之后大约是七成。"""
+        small = report.recommend_score(self.card("小", count=10_000))
+        huge = report.recommend_score(self.card("大", count=2_000_000))
+        # 名气项：log10(1w+1)/log10(20w+1) ≈ 0.75；200 万封顶 = 1.0
+        self.assertGreater(small, 60)
+        self.assertLess(small, huge)
+        self.assertLess((huge - small) / huge, 0.15)   # 差不到 15%，不是数量级差
+
+    def test_missing_gap_is_normalized_not_zero(self):
+        """间隔缺数据时该项**不计分**，并把总分按剩余权重归一化回 100 ——
+        否则「有数据」的那批会被凭空扣掉 15 分，等于变相惩罚数据更全的游戏。"""
+        no_gap = report.recommend_score(self.card("没间隔数据", gap=None))
+        zero_gap = report.recommend_score(self.card("间隔 0 天", gap=0))
+        self.assertGreater(no_gap, zero_gap)   # 缺 ≠ 0 分
+        # 归一化后满分仍是 100：各项拉满、无间隔时应该接近满分
+        best = report.recommend_score(self.card("满分", cut=95, count=200_000,
+                                                rate=95, days_left=0, ago=0, gap=None))
+        self.assertAlmostEqual(best, 100.0, places=1)
+
+    def test_score_prefers_bigger_cut_when_fame_ties(self):
+        same = [self.card("七折", cut=70), self.card("九折", cut=90)]
+        same.sort(key=lambda c: report.recommend_sort_key(c, self.CFG))
+        self.assertEqual([c["title"] for c in same], ["九折", "七折"])
+
+    def test_tie_break_is_stable(self):
+        """全同分时按 评价数 → 价格低 → appid 收尾，保证每次跑出来顺序一样。"""
+        a = self.card("便宜的", price=1000, appid=2)
+        b = self.card("贵的", price=9000, appid=1)
+        pair = [a, b]
+        pair.sort(key=lambda c: report.recommend_sort_key(c, self.CFG))
+        self.assertEqual([c["title"] for c in pair], ["便宜的", "贵的"])
+
+    def test_pick_top_uses_weights_not_lexicographic(self):
+        """老字典序会让 95% 的小众游戏顶掉 GTFO 这类 —— 公式不能这样。"""
+        niche = self.card("冷门九五折", cut=95, count=120)
+        famous = self.card("热门大作", cut=73, count=46_256, rate=86)
+        picks = report.pick_top([niche, famous], self.CFG)
+        self.assertEqual(picks[0]["title"], "热门大作")
+
+    def test_pick_top_falls_back_when_nothing_passes_gate(self):
+        """整池都没过门槛时退回字典序 —— 大卡这块不能整块消失。"""
+        pool = [self.card("没详情", count=0), self.card("也没详情", count=0)]
+        self.assertEqual(len(report.pick_top(pool, self.CFG)), 2)
+
+
+class CleanTitleZhTest(unittest.TestCase):
+    """S9：剥掉中文名里夹带的英文原名（Steam schinese 标题常带，实测 946/7380）。"""
+
+    def test_strips_english_prefix(self):
+        self.assertEqual(
+            report.clean_title_zh("Lords of the Fallen 堕落之主", "Lords of the Fallen"),
+            "堕落之主")
+        self.assertEqual(
+            report.clean_title_zh("Forza Motorsport 极限竞速", "Forza Motorsport"),
+            "极限竞速")
+
+    def test_strips_english_suffix_and_wrapped(self):
+        self.assertEqual(
+            report.clean_title_zh("Cities: Skylines II 都市：天际线2", "Cities: Skylines II"),
+            "都市：天际线2")
+        self.assertEqual(
+            report.clean_title_zh("Wo Long: Fallen Dynasty （卧龙：苍天陨落）",
+                                  "Wo Long: Fallen Dynasty"),
+            "卧龙：苍天陨落")
+        self.assertEqual(
+            report.clean_title_zh("大富翁10 (RichMan 10)", "Richman 10"), "大富翁10")
+
+    def test_keeps_when_english_not_exactly_matched(self):
+        """对不上原名就不动 —— 不猜、不乱切。"""
+        self.assertEqual(
+            report.clean_title_zh("《镜之边缘：Catalyst》", "Mirror's Edge™ Catalyst"),
+            "《镜之边缘：Catalyst》")
+        self.assertEqual(report.clean_title_zh("Agent A - 伪装游戏",
+                                               "Agent A: A puzzle in disguise"),
+                         "Agent A - 伪装游戏")
+
+    def test_does_not_leave_only_english_tail(self):
+        """英文原名是前缀时，剥完只剩英文尾巴 —— 必须原样返回，宁可不动。"""
+        self.assertEqual(report.clean_title_zh("Pure Farming 2018", "Pure Farming"),
+                         "Pure Farming 2018")
+        self.assertEqual(report.clean_title_zh("Kingdom Rush  - Tower Defense",
+                                               "Kingdom Rush"),
+                         "Kingdom Rush  - Tower Defense")
+        self.assertEqual(report.clean_title_zh("MX Nitro: Unleashed", "MX Nitro"),
+                         "MX Nitro: Unleashed")
+
+    def test_passthrough_cases(self):
+        self.assertEqual(report.clean_title_zh("赛博朋克 2077", "Cyberpunk 2077"), "赛博朋克 2077")
+        self.assertEqual(report.clean_title_zh("Gotham Knights", "Gotham Knights"),
+                         "Gotham Knights")   # 同名（没中文名）原样
+        self.assertIsNone(report.clean_title_zh(None, "X"))
+        self.assertEqual(report.clean_title_zh("只有中文", None), "只有中文")
+
+class SectionKeysTest(unittest.TestCase):
+    """S9：单卡板块归属（写进 all.js 的 sections 字段，前端按它筛完整列表）。
+    注意它**不判日期窗口** —— 窗口交给调用方，这样前端「全部」胶囊能看全量。"""
+
+    CFG = HomeSectionsTest.CFG
+
+    def test_keys_ignore_date_window(self):
+        old = HomeSectionsTest.card("20 天前的新史低", ago=20)
+        self.assertIn("new_low", report.section_keys(old, self.CFG))
+
+    def test_multi_section_membership(self):
+        card = HomeSectionsTest.card("又新又便宜", cut=90, count=20000)
+        self.assertEqual(report.section_keys(card, self.CFG), ["new_low", "popular", "big_cut"])
+
+    def test_expired_belongs_to_nothing(self):
+        self.assertEqual(
+            report.section_keys(HomeSectionsTest.card("过期了", live=False), self.CFG), [])
+
+
+class FilterSpecsTest(unittest.TestCase):
+    """S9-2 底部抽屉筛选（refs.md §6.7）：排序 / 日期 / 折扣区间 / 好评数量 / 仅新史低。
+
+    钉两件事：① 五个维度齐全；② **阈值从配置来** —— 改 `big_cut_percent`
+    / `notable_review_count` / `home_new_low_days`，选项与默认值跟着变，
+    不会出现「选项写着 ≥80%、实际按 75% 筛」这种撒谎。
+    """
+
+    CFG = {"home_new_low_days": 7, "big_cut_percent": 80,
+           "notable_review_count": 10000}
+
+    def test_five_dimensions(self):
+        keys = [g["key"] for g in report.filter_specs(self.CFG)]
+        self.assertEqual(keys, ["sort", "date", "cut", "reviews", "only_new"])
+
+    def test_thresholds_follow_config(self):
+        cfg = dict(self.CFG, big_cut_percent=75, notable_review_count=50000,
+                   home_new_low_days=3)
+        groups = {g["key"]: g for g in report.filter_specs(cfg)}
+        self.assertIn({"value": "75", "label": "≥ 75%"}, groups["cut"]["options"])
+        self.assertIn({"value": "50000", "label": "≥ 50,000"},
+                      groups["reviews"]["options"])
+        self.assertIn({"value": "d3", "label": "近 3 天"}, groups["date"]["options"])
+
+    def test_defaults_follow_config(self):
+        self.assertEqual(report.filter_defaults(self.CFG)["date"], "d7")
+        self.assertEqual(
+            report.filter_defaults(dict(self.CFG, home_new_low_days=3))["date"], "d3")
+
+    def test_rendered_html_has_drawer(self):
+        html = (_render([], datetime(2026, 10, 6, 5, 14)) / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn('id="drawer"', html)
+        self.assertIn('id="filter-open"', html)
+        self.assertIn('data-group="sort"', html)
+        self.assertIn('data-value="d7"', html)
+        self.assertNotIn('data-range="7"', html)   # 旧的两个胶囊已退场
+
+
+class TopbarTest(unittest.TestCase):
+    """S9-2 顶栏：站点名标识 + 手机端导航折叠按钮（refs.md B1）。
+
+    钉两件事：① 站点名是「小图标 + 双色分段」的结构，**不是**一行纯文字
+    （用户要"艺术字体"，而页面必须能离线打开 → 只能纯 CSS，不引字体文件）；
+    ② 有一个汉堡按钮，且默认 aria-expanded=false（收起态），
+    否则手机上又变回横向滚动那条。
+    """
+
+    def test_index_has_brand_mark_and_split_text(self):
+        html = (_render([], datetime(2026, 10, 6, 5, 14)) / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn('class="brand-mark"', html)
+        self.assertIn('class="brand-a">Steam<', html)
+        self.assertIn('class="brand-b">DailyLowest<', html)
+        self.assertIn("SteamDailyLowest 首页", html)     # 图标站名的无障碍名
+        self.assertNotIn('id="brand">SteamDailyLowest<', html)   # 老的一行纯文字已退场
+
+    def test_index_has_nav_toggle_collapsed_by_default(self):
+        html = (_render([], datetime(2026, 10, 6, 5, 14)) / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn('id="nav-toggle"', html)
+        self.assertIn('aria-controls="nav"', html)
+        self.assertIn('aria-expanded="false"', html)
+
+    def test_about_shares_the_same_brand_without_toggle(self):
+        """关于页复用同一套站点名标识，但不需要汉堡按钮（它只有一个回首页链接）。"""
+        html = (_render([], datetime(2026, 10, 6, 5, 14)) / "about.html").read_text(
+            encoding="utf-8")
+        self.assertIn('class="brand-mark"', html)
+        self.assertIn('class="brand-b">DailyLowest<', html)
+        self.assertNotIn('id="nav-toggle"', html)

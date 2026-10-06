@@ -3,15 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Steam 史低 · 当日新增</title>
+<title>Steam 史低 · 每日折扣</title>
 <link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
 </head>
 <body>
 
 <header class="topbar">
-  <div class="wrap">
-    <h1>Steam 史低 · 当日新增</h1>
-    <div class="generated">生成时间：{{ generated_at_text }}</div>
+  <div class="wrap topbar-inner">
+    {# S9：点站点名回首页（导航栏里不放「首页」）。
+       S9-2：站点名做成标识（小图标 + 双色分段），纯 CSS，**不引外部字体** ——
+       页面要能离线双击打开，拉不了字体文件。 #}
+    <a class="brand" href="#" id="brand" aria-label="SteamDailyLowest 首页">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16.4L6.6 11L9.7 11L9.7 4.6L14.3 4.6L14.3 11L17.4 11Z"/>
+        <rect x="4.4" y="18.2" width="15.2" height="2.6" rx="1.3"/>
+      </svg>
+      <span class="brand-text"><span class="brand-a">Steam</span><span class="brand-b">DailyLowest</span></span>
+    </a>
+    <nav class="nav" id="nav">
+      {% for item in nav %}
+      <button type="button" class="nav-item" data-section="{{ item.key }}">{{ item.label }}</button>
+      {% endfor %}
+    </nav>
+    <div class="generated">{{ generated_at_text }}</div>
+    {# S9-2（refs.md B1）：手机端导航折叠成一个按钮，展开后**竖向排列**。
+       电脑上这个按钮由 CSS 隐藏，导航仍是横排一条。 #}
+    <button type="button" class="nav-toggle" id="nav-toggle"
+            aria-label="展开分类导航" aria-expanded="false" aria-controls="nav">
+      <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+    </button>
   </div>
 </header>
 
@@ -20,75 +40,83 @@
 </div>
 
 <main class="wrap">
-  <!-- 批 F：概览改成多个独立小框，窄屏自动换行铺满整行 ——
-       比原来的「左大框 + 右 40% 筛选条件框」在手机上更好读（不再挤成一条）。
-       筛选条件框已删除，判定口径全部写进 README「筛选条件」一节 -->
-  <section class="overview">
-    <div class="stat-box">
-      <div class="stat-label">今日列表新增</div>
-      <div class="stat-value">{{ overview.new_today_shown }}<span class="stat-unit">款</span></div>
+
+  <div class="filterbar" id="filterbar">
+    {# S9-2：筛选收进一个按钮（refs.md B4「这几个按钮全都不要，界面要保持简洁」 +
+       §6.7 的推荐方案）。角标显示"已选几项"。 #}
+    <button type="button" class="chip filter-open" id="filter-open"
+            aria-expanded="false" aria-controls="drawer">
+      筛选<span class="f-badge" id="filter-badge" hidden>0</span>
+    </button>
+    <span class="summary" id="summary">今日新增：新史低 {{ low_points["new"] }} · 平史低 {{ low_points["tie"] }}</span>
+  </div>
+
+  <section class="home" id="home">
+    <div class="picks" id="picks" hidden>
+      <div class="deck-head">
+        <h2 class="deck-title">最值得买</h2>
+        <span class="deck-sub" id="picks-sub"></span>
+        <span class="deck-nav">
+          <button type="button" class="round" id="picks-prev" aria-label="上一页">‹</button>
+          <button type="button" class="round" id="picks-next" aria-label="下一页">›</button>
+        </span>
+      </div>
+      <div class="deck-track" id="picks-track"></div>
     </div>
-    <div class="stat-box">
-      <div class="stat-label">今日史低总数</div>
-      <div class="stat-value">{{ overview.new_today_raw }}<span class="stat-unit">款</span></div>
-    </div>
-    <div class="stat-box">
-      <div class="stat-label">未进列表</div>
-      <div class="stat-value">{{ overview.new_today_raw - overview.new_today_shown }}<span class="stat-unit">款</span></div>
-    </div>
-    <div class="stat-box">
-      <div class="stat-label">新史低</div>
-      <div class="stat-value stat-new">{{ low_points["new"] }}<span class="stat-unit">款</span></div>
-    </div>
-    <div class="stat-box">
-      <div class="stat-label">平史低</div>
-      <div class="stat-value stat-tie">{{ low_points["tie"] }}<span class="stat-unit">款</span></div>
-    </div>
-    {% if low_points["unknown"] %}
-    <div class="stat-box">
-      <div class="stat-label">史低待确认</div>
-      <div class="stat-value stat-unknown">{{ low_points["unknown"] }}<span class="stat-unit">款</span></div>
-    </div>
-    {% endif %}
+    <div class="sections" id="sections"></div>
   </section>
 
-  <nav class="filters" id="filters">
-    {% for view in views %}
-    {# active 初始只标「当日新增」，切换后的高亮由 app.js 管理 #}
-    <button type="button"
-            class="filter{% if view.enabled and view.key == 'new_today' %} active{% endif %}"
-            data-view="{{ view.key }}"
-            {% if not view.enabled %}disabled title="数据攒够后再开"{% endif %}>
-      {{ view.label }}{% if view.enabled %} ({{ view.count }}){% endif %}
-    </button>
-    {% endfor %}
-    <label class="toggle">
-      <input type="checkbox" id="no-image"> 无图精简模式
-    </label>
-  </nav>
+  <section class="listview" id="listview" hidden>
+    <div class="lv-head">
+      <h2 class="lv-title" id="lv-title"></h2>
+      <span class="lv-count" id="lv-count"></span>
+    </div>
+    <div class="rows" id="rows"></div>
+    <div id="lv-pager"></div>
+  </section>
 
-  <p class="notice">{{ notice }}</p>
-
-  <div id="list" class="list"></div>
-
-  <p id="empty" class="empty" hidden>今天没有符合条件的史低新增。</p>
+  <p id="empty" class="empty" hidden>这里暂时没有符合条件的折扣。</p>
 </main>
 
+{# S9-2：底部抽屉式筛选（refs.md §6.7）—— 手机上从屏幕底部滑出，
+   电脑上同一个面板改成右侧浮层。选项由 report.filter_specs(cfg) 生成。 #}
+<div class="drawer-mask" id="drawer-mask" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="筛选">
+  <div class="drawer-head">
+    <strong>筛选</strong>
+    <button type="button" class="drawer-close" id="drawer-close" aria-label="关闭筛选">✕</button>
+  </div>
+  <div class="drawer-body">
+    {% for group in filter_groups %}
+    <div class="fgroup" data-group="{{ group.key }}">
+      <div class="fgroup-title">{{ group.label }}</div>
+      <div class="fgroup-items">
+        {% for opt in group.options %}
+        <button type="button" class="chip opt" data-group="{{ group.key }}"
+                data-value="{{ opt.value }}">{{ opt.label }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="drawer-foot">
+    <button type="button" class="chip" id="filter-reset">重置</button>
+    <button type="button" class="chip primary" id="filter-done">完成</button>
+  </div>
+</aside>
+<script>window.FILTER_DEFAULTS = {{ filter_defaults | tojson }};</script>
+
 <footer class="wrap footer">
-  <p>
-    数据来源：IsThereAnyDeal / Steam ·
-    抓取口径：{{ overview.sweep }} ·
-    详情：本轮抓 {{ overview.detail_fetched }} 条{% if overview.detail_backlog is not none %}，目录还差 {{ overview.detail_backlog }} 条{% endif %} ·
-    状态库最近一次运行：{{ overview.last_run_at or '—' }}
+  <p class="foot-links">
+    <a href="about.html">关于网站</a>
+    <span class="sep">·</span>
+    <a href="{{ links.repo }}" target="_blank" rel="noopener">源码仓库</a>
+    <span class="sep">·</span>
+    <a href="{{ links.actions }}" target="_blank" rel="noopener">Actions 运行记录</a>
   </p>
-  <p>
-    本轮抓取 {{ overview.deals_fetched }} 条折扣 · 其中史低 {{ overview.hist_low_total }} 条
-  </p>
-  {% if fx %}
-  <p>
-    汇率取数日期 {{ fx.date }}（基准 {{ fx.base }}）：{% for r in fx.rates %}1 {{ fx.base }} = {{ r.rate }} {{ r.code }}{% if not loop.last %} · {% endif %}{% endfor %}
-  </p>
-  {% endif %}
+  <p>每日抓取 Steam 折扣，筛出「当日新增史低」与史低游戏，生成静态页面。</p>
+  <p>数据来源：IsThereAnyDeal / Steam · 生成时间 {{ generated_at_text }} ·
+     状态库最近一次运行：{{ overview.last_run_at or '—' }}</p>
   <p>价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准，且不代表可购买。</p>
 </footer>
 

@@ -43,6 +43,17 @@
   "page_size_mobile": 10,
   "page_size_desktop": 20,
   "mobile_breakpoint_px": 768,
+  "site_repo_url": "https://github.com/Mumeione/SteamDailyLowest",
+  "site_actions_url": "https://github.com/Mumeione/SteamDailyLowest/actions",
+  "home_new_low_days": 7,
+  "home_section_preview": 10,
+  "home_picks": 15,
+  "big_cut_percent": 80,
+  "recommend_min_rate": 70,
+  "recommend_min_count": 100,
+  "recommend_weights": {
+    "fame": 35, "cut": 25, "review": 15, "gap": 15, "urgent": 5, "fresh": 5
+  },
   "max_deals": null,
   "run_log_keep": 30
 }
