@@ -486,9 +486,10 @@ class State:
                         stats=None) -> None:
         """只补附加字段，**不碰 reviews 与 fetched_at**。
 
-        专供 ``tools/backfill_game_meta.py`` 一次性回填用 —— 回填时并不重新拿好评率，
-        若走 :meth:`set_meta` 会把 ``fetched_at`` 刷成今天、白白推迟 reviews 的刷新。
-        传 ``None`` 的键一律跳过（保留旧值）。
+        原供 2026-10 的一次性回填用（``publishers`` / ``developers`` / ``stats``
+        历史上没存，脚本已随仓库整理退场，git 历史可找回）—— 回填时并不重新拿
+        好评率，若走 :meth:`set_meta` 会把 ``fetched_at`` 刷成今天、白白推迟
+        reviews 的刷新。传 ``None`` 的键一律跳过（保留旧值）。
         分层落点：publishers/developers → 不变层；stats → 动态层（决策 15）。
         """
         if publishers is None and developers is None and stats is None:

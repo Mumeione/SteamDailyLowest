@@ -45,8 +45,8 @@ def system_ca_bundle(cache_path: Path = CA_CACHE) -> str | None:
     而本机出网经过了 TLS 拦截（本地代理工具），它的根证书**只装在 Windows 证书库里**，
     certifi 里没有 → 报 `SSLError: CERTIFICATE_VERIFY_FAILED`。
     同一个 URL 用 `urllib` 却能通，因为 `ssl.create_default_context()`
-    会加载 Windows 证书库。排查脚本见 `tools/diag_ssl2.py`（它打印了对端证书的签发者，
-    一眼就能看出是 SteamTools 在中间人）。
+    会加载 Windows 证书库。（当时的排查脚本已随仓库整理退场；它打印对端证书
+    的签发者，一眼就能看出是 SteamTools 在中间人。）
 
     ⚠️ 这不是"关掉校验"：仍然做完整校验，只是把**可信来源**换成系统证书库
     ——这也是浏览器和 curl 用的那套。拿不到就返回 None，调用方回落到 requests 默认行为。

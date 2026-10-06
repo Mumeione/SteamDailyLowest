@@ -198,7 +198,7 @@ class ItadClient(BaseHttpClient):
 
         **2026-09-30 起顺带取 ``publishers`` / ``developers`` / ``stats``**（快照 v3 需要）：
         这些字段本来就在同一个响应里（实测填充率 100%，52 条分层样本），
-        **不增加任何请求**；历史上没存，靠 ``tools/backfill_game_meta.py`` 一次性补齐。
+        **不增加任何请求**；历史上没存，已由一次性回填补齐（脚本随整理退场）。
         每一项都可能缺（老游戏 / 特殊条目），缺就给空列表 / None，不编造。
         ⚠️ ``stats`` **整体**缺失时返回 ``None``（而不是全 null 的 dict）——
         ``set_meta`` 以 None 判「本次没取到 → 保留旧值」，全 null dict 会把

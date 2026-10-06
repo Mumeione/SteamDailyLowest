@@ -61,7 +61,7 @@ class FlagTest(unittest.TestCase):
 class SteamLowClassTest(unittest.TestCase):
     """Steam 口径的史低分类（批 E spec E1）。
 
-    依据 data/steam_flag_probe.txt 的实测形态：N 的 last_low_at 与 start 间隔为 0，
+    依据 2026-09-24 一次性离线探针的实测形态：N 的 last_low_at 与 start 间隔为 0，
     H/S 至少 37 天，中间没有模糊地带。
     """
 

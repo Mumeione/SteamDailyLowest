@@ -34,7 +34,7 @@ STEAM_LOW_UNKNOWN = "unknown"
 
 #: 判定窗口（小时）。24 小时是给 ITAD 的记录延迟留余量 —— 实测 51 条里
 #: `last_low_at` 与 `start` 的间隔**非 0 即 ≥37 天**，取 1h~72h 结果完全一致，
-#: 这里不存在调参问题（依据 data/steam_flag_probe.txt）。
+#: 这里不存在调参问题（2026-09-24 一次性离线探针实测，结论沉淀于 DEVELOPMENT §4.1）。
 #: 批 F5：定为**常量**、不再暴露 `window_hours` 参数 —— 24h 容错已经很宽，
 #: 再放大会把「其实不是本次创下」的旧纪录误判成新史低。
 STEAM_LOW_WINDOW_HOURS = 24
