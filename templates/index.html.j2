@@ -92,16 +92,18 @@
       <div class="fgroup-title">{{ group.label }}</div>
       <div class="fgroup-items">
         {% for opt in group.options %}
-        <button type="button" class="chip opt" data-group="{{ group.key }}"
-                data-value="{{ opt.value }}">{{ opt.label }}</button>
+        <button type="button" class="chip opt{% if opt.disabled %} is-off{% endif %}"
+                data-group="{{ group.key }}" data-value="{{ opt.value }}"
+                {% if opt.disabled %}disabled title="这一天没有数据"{% endif %}>{{ opt.label }}</button>
         {% endfor %}
       </div>
     </div>
     {% endfor %}
   </div>
+  {# 只留「重置」—— 选项是**点一下就生效**的，再来一个「完成」纯属重复
+     （review-s9-01 补充审查 Spec (b)）。关闭靠 ✕ / 点遮罩 / 按 Esc。 #}
   <div class="drawer-foot">
     <button type="button" class="chip" id="filter-reset">重置</button>
-    <button type="button" class="chip primary" id="filter-done">完成</button>
   </div>
 </aside>
 <script>window.FILTER_DEFAULTS = {{ filter_defaults | tojson }};</script>

@@ -404,8 +404,13 @@ body.no-image .thumb { display: none; }
   background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
 }
-.chip.primary, .chip.opt.active {
+.chip.opt.active {
   background: var(--accent); border-color: var(--accent); color: #fff;
+}
+/* 没有数据的日期：置灰不可点（refs §11.5 Q2）。
+   `disabled` 已经让它点不动了，这里只是让它**看起来**点不动。 */
+.chip.opt:disabled, .chip.opt.is-off {
+  opacity: .4; cursor: not-allowed; text-decoration: line-through;
 }
 .drawer-mask { position: fixed; inset: 0; background: rgba(16, 24, 40, .42); z-index: 40; }
 .drawer {
@@ -433,11 +438,14 @@ body.no-image .thumb { display: none; }
 }
 .drawer-foot .chip { flex: 1 1 0; text-align: center; padding: 9px 12px; }
 
-  /* ---- 抽屉：手机底部滑出 / 电脑右侧浮层 ---- */
+/* 抽屉的两种形态写进各自的媒体查询里 —— 之前手机那档写在顶层（靠 769px 覆盖生效），
+   缩进看着像在某个查询里，容易被误读（review-s9-01 补充审查 #7）。 */
+@media (max-width: 768px) {
   .drawer {
     left: 0; right: 0; bottom: 0; max-height: 78vh;
     border-radius: 14px 14px 0 0;
   }
+}
 @media (min-width: 769px) {
   .drawer {
     right: 0; top: 0; bottom: 0; left: auto; width: 380px;

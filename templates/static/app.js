@@ -46,11 +46,11 @@
   }
 
   var state = { section: null, page: 1, filters: {} };
-  // 筛选的默认值由服务端下发（跟着 home_new_low_days 走）——
-  // 别在前端再写死一份 7，否则改配置后两边会对不上。
-  var FILTER_DEFAULTS = window.FILTER_DEFAULTS || {
-    sort: "featured", date: "d7", cut: "all", reviews: "all", only_new: "all"
-  };
+  // 默认值由服务端下发（跟着 home_new_low_days 走）。
+  // ⚠️ 兜底**不要再写 date: "d7"** —— 那等于在前端又写死一份窗口，与服务端脱钩
+  // （review-s9-01 补充审查 #2）。模板恒发这个变量，取不到就当"全部不筛"，
+  // 下面的判据都对 undefined 安全。
+  var FILTER_DEFAULTS = window.FILTER_DEFAULTS || {};
   Object.keys(FILTER_DEFAULTS).forEach(function (k) {
     state.filters[k] = FILTER_DEFAULTS[k];
   });
@@ -317,20 +317,38 @@
   }
 
   // ---- 筛选的三个判据（底部抽屉，refs.md §6.7）----
+  // 日期值的协议（与 report.filter_specs 的 docstring 同一份，改格式两边必须同步）：
+  //   "dN" = 近 N 天 · "N" = 距今第 N 天（0=今天）· "all" = 不限
+  function parseDateSpec(value) {
+    if (!value || value === "all") return { kind: "all", n: 0 };
+    if (value.charAt(0) === "d") return { kind: "days", n: parseInt(value.slice(1), 10) };
+    return { kind: "exact", n: parseInt(value, 10) };
+  }
+
   function dateOk(card) {
-    var v = state.filters.date;
-    if (v === "all") return true;
+    var spec = parseDateSpec(state.filters.date);
+    if (spec.kind === "all") return true;
     var ago = card.start_days_ago;
     if (ago === null || ago === undefined) return false;   // 没有开始时间 → 不算
-    if (v.charAt(0) === "d") return ago <= parseInt(v.slice(1), 10);   // 近 N 天
-    return ago === parseInt(v, 10);                                    // 今天/昨天/前天
+    if (isNaN(spec.n)) return true;                        // 值坏了就当不限，别把列表清空
+    return spec.kind === "days" ? ago <= spec.n : ago === spec.n;
+  }
+
+  // 折扣还在不在期内 —— 服务端筛首页板块时会看（``_is_live``），前端筛列表页也得看，
+  // 否则「板块头写的条数」和「查看更多点进去的条数」会对不上（review 补充审查 #3）。
+  // ⚠️ 只对四个板块生效；「全部折扣」本来就是要看全量（含过期留存）。
+  function liveOk(card) {
+    var views = card.views;
+    return !views || views.indexOf("active") !== -1;
   }
 
   function filterOk(card) {
     var f = state.filters;
     if (f.only_new === "new" && card.low_class !== "new") return false;
-    if (f.cut !== "all" && (card.cut || 0) < parseInt(f.cut, 10)) return false;
-    if (f.reviews !== "all" && reviewCount(card) < parseInt(f.reviews, 10)) return false;
+    if (f.cut !== "all" && f.cut !== undefined
+        && (card.cut || 0) < parseInt(f.cut, 10)) return false;
+    if (f.reviews !== "all" && f.reviews !== undefined
+        && reviewCount(card) < parseInt(f.reviews, 10)) return false;
     return true;
   }
 
@@ -358,7 +376,8 @@
         if ((c.sections || []).indexOf(key) === -1) return false;
         // 「即将到期」本来就是按**到期时间**筛的，不再叠加用户选的日期窗口
         // （refs.md §11.3：叠加会把最紧急的老折扣漏掉）
-        if (key === "expiring") return filterOk(c);
+        if (key === "expiring") return filterOk(c) && liveOk(c);
+        return dateOk(c) && filterOk(c) && liveOk(c);
       }
       return dateOk(c) && filterOk(c);
     });
@@ -405,9 +424,16 @@
     window.scrollTo({ top: top, behavior: "smooth" });
   }
 
+  // 用户有没有**手动**改过日期。没有的话，切到「全部折扣」页时日期自动放开成
+  // 「全部」（refs §11.5 Q2：「全部折扣」页**不设限**），切回板块再收成默认窗口。
+  var dateTouched = false;
+
   function openSection(key) {
     state.section = key;
     state.page = 1;
+    if (!dateTouched) {
+      state.filters.date = (key === "__all__") ? "all" : FILTER_DEFAULTS.date;
+    }
     var buttons = document.querySelectorAll("#nav .nav-item");
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].classList.toggle("active",
@@ -415,6 +441,7 @@
     }
     homeBox.hidden = true;
     listBox.hidden = false;
+    syncFilterVisibility();          // 板块页才显示「筛选」按钮
     document.getElementById("lv-title").textContent = SECTION_LABEL[key] || key;
     document.getElementById("lv-count").textContent = "加载中…";
     rowsBox.textContent = "";
@@ -443,6 +470,7 @@
     for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
     listBox.hidden = true;
     homeBox.hidden = false;
+    syncFilterVisibility();          // 首页不显示「筛选」（它不作用于首页板块）
     emptyBox.hidden = !!(data.sections || []).length;
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -500,9 +528,12 @@
   var filterBadge = document.getElementById("filter-badge");
   var filterOpts = document.querySelectorAll("#drawer .chip.opt");
 
+  /** 「已选 N 项」：**排序不计入** —— 排序不是筛选，改个排序就点亮角标是名不副实
+      （review-s9-01 补充审查 #6）。 */
   function activeFilterCount() {
     var n = 0;
     Object.keys(FILTER_DEFAULTS).forEach(function (k) {
+      if (k === "sort") return;
       if (state.filters[k] !== FILTER_DEFAULTS[k]) n++;
     });
     return n;
@@ -525,6 +556,14 @@
     filterOpenBtn.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
+  /** 筛选只作用于**板块完整列表页** —— 首页四板块是服务端算好的预览，
+      不经过筛选项。所以首页要把「筛选」按钮藏起来，不能"看得见、点了没反应"
+      （review-s9-01 补充审查 Spec (c)）。 */
+  function syncFilterVisibility() {
+    if (filterOpenBtn) filterOpenBtn.hidden = !state.section;
+    if (!state.section) setDrawer(false);
+  }
+
   function applyFilters() {
     syncFilterUI();
     if (state.section) { state.page = 1; openSection(state.section); }
@@ -533,16 +572,18 @@
   if (drawer && filterOpenBtn) {
     filterOpenBtn.addEventListener("click", function () { setDrawer(true); });
     document.getElementById("drawer-close").addEventListener("click", function () { setDrawer(false); });
-    document.getElementById("filter-done").addEventListener("click", function () { setDrawer(false); });
     drawerMask.addEventListener("click", function () { setDrawer(false); });
     document.getElementById("filter-reset").addEventListener("click", function () {
       Object.keys(FILTER_DEFAULTS).forEach(function (k) { state.filters[k] = FILTER_DEFAULTS[k]; });
+      dateTouched = false;       // 重置后「全部折扣」页重新自动放开日期
       applyFilters();
     });
     for (var f = 0; f < filterOpts.length; f++) {
       (function (opt) {
         opt.addEventListener("click", function () {
-          state.filters[opt.getAttribute("data-group")] = opt.getAttribute("data-value");
+          var group = opt.getAttribute("data-group");
+          state.filters[group] = opt.getAttribute("data-value");
+          if (group === "date") dateTouched = true;
           applyFilters();        // 选了就立刻生效，不用再点「完成」
         });
       })(filterOpts[f]);
@@ -551,6 +592,7 @@
       if (e.key === "Escape" || e.keyCode === 27) setDrawer(false);
     });
     syncFilterUI();
+    syncFilterVisibility();
   }
 
   // ------------------------------------------------------------------

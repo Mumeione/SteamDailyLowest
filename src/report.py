@@ -68,7 +68,7 @@ def group_specs(cfg: dict) -> list[dict]:
     """
     pct = int(round(float(cfg.get("min_positive_ratio", 0.7)) * 100))
     min_count = int(cfg.get("min_review_count", 100))
-    notable = int(cfg.get("notable_review_count", 10000))
+    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
     return [
         {
             "key": classify.TIER_NOTABLE,
@@ -405,12 +405,26 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
 #: 首页四板块（S9 定案 2026-10-06）。顺序由用户拍板：新史低 → 即将到期 → 热门游戏 → 大额折扣。
 #: ⚠️ **池子必须是「全部」视图那批卡片（``all_cards`` / ``all_shown``）** ——
 #: 绝不能用 ``seen_deal`` 全量（里面有同一游戏的历史价格变体，条数会放大十几倍）。
+#: ⚠️ 这里**不再写「入组条件」文案** —— 原先每个板块带一句 `criteria`（"评价数 ≥ 10000"、
+#: "折扣 ≥ 80%"），阈值是写死的字面量：改了 `notable_review_count` 之后页面还在说
+#: 10000，等于撒谎；而且**前端从头到尾没渲染过它**（refs B6 只要条数）—— 既是谎言
+#: 又是死数据（review-s9-01 补充审查 #1）。板块口径改在「关于网站」页由
+#: :func:`criteria_notes` 从配置生成，那里才是唯一来源。
 HOME_SECTIONS = [
-    {"key": "new_low", "label": "新史低", "criteria": "近 7 天新增的新史低"},
-    {"key": "expiring", "label": "即将到期", "criteria": "48 小时内到期"},
-    {"key": "popular", "label": "热门游戏", "criteria": "评价数 ≥ 10000"},
-    {"key": "big_cut", "label": "大额折扣", "criteria": "折扣 ≥ 80%"},
+    {"key": "new_low", "label": "新史低"},
+    {"key": "expiring", "label": "即将到期"},
+    {"key": "popular", "label": "热门游戏"},
+    {"key": "big_cut", "label": "大额折扣"},
 ]
+
+
+#: 默认阈值的**唯一来源**：10000 / 80 / 7 / 48 原先在 `_in_section` /
+#: `criteria_notes` / `filter_specs` 三处各写一遍字面量，改默认值要散着改
+#: （review-s9-01 补充审查 #4）。配置里没有时才用这些。
+DEFAULT_HOME_DAYS = 7
+DEFAULT_BIG_CUT = 80
+DEFAULT_NOTABLE = 10000
+DEFAULT_UPCOMING_HOURS = 48
 
 
 def _is_fresh(card: dict, days: int) -> bool:
@@ -446,9 +460,10 @@ def _in_section(key: str, card: dict, cfg: dict) -> bool:
         left = card.get("days_left")
         return left is not None and left <= 2
     if key == "popular":
-        return review_count(card) >= int(cfg.get("notable_review_count", 10000)) and _is_live(card)
+        return (review_count(card) >= int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
+                and _is_live(card))
     if key == "big_cut":
-        return (card.get("cut") or 0) >= int(cfg.get("big_cut_percent", 80)) and _is_live(card)
+        return (card.get("cut") or 0) >= int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT)) and _is_live(card)
     return False
 
 
@@ -459,7 +474,7 @@ def section_keys(card: dict, cfg: dict) -> list[str]:
 
 
 def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
-    days = int(cfg.get("home_new_low_days", 7))
+    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     members = [c for c in cards if _in_section(key, c, cfg)]
     # 「即将到期」不叠加日期窗口（见 _in_section 注释），其余三个要
     if key == "expiring":
@@ -490,7 +505,6 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
         out.append({
             "key": spec["key"],
             "label": spec["label"],
-            "criteria": spec["criteria"],
             "count": len(members),
             "items": members[:preview],
         })
@@ -605,7 +619,7 @@ def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     推荐位不能推没数据的游戏。万一整池都没过门槛（详情大面积缺失的极端情况），
     退回老的字典序，保证大卡这一块不会整块消失。
     """
-    days = int(cfg.get("home_new_low_days", 7))
+    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     pool = [c for c in cards
             if c.get("low_class") == classify.STEAM_LOW_NEW
             and _is_fresh(c, days) and _is_live(c)]
@@ -639,7 +653,7 @@ FILTER_SORTS = [
 ]
 
 
-def filter_specs(cfg: dict) -> list[dict]:
+def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
     """底部抽屉式筛选的分组与选项（refs.md §6.7 的推荐方案）。
 
     维度：**排序 / 日期 / 折扣区间 / 好评数量 / 仅新史低**。
@@ -648,20 +662,42 @@ def filter_specs(cfg: dict) -> list[dict]:
     ⚠️ 阈值一律**从配置来**（同 group_specs 的思路）：改 `big_cut_percent`
     / `notable_review_count` / `home_new_low_days`，选项文案跟着变，
     不会出现「选项写着 ≥80%、实际按 75% 筛」这种撒谎。
+
+    ``cards``：给了就按它算「哪些日期没有数据」，该选项标 ``disabled: True``
+    （refs §11.5 Q2「没有数据的天数**置灰不可选**」）。池子应与首页四板块同源
+    （``all_cards``），否则置灰的口径跟实际列表对不上。
+
+    **日期值的协议**（后端拼、前端 :func:`parseDateSpec` 解，改格式两边必须同步）：
+
+    - ``"dN"`` = 近 N 天（``start_days_ago <= N``）
+    - ``"N"``  = 距今第 N 天（``start_days_ago == N``，0 = 今天）
+    - ``"all"``= 不限
     """
-    days = int(cfg.get("home_new_low_days", 7))
-    big = int(cfg.get("big_cut_percent", 80))
-    notable = int(cfg.get("notable_review_count", 10000))
+    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
+    big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
+    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
     cuts = sorted({50, 70, big, 90})
     counts = sorted({500, 5000, notable})
+    # 置灰统计：只算「开始时间已知」的卡片 —— 前端 dateOk 对未知 start 一律返回 false，
+    # 口径必须一致，否则会出现「选项没置灰但点进去是空的」
+    agos = [c.get("start_days_ago") for c in (cards or [])]
+    agos = [a for a in agos if a is not None]
+
+    def dead(spec_value: str) -> bool:
+        if cards is None:
+            return False
+        if spec_value.startswith("d"):
+            return not any(a <= int(spec_value[1:]) for a in agos)
+        return int(spec_value) not in agos
+
     return [
         {"key": "sort", "label": "排序", "options": [dict(o) for o in FILTER_SORTS]},
         {"key": "date", "label": "日期", "options": [
-            {"value": "0", "label": "今天"},
-            {"value": "1", "label": "昨天"},
-            {"value": "2", "label": "前天"},
-            {"value": f"d{days}", "label": f"近 {days} 天"},
-            {"value": "all", "label": "全部"},
+            {"value": "0", "label": "今天", "disabled": dead("0")},
+            {"value": "1", "label": "昨天", "disabled": dead("1")},
+            {"value": "2", "label": "前天", "disabled": dead("2")},
+            {"value": f"d{days}", "label": f"近 {days} 天", "disabled": dead(f"d{days}")},
+            {"value": "all", "label": "全部", "disabled": False},
         ]},
         {"key": "cut", "label": "折扣区间", "options":
             [{"value": "all", "label": "不限"}]
@@ -683,7 +719,7 @@ def filter_defaults(cfg: dict) -> dict:
     """
     return {
         "sort": "featured",
-        "date": f"d{int(cfg.get('home_new_low_days', 7))}",
+        "date": f"d{int(cfg.get('home_new_low_days', DEFAULT_HOME_DAYS))}",
         "cut": "all",
         "reviews": "all",
         "only_new": "all",
@@ -695,7 +731,7 @@ def criteria_notes(cfg: dict) -> list[dict]:
     （同 group_specs 的思路：别把阈值文案写死在模板里，否则改了配置就对不上）。"""
     pct = int(round(float(cfg.get("min_positive_ratio", 0.7)) * 100))
     min_count = int(cfg.get("min_review_count", 100))
-    notable = int(cfg.get("notable_review_count", 10000))
+    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
     scope = "只收 type=game 的本体折扣，排除免费游戏"
     if cfg.get("exclude_mature"):
         scope += "与成人内容"
@@ -705,11 +741,11 @@ def criteria_notes(cfg: dict) -> list[dict]:
                               "**不靠比价格** —— Steam 店史低已含本次折扣，比价会把新史低也判成相等"},
         {"k": "展示门槛", "v": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}；低于此不入列表"},
         {"k": "高热度档", "v": f"评价数 ≥ {notable:,}，不看好评率（热门游戏板块用它）"},
-        {"k": "大额折扣档", "v": f"折扣 ≥ {int(cfg.get('big_cut_percent', 80))}%"},
+        {"k": "大额折扣档", "v": f"折扣 ≥ {int(cfg.get('big_cut_percent', DEFAULT_BIG_CUT))}%"},
         {"k": "板块时间窗", "v": f"首页三板块（新史低/热门/大额折扣）只看近 "
-                                f"{int(cfg.get('home_new_low_days', 7))} 天新增；"
+                                f"{int(cfg.get('home_new_low_days', DEFAULT_HOME_DAYS))} 天新增；"
                                 "「即将到期」按到期时间算，不叠加时间窗"},
-        {"k": "即将到期", "v": f"距折扣结束 ≤ {int(cfg.get('upcoming_expiry_hours', 48))} 小时"},
+        {"k": "即将到期", "v": f"距折扣结束 ≤ {int(cfg.get('upcoming_expiry_hours', DEFAULT_UPCOMING_HOURS))} 小时"},
         {"k": "多版本去重", "v": "同一 appid 只保留价格最低的那条"},
         {"k": "留存", "v": f"折扣过期后仍保留 {int(cfg.get('expired_retention_days', 7))} 天"},
     ]
@@ -801,7 +837,6 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
         #: 底部抽屉筛选的分组/选项与默认值（refs.md §6.7）；前端 state.filters 用
-        "filter_specs": filter_specs(cfg),
         "filter_defaults": filter_defaults(cfg),
         #: 断点必须与 app.css 的 @media 一致，否则「布局按手机、每页按桌面」会错位
         "page_size": {
@@ -886,7 +921,8 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         low_points=low_points,
         generated_at_text=payload["generated_at_text"],
         stale_banner_hours=payload["stale_banner_hours"],
-        filter_groups=filter_specs(cfg),
+        # 置灰统计用与首页四板块**同一个池子**，否则「选项没置灰但点进去是空的」
+        filter_groups=filter_specs(cfg, home_pool),
         filter_defaults=payload["filter_defaults"],
     )
     (output_dir / "index.html").write_text(html, encoding="utf-8")

@@ -719,7 +719,8 @@ class FilterSpecsTest(unittest.TestCase):
         self.assertIn({"value": "75", "label": "≥ 75%"}, groups["cut"]["options"])
         self.assertIn({"value": "50000", "label": "≥ 50,000"},
                       groups["reviews"]["options"])
-        self.assertIn({"value": "d3", "label": "近 3 天"}, groups["date"]["options"])
+        self.assertIn({"value": "d3", "label": "近 3 天", "disabled": False},
+                      groups["date"]["options"])
 
     def test_defaults_follow_config(self):
         self.assertEqual(report.filter_defaults(self.CFG)["date"], "d7")
@@ -734,6 +735,40 @@ class FilterSpecsTest(unittest.TestCase):
         self.assertIn('data-group="sort"', html)
         self.assertIn('data-value="d7"', html)
         self.assertNotIn('data-range="7"', html)   # 旧的两个胶囊已退场
+        # 「完成」按钮已删（选项点一下就生效，再来一个「完成」是重复）
+        self.assertNotIn('id="filter-done"', html)
+
+    def test_empty_days_are_disabled(self):
+        """refs §11.5 Q2：没有数据的天数**置灰不可选**。
+
+        池子里只有"今天"（ago=0）与"5 天前"两种开始时间 →
+        「昨天」「前天」必须被置灰，而「今天」「近 7 天」「全部」不能置灰。
+        """
+        cards = [{"start_days_ago": 0}, {"start_days_ago": 5}]
+        groups = {g["key"]: g for g in report.filter_specs(self.CFG, cards)}
+        date_by_value = {o["value"]: o for o in groups["date"]["options"]}
+        self.assertTrue(date_by_value["0"]["disabled"] is False)
+        self.assertTrue(date_by_value["1"]["disabled"])     # 昨天：没数据
+        self.assertTrue(date_by_value["2"]["disabled"])     # 前天：没数据
+        self.assertFalse(date_by_value["d7"]["disabled"])   # 近 7 天：有 0 和 5
+        self.assertFalse(date_by_value["all"]["disabled"])
+
+    def test_no_cards_means_nothing_disabled(self):
+        """没给池子（cards=None）就不置灰 —— 宁可全可选，别把有数据的天误置灰。"""
+        groups = {g["key"]: g for g in report.filter_specs(self.CFG)}
+        for opt in groups["date"]["options"]:
+            self.assertFalse(opt.get("disabled"), opt["value"])
+
+    def test_section_specs_have_no_hardcoded_criteria(self):
+        """板块不再带写死的「入组条件」文案 —— 阈值写死 = 改了配置页面还在撒谎，
+        而且前端从来没渲染过它（review-s9-01 补充审查 #1）。"""
+        for spec in report.HOME_SECTIONS:
+            self.assertNotIn("criteria", spec)
+        sections = report.build_sections(
+            [{"low_class": "new", "start_days_ago": 1, "views": ["active"],
+              "reviews": {"score": 90, "count": 1000}}], self.CFG)
+        for sec in sections:
+            self.assertNotIn("criteria", sec)
 
 
 class TopbarTest(unittest.TestCase):
