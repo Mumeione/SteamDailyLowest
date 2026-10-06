@@ -1,0 +1,38 @@
+# 复合动作（S8 ⑥）：状态回写 data 分支 —— daily / prefetch 两 job 共用，
+# 消除原本逐字重复的 ~25 行回写块；并统一补上 push 前防冲突（S8 ⑤，
+# spec §3.6 要求，此前只有 probe.yml 有 rebase）。
+# 前置：statedata/ 已 checkout data 分支；data/ 里有本轮产物。
+name: '状态回写 data 分支'
+description: '提交 state/dynamic/cache/expiring 回 data 分支（push 前 pull --rebase 防非快进冲突）'
+inputs:
+  message:
+    description: '本次回写的 commit message'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        WRITEBACK_MESSAGE: ${{ inputs.message }}
+      run: |
+        cd statedata
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        mkdir -p data
+        cp ../data/state.json data/state.json
+        git add data/state.json
+        # 动态库 / 缓存库 / 快照：存在才提交（渲染阶段失败时快照可能不存在）
+        for f in dynamic.json cache.json expiring.json; do
+          if [ -f "../data/$f" ]; then
+            cp "../data/$f" "data/$f"
+            git add "data/$f"
+          fi
+        done
+        if git diff --cached --quiet; then
+          echo "状态无变化，跳过提交"
+        else
+          git commit -m "$WRITEBACK_MESSAGE"
+          # 与 daily / prefetch / probe 共用 data 分支：push 前 rebase（防非快进冲突）
+          git pull --rebase --autostash
+          git push
+        fi

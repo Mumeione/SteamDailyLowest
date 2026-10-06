@@ -632,8 +632,8 @@ IN ₹149 = 14900 paise → 14900 / 14.303287 ≈ 1042 分 = ¥10.42
 | 阶段                     | 请求构成                                                          | 量级（实测 / 估算）                  |
 | ---------------------- | ------------------------------------------------------------- | ---------------------------- |
 | 首次 `--baseline`        | **只翻页抓列表写入状态**，不取详情                                           | **20\~27** 次（`full` 口径是 162） |
-| 日常每次运行                 | 翻页列表 + **当日新增全部详情** + **目录增量补（`detail_daily_budget`，默认 300）** | **27 + 当日新增 + 300**          |
-| `--audit`（按需 / 建议每周一次） | 无 filter 全量翻页，保住 `type`/`flag` 全分布与 §4.1 交叉校验                 | **162** 次                    |
+| 日常每次运行                 | 翻页列表 + **详情目标全部抓**（S2 起派生式欠账**不设预算**：当日新增 ∪ 折扣活跃超 TTL ∪ unlisted 重判） | **27 + 目标数（通常几十\~几百）**       |
+| `--audit`（按需）          | 无 filter 全量翻页，保住 `type`/`flag` 全分布与 §4.1 交叉校验                 | **162** 次                    |
 | 中文名（第 7 步）             | 逐游戏单请求、**永久缓存**，只有从没见过的才发                                     | 首次 = 进列表条数；之后 ≈ 当天新增进列表数     |
 | 跨区比价（第 7 步）            | Steam `appdetails` 按 appid **批量**（20 个/批），每区 1 组，**不占 ITAD 配额**；S7 起现价每轮真查 + 原价回写校准 | 进列表 appid ÷ 20 × 区数（UA + IN） |
 
@@ -642,16 +642,15 @@ IN ₹149 = 14900 paise → 14900 / 14.303287 ≈ 1042 分 = ¥10.42
 
 > 第 24 轮之前每轮固定 **267 次**（162 + 105 详情）；改为 `low_only` 口径后约 **132 次**。
 
-##### 详情抓取范围：`detail_scope`
+##### 详情抓取范围（历史：`detail_scope` 两段式 → S2 派生式取代）
 
-用户要求「**详情只跑符合要求的史低游戏目录，不要每轮全跑一遍**」，落地成两段：
+用户要求「**详情只跑符合要求的史低游戏目录，不要每轮全跑一遍**」。旧方案是
+「当日新增全抓 + 目录按 `detail_daily_budget` 增量补」；**S2 重构起被派生式欠账取代**：
 
-1. **当日新增 → 全部抓**（本轮报表的核心，必须完整）
-2. **目录里的其它史低 → 按** **`detail_daily_budget`（默认 300）增量补**，
-   优先级 = 折扣力度大的先补（最可能被人看到）；命中缓存的直接跳过。
-   页脚里显示**还差多少条**，进度可见（运行统计只在页脚，「筛选条件」块只放判定口径）。
+    目标 = 当日新增 ∪ 折扣活跃且数据年龄超 TTL ∪ unlisted 重判（§3.2，不设预算）
 
-这里「目录」= **通过筛选链的史低**（本体 + 付费 + `flag != None`），与报表口径完全一致。
+命中缓存的直接跳过；页脚里显示**还差多少条**，进度可见。预算与 `detail_scope` /
+`detail_daily_budget` 键一并退场。
 
 > ⚠️ **试过一个更省钱的做法，被否掉了**：用服务端 `filter={"steamCount":{"min":100}}`
 > 先筛掉「评价数 <100 的冷门」（实测史低 5242 → 2111，页数 27 → 11）。
@@ -792,7 +791,7 @@ last_low_at 或 start 缺失     -> "tie"      # 回落 ITAD flag
 ```
 
 依据是 `storelow/v2` 给的「Steam 店内史低被记录的时间」（§3.6）—— **该接口每天已在跑，
-本方案不新增任何请求**。离线验证（51 条，`tools/steam_flag_probe.py`）：
+本方案不新增任何请求**。离线验证（51 条，一次性探针，结论沉淀于本表）：
 N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结果完全一致。
 
 > 术语：**「店史低」退役**。本页收录的本来全是 Steam 店史低，用它做标签会让人以为
@@ -885,8 +884,9 @@ N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结
 
 两份都是滚动 JSON（非按天归档，体积可控），用 `GITHUB_TOKEN` 提交回 data 分支；
 `cache.json` 固定与 `state.json` 同目录同名（派生规则，无独立配置键）。
-旧版 state.json 里带的缓存键在加载时自动收编进 cache.json（代码自迁移），
-也可用 `tools/migrate_split_state.py` 显式迁移。
+旧版 state.json 里带的缓存键在加载时自动收编进 cache.json（代码自迁移）。
+（S4 的一次性迁移脚本 `tools/migrate_split_state.py` 已随 2026-10 仓库整理退场——
+迁移早已在 data 分支落地，`State.load()` 自迁移持续兜底，git 历史可找回脚本。）
 
 ```jsonc
 // state.json —— 不可重建
@@ -1042,7 +1042,7 @@ SteamDailyLowest/
     浏览器**静默丢弃整条声明**，结果每个框各占一行。要用 `grid-column: span N` 单值写法。
   - 已用真实浏览器（Edge headless + CDP）在 320/360/390/430/540/700/768/769/820/1024/1440px
     × 5 框/6 框共 **22 种组合**下实测每排框数与是否铺满，全部通过。
-    复现脚本：`tools/measure_layout.js`
+    复现脚本：一次性布局量尺（已随 2026-10 仓库整理退场，git 历史可找回）
   - **原「筛选条件」折叠卡已删除**（批 F）—— 判定口径属于文档，不该占手机屏幕高度，
     全部搬到 `README.md` 的「筛选条件」一节；`report.py` 不再产出
     `conditions` / `criteria_digest` 字段
@@ -1140,7 +1140,33 @@ SteamDailyLowest/
   补跑 `21 21 * * *`（05:21 CST，距主跑 2h07m），
   `daily-guard` 检测过去 12 小时内已有成功的定时主跑则跳过
   （⚠️ 不能按「UTC 当天」过滤——主跑创建于 UTC 前一天）；
-  预抓 `14 7 * * *`（15:14 CST，批 B）；orphan 清理 `14 7 2 * *`
+  预抓 `14 7 * * *`（15:14 CST，批 B；**S8 起纯 state 派生**：不扫描折扣列表，
+  目标 = 当日新增 ∪ 折扣活跃欠账 ∪ unlisted 重判 ∪ 只缺中文名，与主跑同一公式，
+  价值 = 到期窗口条目提前 ~12h 刷新供次日快照/报表，本身不出报表）；
+  orphan 清理 `14 7 2 * *`
+
+### S8 工作流加固（2026-10，spec §3.6「S8 修订」）
+
+- **timeout-minutes**：主跑 90 · 预抓 60 · guard 5 · 清理 10 · 告警 5（此前吃默认 360 分钟）
+- **失败自动开 Issue**：`alert` job 监听各 job failure（cancelled 不告警，有意——
+  取消是人主动行为或已被 timeout 说明），正文附 run.py 退出码。退出码口径：
+  0 成功 · 1 未预期 · 2 配置 · 3 滥用封禁 · 4 请求失败（**仅报表产出前**，页面没更新）·
+  **5 详情/覆盖阶段失败**（含请求失败；页面已兜底发布首版，欠账下轮自愈）——
+  4/5 的判别轴是「页面是否兜底」，不是异常类型（review-s8 P1-1）
+- **`$GITHUB_STEP_SUMMARY`**：每轮一张关键指标表 + 阶段墙钟（run.py 写入）
+- **报表发布韧性**：「打包报表 / 发布 Pages」`if: !cancelled()` + `hashFiles` 兜底——
+  run.py 退出码 5 时首版报表照常发布，页面永远可见；手动取消 / 超时连带取消时
+  不发布半成品；失败 run 不计 guard 的「成功定时 daily」，补跑照常重试详情，
+  成功后完整版覆盖。状态回写仍用 `always()`：取消场景下已抓一半的状态写回去，
+  下一轮断点续传受益
+- **permissions 按 job 最小化**（顶层清零）；data 回写 push 前 `git pull --rebase`
+- daily/prefetch 的状态恢复与回写重复块抽成 `.github/actions/{state-restore,data-writeback}`
+- actions 全升当前主版本（checkout@v7 / setup-python@v7 / configure-pages@v6 /
+  upload-pages-artifact@v5 / deploy-pages@v5 / upload-artifact@v7；Node 20 已于
+  2026-09-23 退役）；`ubuntu-latest` 维持（10-19~11-19 渐进迁 Ubuntu 26.04，观察首跑）
+- **`backfill.yml` + `tools/backfill_queue.py` + `.scratch/backfill-autumn-2026/uuids.jsonl`
+  已删除**：S2 派生欠账管线使「大促永久欠账」机制性消失，回填手术刀无二次价值
+  （git 历史可找回）；`probe.yml` 保留（手动触发、有闸、零常驻成本）
 
 ### 三个必须处理的坑（都来自官方文档核实）
 
@@ -1207,11 +1233,8 @@ SteamDailyLowest/
 | `page_size_desktop`           | `20`                   | 桌面断点下每页条数                                                                                                                                |
 | `mobile_breakpoint_px`        | `768`                  | **分页与 CSS 必须共用同一个断点**（否则会出现布局按手机、每页按桌面）                                                                                                  |
 | `steam_lang`                  | `"schinese"`           | Steam 中文名的语言码                                                                                                                            |
-| `detail_daily_budget`         | `0`                    | 每天额外补详情的条数上限；`0` = 只补当日新增                                                                                                                |
 | `sweep_mode`                  | `"low_only"`           | 抓取口径：`low_only` = 服务端只取「本体 + 史低」（27 页）／`full` = 无 filter 全量（162 页）。见 §2.1 / §3.2                                                         |
-| `detail_scope`                | `"catalog"`            | 详情抓取范围：`catalog` = 当日新增全部 + 目录里按预算增量补／`new_today` = 只抓当日新增                                                                               |
-| `detail_daily_budget`         | `300`                  | 每轮额外补详情的**条数上限**（`0` = 关闭增量补齐）。300 条约 3.5 分钟                                                                                             |
-| `prefetch_daily_budget`       | `300`                  | **预抓任务**（`run.py --prefetch`，15:00 CST）每轮补详情的条数上限，与 `detail_daily_budget` **相互独立**；`0` = 关闭。顺序 = 最近出现在史低的优先（`.scratch/prefetch/spec.md`） |
+| `prefetch_daily_budget`       | `300`                  | **预抓任务**（`run.py --prefetch`，15:14 CST，S8 起纯 state 派生）每轮补详情的条数上限；`0` = 关闭。顺序 = 最近出现在史低的优先（`.scratch/prefetch/spec.md`）                |
 | `fx_cache_path`               | `"data/fx_cache.json"` | 汇率缓存文件（每天一份）                                                                                                                             |
 | `steam_timeout_seconds`       | `15`                   | Steam 请求超时（响应都很小，比 ITAD 短一些）                                                                                                             |
 | `steam_batch_size`            | `20`                   | 批量 `appdetails` 一次塞几个 appid（实测 20 正常，文档说的 50 未复核）                                                                                        |
@@ -1224,9 +1247,10 @@ SteamDailyLowest/
 | `itad_min_interval`           | `0.3`                  | ITAD 最小请求间隔（秒）                                                                                                                           |
 | `steam_rate_limit`            | `150 / 300s`           | Steam store **全站合并计数**（社区 \~200 / 5min，留 25%）                                                                                            |
 | `steam_min_interval`          | `2.0`                  | Steam 最小请求间隔（秒）。对应社区「每 1.5 秒 1 次」，再留余量                                                                                                   |
-| `max_concurrency`             | `1`                    | **并发上限，串行为默认**。高并发本身会触发 429，不要调高。**预留：代码尚未消费**                                                                                           |
 | `fetch_last_low_time`         | `true`                 | 是否用 `storelow/v2` 批量补「上次史低时间」（§3.6）。**✅ 已消费**（2026-09-23）：日常运行对当日新增批量重取，存 `game_meta.last_low_at`                 |
-| `use_steam_side_fetch`        | `false`                | 大促分流：改用 Steam 侧取 appid/好评率。**预留：实现未做，代码尚未消费**                                                                                            |
+
+> 旧键 `detail_daily_budget` / `detail_scope` / `max_concurrency` / `use_steam_side_fetch`
+> 已随重构删除（详情派生式欠账不设预算；预留键从未被消费，spec §3.1）。
 
 ***
 

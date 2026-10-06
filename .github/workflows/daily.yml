@@ -1,9 +1,9 @@
-# 每日史低日报（对应 .scratch/deploy/spec.md 与 docs/DEVELOPMENT.md §8）
+# 每日史低日报（对应 .scratch/deploy/spec.md、.scratch/refactor-2026q4/spec.md §3.6 与 docs/DEVELOPMENT.md §8）
 #
 # 入口（cron 是 UTC，GitHub 不认 timezone 字段）：
 #   14 19 * * *  每日 03:14 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
 #   21 21 * * *  每日 05:21 Asia/Shanghai  补跑：daily-guard 检测到 12h 内已有成功的定时主任务则跳过
-#   14 7 * * *   每日 15:14 Asia/Shanghai  预抓：run.py --prefetch，只补详情缓存、不出报表（批 B）
+#   14 7 * * *   每日 15:14 Asia/Shanghai  预抓：run.py --prefetch，纯 state 派生补详情缓存、不出报表（S8 起不扫描折扣列表）
 #   14 7 2 * *   每月 2 日 15:14           orphan 清理：把 data 分支历史清零（只留当前一版）
 #   workflow_dispatch                    手动触发：主任务与预抓都跑（并发组串行排队）
 #
@@ -19,6 +19,18 @@
 #   3. runner 无持久磁盘 → 状态 JSON 提交回 data 分支
 #   4. main 的 .gitignore 直接整体忽略 data/（状态由 data 分支持有，不再依赖取反写法）
 #
+# S8（2026-10）在本文件落地的项（spec §3.6「S8 修订」）：
+#   ① timeout-minutes：主跑 90 · 预抓 60 · guard 5 · 清理 10 · 告警 5（此前吃默认 360 分钟）
+#   ② 失败自动开 GitHub Issue（alert job，按 run.py 退出码分级，同日同因去重）
+#   ③ run.py 写 $GITHUB_STEP_SUMMARY 指标表 + 阶段墙钟（见 run.py）
+#   ④ permissions 顶层清零、按 job 最小化
+#   ⑤ data 回写 push 前 pull --rebase（抽进 composite action，probe.yml 同款语义）
+#   ⑥ daily/prefetch 的状态恢复与回写重复块抽成 .github/actions/{state-restore,data-writeback}
+#   ⑦ actions 全部升到 Node 24 运行时的当前主版本（Node 20 已于 2026-09-23 退役）
+#   报表发布韧性（Q3）：「打包报表 / 发布 Pages」用 always() + hashFiles 兜底——
+#   run.py 详情阶段失败（退出码 5）时首版报表照常发布，页面永远可见；失败 run 不计
+#   guard 的「成功定时 daily」，05:21 补跑照常重试详情，成功后完整版覆盖发布。
+#
 # 每月 2 日的 14 7 UTC，预抓与 orphan 清理会同时命中：二者都进 state-write 并发组串行排队，
 # 且 orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
 
@@ -32,11 +44,8 @@ on:
     - cron: "14 7 2 * *"
   workflow_dispatch: {}
 
-permissions:
-  contents: write
-  pages: write
-  id-token: write
-  actions: read
+# 顶层清零，各 job 显式申请最小权限（S8 ④）
+permissions: {}
 
 # 主任务与预抓都写 data 分支，串行排队防并发写坏状态
 concurrency:
@@ -50,6 +59,9 @@ jobs:
     # 抓取（约 130 次 ITAD 请求 + Pages 发布）。
     if: github.event.schedule == '21 21 * * *'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read        # gh run list 查近 12h 的运行记录
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
@@ -88,39 +100,32 @@ jobs:
           needs.daily-guard.outputs.skip == 'false')
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write      # 状态回写 data 分支
+      pages: write         # Pages 发布
+      id-token: write      # deploy-pages 的 OIDC
+    outputs:
+      run_exit_code: ${{ steps.run_daily.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 取出 data 分支（状态库持久层）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: data
           path: statedata
+          # S8 review P1-3：回写要跑 pull --rebase，浅克隆（默认 depth=1）rebase
+          # 遇远端推进可能缺基线对象；data 分支每月 orphan 清零，全量深度可控
+          fetch-depth: 0
 
       - name: 恢复状态文件
-        run: |
-          mkdir -p data
-          if [ -f statedata/data/state.json ]; then
-            cp statedata/data/state.json data/state.json
-            echo "状态库 $(wc -c < data/state.json) 字节"
-          else
-            echo "data 分支无状态文件，按空库起步"
-          fi
-          # 动态重要数据（重构 S6）：reviews/stats/失败簿记，缺失按空起步（可重抓自愈）
-          if [ -f statedata/data/dynamic.json ]; then
-            cp statedata/data/dynamic.json data/dynamic.json
-            echo "动态库 $(wc -c < data/dynamic.json) 字节"
-          fi
-          # 可重建缓存（重构 S4）：缺失不报错，丢了重拉
-          if [ -f statedata/data/cache.json ]; then
-            cp statedata/data/cache.json data/cache.json
-            echo "缓存库 $(wc -c < data/cache.json) 字节"
-          fi
+        uses: ./.github/actions/state-restore
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -131,58 +136,56 @@ jobs:
         run: cp config.example.json config.json
 
       - name: 日常抓取与报表
+        id: run_daily
         env:
           ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
-        run: python run.py
+        # 捕获 run.py 退出码再原样上抛：0 成功 · 1 未预期 · 2 配置 · 3 封禁 ·
+        # 4 请求失败（仅报表产出前） · 5 详情阶段失败（首版已兜底）
+        run: |
+          set +e
+          python run.py
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
 
       - name: Pages 配置
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: 打包报表
-        uses: actions/upload-pages-artifact@v3
+        id: package
+        # S8 报表发布韧性：run.py 详情阶段失败（退出码 5）时，output/ 里已有
+        # 步骤 5 的首版报表 → 照常打包发布（页面永远可见）。用 !cancelled()
+        # 而非 always()（review-s8 P1-2）：手动取消 / 超时连带取消时发布
+        # 半成品没有意义；只有「连首版都没渲染出来」（列表阶段就挂了）才没有
+        # artifact 可传。
+        if: ${{ !cancelled() && hashFiles('output/index.html') != '' }}
+        uses: actions/upload-pages-artifact@v5
         with:
           path: output
 
       - name: 发布 Pages（必须在同一次运行内，§8 坑 1）
         id: deployment
-        uses: actions/deploy-pages@v4
+        if: ${{ !cancelled() && steps.package.conclusion == 'success' }}
+        uses: actions/deploy-pages@v5
 
       - name: 状态回写 data 分支（§8 坑 3）
+        # 这里保留 always()（与打包/发布的 !cancelled() 有意不同）：取消场景下
+        # 已攒库/已抓一半的状态写回去，下一轮断点续传受益（fetch_details 本就
+        # 按 DETAIL_SAVE_EVERY 周期落盘）。
         if: always() && hashFiles('data/state.json') != ''
-        run: |
-          cd statedata
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p data
-          cp ../data/state.json data/state.json
-          git add data/state.json
-          # 动态重要数据（重构 S6）：与 state 同一份保存，存在才提交
-          if [ -f ../data/dynamic.json ]; then
-            cp ../data/dynamic.json data/dynamic.json
-            git add data/dynamic.json
-          fi
-          # 可重建缓存（重构 S4）：与 state 同一份保存，存在才提交
-          if [ -f ../data/cache.json ]; then
-            cp ../data/cache.json data/cache.json
-            git add data/cache.json
-          fi
-          # 快照文件可能不存在（渲染阶段失败），存在才提交
-          if [ -f ../data/expiring.json ]; then
-            cp ../data/expiring.json data/expiring.json
-            git add data/expiring.json
-          fi
-          if git diff --cached --quiet; then
-            echo "状态无变化，跳过提交"
-          else
-            git commit -m "state + snapshot $(date -u +%F)"
-            git push
-          fi
+        uses: ./.github/actions/data-writeback
+        with:
+          message: "state + snapshot $(date -u +%F)"
 
   cleanup-data-branch:
     if: github.event.schedule == '14 7 2 * *'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write      # force-push 重置 data 分支
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: data
 
@@ -197,39 +200,28 @@ jobs:
 
   prefetch:
     # 批 B 预抓（.scratch/prefetch/spec.md R2）：15:14 Asia/Shanghai 补详情缓存，
-    # 只写 state 不出报表；与主任务错开，防并发写坏 state.json
+    # 只写 state 不出报表；与主任务错开，防并发写坏 state.json。
+    # S8 起**纯 state 派生**：不扫描折扣列表（省 ~27 次 ITAD/天），目标 =
+    # 当日新增 ∪ 折扣活跃欠账 ∪ unlisted 重判 ∪ 只缺中文名，公式与主跑一致。
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 7 * * *'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write      # 状态回写 data 分支
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 取出 data 分支（状态库持久层）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: data
           path: statedata
+          fetch-depth: 0   # 回写含 pull --rebase，同 daily（review-s8 P1-3）
 
       - name: 恢复状态文件
-        run: |
-          mkdir -p data
-          if [ -f statedata/data/state.json ]; then
-            cp statedata/data/state.json data/state.json
-            echo "状态库 $(wc -c < data/state.json) 字节"
-          else
-            echo "data 分支无状态文件，按空库起步"
-          fi
-          # 动态重要数据（重构 S6）：reviews/stats/失败簿记，缺失按空起步（可重抓自愈）
-          if [ -f statedata/data/dynamic.json ]; then
-            cp statedata/data/dynamic.json data/dynamic.json
-            echo "动态库 $(wc -c < data/dynamic.json) 字节"
-          fi
-          # 可重建缓存（重构 S4）：缺失不报错，丢了重拉
-          if [ -f statedata/data/cache.json ]; then
-            cp statedata/data/cache.json data/cache.json
-            echo "缓存库 $(wc -c < data/cache.json) 字节"
-          fi
+        uses: ./.github/actions/state-restore
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -246,26 +238,73 @@ jobs:
 
       - name: 状态回写 data 分支（§8 坑 3）
         if: always() && hashFiles('data/state.json') != ''
+        uses: ./.github/actions/data-writeback
+        with:
+          message: "state (prefetch) $(date -u +%F)"
+
+  alert:
+    # S8 ②：任一 job 失败自动开 Issue（自包含、可追溯）。同一天同失败组合
+    # 只开一个（按标题去重），避免连跑连开。
+    # ⚠️ 只判 result == 'failure'，cancelled（手动取消 / 超时连带）不告警是有意的：
+    # 取消是人主动行为或已被 timeout 说明，开 Issue 只会噪音（review-s8 P1-2 注）。
+    needs: [daily-guard, daily, prefetch, cleanup-data-branch]
+    if: >-
+      always() && (
+        needs.daily-guard.result == 'failure' ||
+        needs.daily.result == 'failure' ||
+        needs.prefetch.result == 'failure' ||
+        needs.cleanup-data-branch.result == 'failure'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: 汇总失败 job 与退出码
+        id: summary
+        env:
+          GUARD: ${{ needs.daily-guard.result }}
+          DAILY: ${{ needs.daily.result }}
+          PREFETCH: ${{ needs.prefetch.result }}
+          CLEANUP: ${{ needs.cleanup-data-branch.result }}
+          RUN_CODE: ${{ needs.daily.outputs.run_exit_code }}
         run: |
-          cd statedata
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p data
-          cp ../data/state.json data/state.json
-          git add data/state.json
-          # 动态重要数据（重构 S6）：与 state 同一份保存，存在才提交
-          if [ -f ../data/dynamic.json ]; then
-            cp ../data/dynamic.json data/dynamic.json
-            git add data/dynamic.json
+          failed=""
+          for pair in "daily-guard ${GUARD}" "daily ${DAILY}" "prefetch ${PREFETCH}" "cleanup-data-branch ${CLEANUP}"; do
+            set -- $pair
+            if [ "$2" = "failure" ]; then failed="$failed $1"; fi
+          done
+          echo "jobs=$failed" >> "$GITHUB_OUTPUT"
+          echo "title=每日运行失败 $(date -u +%F)：$failed" >> "$GITHUB_OUTPUT"
+          if [ -n "$RUN_CODE" ] && [ "$RUN_CODE" != "0" ]; then
+            echo "code_line=run.py 退出码 \`$RUN_CODE\`" >> "$GITHUB_OUTPUT"
           fi
-          # 可重建缓存（重构 S4）：与 state 同一份保存，存在才提交
-          if [ -f ../data/cache.json ]; then
-            cp ../data/cache.json data/cache.json
-            git add data/cache.json
+
+      - name: 开 Issue（当天同标题已开则跳过）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.summary.outputs.title }}
+          FAILED_JOBS: ${{ steps.summary.outputs.jobs }}
+          CODE_LINE: ${{ steps.summary.outputs.code_line }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_CRON: ${{ github.event.schedule }}
+        run: |
+          if [ -n "$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq 'length')" ]; then
+            echo "今天已有同因失败 Issue（$TITLE），跳过重复创建"
+            exit 0
           fi
-          if git diff --cached --quiet; then
-            echo "状态无变化，跳过提交"
-          else
-            git commit -m "state (prefetch) $(date -u +%F)"
-            git push
-          fi
+          {
+            echo "自动告警（S8 ②）：本次运行有 job 失败。"
+            echo
+            echo "- 运行：$RUN_URL"
+            echo "- 触发：\`$EVENT_NAME\`$([ -n "$EVENT_CRON" ] && echo "（cron \`$EVENT_CRON\`）")"
+            echo "- 失败 job：$FAILED_JOBS"
+            [ -n "$CODE_LINE" ] && echo "- $CODE_LINE"
+            echo
+            echo "退出码口径：0 成功 · 1 未预期 · 2 配置 · 3 滥用封禁 · 4 请求失败（**仅报表产出前**，页面没更新）· **5 详情/覆盖阶段失败**（含请求失败；页面已兜底发布首版，欠账由下一轮派生自愈，无需人工救数据）"
+            echo
+            echo "排查指引：看上面运行里各 job 的 conclusion；\`daily-guard\` 失败会连坐补跑路径；"
+            echo "\`guard 判 skip\` 是设计行为（补跑 cron 场次 12h 窗口），不会触发本告警。"
+          } > body.md
+          gh issue create --title "$TITLE" --body-file body.md

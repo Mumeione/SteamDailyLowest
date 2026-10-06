@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +55,43 @@ def progress_log(pages: int, total: int) -> None:
     """翻页进度：只在第 1 页与每 10 页打一行（全量口径有 162 页）。"""
     if pages == 1 or pages % 10 == 0:
         log(f"      翻页 {pages}：累计 {total} 条")
+
+
+class StageClock:
+    """阶段墙钟（S8 可观测性）：累计各阶段耗时，汇成一行日志 + step summary。"""
+
+    def __init__(self) -> None:
+        self._t0 = time.monotonic()
+        self._marks: dict[str, float] = {}
+        self._last = self._t0
+
+    def mark(self, name: str) -> None:
+        """当前阶段计一段（从上次 mark 到现在的耗时归到 name）。"""
+        now = time.monotonic()
+        self._marks[name] = self._marks.get(name, 0.0) + now - self._last
+        self._last = now
+
+    def total(self) -> float:
+        return time.monotonic() - self._t0
+
+    def line(self) -> str:
+        parts = [f"{name} {sec:.0f}s" for name, sec in self._marks.items() if sec >= 1]
+        parts.append(f"总计 {self.total():.0f}s")
+        return " · ".join(parts)
+
+
+def write_step_summary(title: str, rows: list[tuple[str, object]]) -> None:
+    """往 ``$GITHUB_STEP_SUMMARY`` 追加一张关键指标表（非 Actions 环境静默跳过）。"""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"\n## {title}\n\n| 指标 | 值 |\n|---|---|\n")
+            for key, val in rows:
+                fh.write(f"| {key} | {val} |\n")
+    except OSError as exc:
+        log(f"[warn] 运行摘要写入失败：{exc}")
 
 
 def build_client(cfg: dict) -> ItadClient:
@@ -232,15 +271,34 @@ def detail_targets(candidates: list[dict], state: State,
     }
 
 
-def count_backlog(hist_low: list[dict], state: State, cfg: dict, now: datetime) -> int:
+def latest_entries(state: State) -> list[dict]:
+    """每个 game_id 取最近出现的一条 seen_deal（多版本折扣去重）。
+
+    供无本轮扫描的场合使用（S8 起 prefetch 不再扫折扣列表，条目池直接来自
+    状态库）；daily 仍传本轮 hist_low，与视图口径保持一致。
+    """
+    latest: dict[str, dict] = {}
+    for entry in state.seen_deal.values():
+        gid = entry.get("game_id")
+        if not gid:
+            continue
+        prev = latest.get(gid)
+        if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
+            latest[gid] = entry
+    return list(latest.values())
+
+
+def count_backlog(entries: list[dict], state: State, cfg: dict, now: datetime) -> int:
     """目录里还有多少条没详情（给页面显示增量补齐的进度）。
 
     S6 口径：只数**会真正派生为目标**的条目（折扣活跃 / 当日新增 / 重判），
     非折扣期与 unlisted 冻结条目不再计入 —— 33,891 条 game_meta 存量里
     大部分是非折扣期条目，按旧口径数会虚高且永远清不掉。
+    条目池 ``entries`` 由调用方给：daily 传本轮 hist_low；prefetch 传
+    :func:`latest_entries`（S8 起 prefetch 无本轮列表）。
     """
     return sum(
-        1 for e in hist_low
+        1 for e in entries
         if e.get("game_id") and entry_needs_detail(
             e, state, cfg, now, is_new=_is_new_today(e, now))
     )
@@ -771,6 +829,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
 
     state = State(resolve_path(cfg, "state_path"), tz=tz).load()
     client = build_client(cfg)
+    clock = StageClock()
 
     mode_label = "体检 --audit" if audit else "日常运行"
     total_steps = 3 if audit else 7
@@ -785,6 +844,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     if audit:
         items, normalized = collect(cfg, client, sweep)
         deals_fetched = len(items)
+        clock.mark("列表抓取")
         log(f"[2/{total_steps}] 抓取折扣列表：{deals_fetched} 条（口径 {sweep}）")
         result = funnel(normalized, cfg)
         counts = result["counts"]
@@ -813,10 +873,12 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         state.save(now)
         log(f"      体检完成：未取详情、未产出报表。ITAD 请求 {client.calls} 次，"
             f"状态库已写入 {resolve_path(cfg, 'state_path')}")
+        log(f"      ⏱ {clock.line()}")
         return 0
 
     items, normalized = collect(cfg, client, sweep)
     deals_fetched = len(items)
+    clock.mark("列表抓取")
     log(f"[2/{total_steps}] 抓取折扣列表：{deals_fetched} 条（口径 {sweep}）")
 
     result = funnel(normalized, cfg)
@@ -872,111 +934,145 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     first = render_pass(state, candidates, cfg, now, stats_of(0, count_backlog(hist_low, state, cfg, now)),
                         announce_merges=False, fx=fx_rates, upcoming=upcoming_entries,
                         all_entries=hist_low)
+    clock.mark("筛选攒库与首版渲染")
     log(f"[5/{total_steps}] 首版报表已生成（缺详情的标「详情待补」，页面立刻可看）："
         f"{first['paths']['index']}；全部视图数据 {first.get('all_shown', 0)} 条")
 
-    # ---- 慢的部分放最后 ----
-    detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse_client)
-    detail_fetched = detail_stats["fetched"]
-    state.save(now)
-    # ---- 分档落库（S6 决策 17）：达标转正常，不达标打 unlisted 并丢动态数据 ----
-    listing = apply_listing(state, targets, cfg, now)
-    if listing["unlisted"] or listing["relisted"]:
-        log(f"      分档落库：新标记未入列表 {listing['unlisted']} 个"
-            f" · 翻案转正常 {listing['relisted']} 个")
-    state.save(now)
-    backlog = count_backlog(hist_low, state, cfg, now)
-    log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个（目标 {len(targets)} 个；"
-        f"GetItems 批量 {detail_stats['fetched'] - detail_stats['fallback_fetched']}"
-        f" + info/v2 降级 {detail_stats['fallback_fetched']}"
-        f"{' ，预算截断 ' + str(detail_stats['fallback_skipped']) + ' 条' if detail_stats['fallback_skipped'] else ''}）；"
-        f"目录还差 {backlog} 条")
-
-    # ---- 上次史低时间（§3.6）：批量接口，当日新增 + 即将过期每轮重取 ----
-    low_time_fetched = fetch_last_low_times(client, state, candidates + upcoming_entries, cfg, now)
-    if low_time_fetched:
+    # ---- 慢的部分放最后（S8 ⑨：详情/覆盖阶段失败不吞 —— 首版报表已在 output/，
+    #      workflow 用 always() 兜底发布；退出码 5 供告警分级，欠账由下一轮派生自愈）----
+    try:
+        detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse_client)
+        detail_fetched = detail_stats["fetched"]
         state.save(now)
-    total_low_ids = len({e.get("game_id") for e in candidates + upcoming_entries if e.get("game_id")})
-    log(f"      上次史低时间：批量补 {low_time_fetched}/{total_low_ids} 条"
-        f"（当日新增 {len(candidates)} + 即将过期 {len(upcoming_entries)}，storelow/v2）")
+        # ---- 分档落库（S6 决策 17）：达标转正常，不达标打 unlisted 并丢动态数据 ----
+        listing = apply_listing(state, targets, cfg, now)
+        if listing["unlisted"] or listing["relisted"]:
+            log(f"      分档落库：新标记未入列表 {listing['unlisted']} 个"
+                f" · 翻案转正常 {listing['relisted']} 个")
+        state.save(now)
+        backlog = count_backlog(hist_low, state, cfg, now)
+        log(f"[6/{total_steps}] 取详情：新抓 {detail_fetched} 个（目标 {len(targets)} 个；"
+            f"GetItems 批量 {detail_stats['fetched'] - detail_stats['fallback_fetched']}"
+            f" + info/v2 降级 {detail_stats['fallback_fetched']}"
+            f"{' ，预算截断 ' + str(detail_stats['fallback_skipped']) + ' 条' if detail_stats['fallback_skipped'] else ''}）；"
+            f"目录还差 {backlog} 条")
+        clock.mark("详情")
 
-    def do_enrich(shown: list[dict], upcoming_shown: list[dict], info: dict) -> dict:
-        facts = enrich.enrich_steam(steam_client, state, shown, cfg, fx_rates, now, log,
-                                    upcoming=upcoming_shown)
-        log(f"      中文名：新取 {facts['title_fetched']} 个 · 命中缓存 {facts['title_cached']} 个"
-            f"；跨区比价批量 {facts['compare_batches']} 次"
-            f"（现价真查 {facts['compare_fetched']} 个 · 重定价校准 {facts['compare_repriced']} 次）"
-            + (f"；Steam 请求合计 {steam_client.calls} 次" if steam_client.calls else ""))
-        if facts["price_mismatch"]:
-            for item in facts["price_mismatch"]:
-                log(f"      [warn] 国区价对不上：{item['title']} "
-                    f"ITAD={item['itad_price_int']} Steam={item['steam_price_int']}")
-        return facts
+        # ---- 上次史低时间（§3.6）：批量接口，当日新增 + 即将过期每轮重取 ----
+        low_time_fetched = fetch_last_low_times(client, state, candidates + upcoming_entries, cfg, now)
+        if low_time_fetched:
+            state.save(now)
+        total_low_ids = len({e.get("game_id") for e in candidates + upcoming_entries if e.get("game_id")})
+        log(f"      上次史低时间：批量补 {low_time_fetched}/{total_low_ids} 条"
+            f"（当日新增 {len(candidates)} + 即将过期 {len(upcoming_entries)}，storelow/v2）")
 
-    final = render_pass(state, candidates, cfg, now, stats_of(detail_fetched, backlog),
-                        announce_merges=True, enrich_hook=do_enrich, fx=fx_rates,
-                        upcoming=upcoming_entries, all_entries=hist_low)
-    log(f"[7/{total_steps}] 完整版报表已覆盖：进列表 {final['shown']} 条（分档 {final['tier']}）"
-        f"；即将过期进列表 {final['upcoming_shown']} 条；全部视图数据 {final.get('all_shown', 0)} 条")
+        def do_enrich(shown: list[dict], upcoming_shown: list[dict], info: dict) -> dict:
+            facts = enrich.enrich_steam(steam_client, state, shown, cfg, fx_rates, now, log,
+                                        upcoming=upcoming_shown)
+            log(f"      中文名：新取 {facts['title_fetched']} 个 · 命中缓存 {facts['title_cached']} 个"
+                f"；跨区比价批量 {facts['compare_batches']} 次"
+                f"（现价真查 {facts['compare_fetched']} 个 · 重定价校准 {facts['compare_repriced']} 次）"
+                + (f"；Steam 请求合计 {steam_client.calls} 次" if steam_client.calls else ""))
+            if facts["price_mismatch"]:
+                for item in facts["price_mismatch"]:
+                    log(f"      [warn] 国区价对不上：{item['title']} "
+                        f"ITAD={item['itad_price_int']} Steam={item['steam_price_int']}")
+            return facts
 
-    errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
-    state.add_run_log(
-        {
-            "run_at": now.isoformat(timespec="seconds"),
-            "mode": "daily",
-            "sweep": sweep,
-            "deals_fetched": deals_fetched,
-            "itad_requests": client.calls,
-            "steam_requests": steam_client.calls,
-            "filtered": counts,
-            "new_by_reason": by_reason,
-            "new_today_raw": len(candidates),
-            "new_today_shown": final["shown"],
-            "upcoming_raw": len(upcoming_entries),
-            "upcoming_shown": final["upcoming_shown"],
-            "detail_pipeline": "derived-batch",
-            "detail_targets": len(targets),
-            "detail_new_today": target_info["new_today"],
-            "detail_derived_backlog": target_info["backlog"],
-            "detail_rejudge": target_info["rejudge"],
-            "detail_unlisted_marked": listing["unlisted"],
-            "detail_relisted": listing["relisted"],
-            "detail_fetched": detail_fetched,
-            "detail_fallback_fetched": detail_stats["fallback_fetched"],
-            "detail_fallback_skipped": detail_stats["fallback_skipped"],
-            "detail_backlog": backlog,
-            "last_low_fetched": low_time_fetched,
-            "detail_pending": final["tier"].get(classify.TIER_PENDING, 0),
-            "title_zh_fetched": (final.get("steam") or {}).get("title_fetched", 0),
-            "title_zh_cached": (final.get("steam") or {}).get("title_cached", 0),
-            "compare_repriced": (final.get("steam") or {}).get("compare_repriced", 0),
-            "compare_fetched": (final.get("steam") or {}).get("compare_fetched", 0),
-            "price_mismatch": (final.get("steam") or {}).get("price_mismatch") or [],
-            "deduped_versions": len(final["deduped"]),
-            "tier": final["tier"],
-            "fx": {"date": (fx_rates or {}).get("date"), "base": (fx_rates or {}).get("base")},
-            "limiter": client.limiter.stats(),
-            "steam_limiter": steam_client.limiter.stats(),
-            "steam_browse_limiter": browse_client.limiter.stats(),
-            "errors": errors + [e for e in steam_client.events
-                                if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
-            + [e for e in browse_client.events
-               if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")],
-        },
-        keep=int(cfg.get("run_log_keep", 30)),
-    )
-    state.save(now)
-    log(f"      ITAD 请求 {client.calls} 次（限流事件 {client.rate_limit_events}）· "
-        f"Steam 请求 {steam_client.calls} 次（限流事件 {steam_client.rate_limit_events}）· "
-        f"状态库已写入 {resolve_path(cfg, 'state_path')}")
+        final = render_pass(state, candidates, cfg, now, stats_of(detail_fetched, backlog),
+                            announce_merges=True, enrich_hook=do_enrich, fx=fx_rates,
+                            upcoming=upcoming_entries, all_entries=hist_low)
+        log(f"[7/{total_steps}] 完整版报表已覆盖：进列表 {final['shown']} 条（分档 {final['tier']}）"
+            f"；即将过期进列表 {final['upcoming_shown']} 条；全部视图数据 {final.get('all_shown', 0)} 条")
 
-    # ---- 即将过期快照：给外部数据管道消费，落 data 分支 ----
-    # 放在 state.save 之后：快照是可重建的衍生品，其 IO 失败不能连累本轮攒库落盘（§12.1）
-    snapshot_path = resolve_path(cfg, "expiring_snapshot_path")
-    snapshot_count = snapshot.write_snapshot(
-        snapshot_path, final["upcoming_shown_items"], now, cfg, fx=fx_rates,
-    )
-    log(f"      即将过期快照已写出：{snapshot_count} 条 → {snapshot_path}")
+        errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+        state.add_run_log(
+            {
+                "run_at": now.isoformat(timespec="seconds"),
+                "mode": "daily",
+                "sweep": sweep,
+                "deals_fetched": deals_fetched,
+                "itad_requests": client.calls,
+                "steam_requests": steam_client.calls,
+                "filtered": counts,
+                "new_by_reason": by_reason,
+                "new_today_raw": len(candidates),
+                "new_today_shown": final["shown"],
+                "upcoming_raw": len(upcoming_entries),
+                "upcoming_shown": final["upcoming_shown"],
+                "detail_pipeline": "derived-batch",
+                "detail_targets": len(targets),
+                "detail_new_today": target_info["new_today"],
+                "detail_derived_backlog": target_info["backlog"],
+                "detail_rejudge": target_info["rejudge"],
+                "detail_unlisted_marked": listing["unlisted"],
+                "detail_relisted": listing["relisted"],
+                "detail_fetched": detail_fetched,
+                "detail_fallback_fetched": detail_stats["fallback_fetched"],
+                "detail_fallback_skipped": detail_stats["fallback_skipped"],
+                "detail_backlog": backlog,
+                "last_low_fetched": low_time_fetched,
+                "detail_pending": final["tier"].get(classify.TIER_PENDING, 0),
+                "title_zh_fetched": (final.get("steam") or {}).get("title_fetched", 0),
+                "title_zh_cached": (final.get("steam") or {}).get("title_cached", 0),
+                "compare_repriced": (final.get("steam") or {}).get("compare_repriced", 0),
+                "compare_fetched": (final.get("steam") or {}).get("compare_fetched", 0),
+                "price_mismatch": (final.get("steam") or {}).get("price_mismatch") or [],
+                "deduped_versions": len(final["deduped"]),
+                "tier": final["tier"],
+                "fx": {"date": (fx_rates or {}).get("date"), "base": (fx_rates or {}).get("base")},
+                "limiter": client.limiter.stats(),
+                "steam_limiter": steam_client.limiter.stats(),
+                "steam_browse_limiter": browse_client.limiter.stats(),
+                "errors": errors + [e for e in steam_client.events
+                                    if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+                + [e for e in browse_client.events
+                   if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")],
+            },
+            keep=int(cfg.get("run_log_keep", 30)),
+        )
+        state.save(now)
+        log(f"      ITAD 请求 {client.calls} 次（限流事件 {client.rate_limit_events}）· "
+            f"Steam 请求 {steam_client.calls} 次（限流事件 {steam_client.rate_limit_events}）· "
+            f"状态库已写入 {resolve_path(cfg, 'state_path')}")
+        clock.mark("完整渲染")
+
+        # ---- 即将过期快照：给外部数据管道消费，落 data 分支 ----
+        # 放在 state.save 之后：快照是可重建的衍生品，其 IO 失败不能连累本轮攒库落盘（§12.1）
+        snapshot_path = resolve_path(cfg, "expiring_snapshot_path")
+        snapshot_count = snapshot.write_snapshot(
+            snapshot_path, final["upcoming_shown_items"], now, cfg, fx=fx_rates,
+        )
+        log(f"      即将过期快照已写出：{snapshot_count} 条 → {snapshot_path}")
+        clock.mark("快照")
+    except Blocked:
+        raise   # 详情阶段撞滥用封禁按严重级处理：交 main 记退出码 3，不按「详情失败」降级（S8 ⑨）
+    except Exception:
+        # ⚠️ 语义口径（review-s8 P1-1 裁决）：详情/覆盖阶段的**任何**失败——包括
+        # HttpError——都记 5。4 与 5 的本质区分是「首版报表是否已产出兜底」：
+        # 4 = 报表产出前的请求失败（页面没更新）；5 = 页面已兜底、欠账下轮自愈。
+        # 若把详情期 HttpError 记 4，退出码 4 就同时涵盖两种相反的页面状态，判别力更差。
+        log("[错误] 详情/覆盖阶段失败 —— 首版报表仍在 output/ 兜底，Pages 照常发布；"
+            "欠账由下一轮派生自愈（退出码 5）：")
+        log(traceback.format_exc())
+        write_step_summary("日常运行（详情/覆盖阶段失败）", [
+            ("结果", "详情/覆盖阶段失败；首版报表兜底发布，欠账下轮自愈"),
+            ("本轮攒库", f"{len(hist_low)} 条史低已落盘"),
+        ])
+        return 5
+
+    log(f"      ⏱ {clock.line()}")
+    write_step_summary("日常运行摘要", [
+        ("抓取口径", sweep),
+        ("折扣列表", f"{deals_fetched} 条"),
+        ("当日新增（进列表）", final["shown"]),
+        ("即将过期（进列表）", final["upcoming_shown"]),
+        ("详情目标 / 新抓", f"{len(targets)} / {detail_fetched}"),
+        ("目录欠账", backlog),
+        ("ITAD 请求", client.calls),
+        ("Steam 请求", steam_client.calls + browse_client.calls),
+        ("阶段耗时", clock.line()),
+    ])
     return 0
 
 
@@ -1039,36 +1135,41 @@ def _start_key(entry: dict) -> datetime:
     return parsed
 
 
-def prefetch_targets(hist_low: list[dict], state: State, cfg: dict, now: datetime) -> tuple[list[dict], dict]:
-    """批 B 预抓目标（.scratch/prefetch/spec.md R1）。
+def prefetch_targets(state: State, cfg: dict, now: datetime,
+                     pool: list[dict] | None = None) -> tuple[list[dict], dict]:
+    """批 B 预抓目标（S8 去 list 化）：**纯状态库派生**，不再扫描折扣列表。
 
-    与日常 `detail_targets` 的两个差别：
+    与日常 :func:`detail_targets` 同一公式（当日新增 ∪ 折扣活跃欠账 ∪ unlisted
+    重判），差别在三点：
 
-    1. **顺序 = 最近出现在史低的优先**（spec 定稿口径）：按当前折扣的开始时间
-       `start`（即 deal.timestamp）降序 —— 刚进史低的最可能被人看到；
-       没有时间戳的排最后。
-    2. **预算独立**：用 `prefetch_daily_budget`（默认 300）——日常详情已不设预算
-       （重构 S2），预抓是**提前几小时**补缓存的轻量轮，保留小预算压请求量；
-       `0` = 关闭预抓。
+    1. 当日新增的来源从「本轮扫描的 candidates」换成「seen_deal 里今天
+       首见/开折的条目」—— prefetch 跑在主跑之后，当天条目已由主跑攒库；
+    2. 顺序 = 最近出现在史低的优先（``start`` 绝对时刻降序，prefetch spec R1）；
+    3. 独立预算 ``prefetch_daily_budget`` 截断（``0`` = 关闭预抓）。
 
-    「缺数据」= 需要发详情请求（:func:`entry_needs_detail`，S6 折扣感知口径：
-    折扣活跃 / 当日新增 / unlisted 重判，非折扣期与冻结条目跳过）**或**
-    已有详情但缺中文名（两条独立缓存，§2.5；unlisted 冻结条目跳过 ——
-    不进列表的游戏补中文名没有消费方）。调用前须已 `record_seen`。
+    预抓特有的一类目标是**只缺中文名**的条目（详情达标但 GetItems 没给名，
+    两条独立缓存），走 Steam 逐游戏补 —— detail_targets 不含这类。
+    03:14 主跑之后新上架的折扣不在 state 里，由次日主跑覆盖（CONTEXT.md「预抓」）。
+    ``pool`` 可传 :func:`latest_entries` 结果复用（run_prefetch 里 count_backlog
+    也要用同一份，省一次全量遍历，review-s8 P2）。
     """
     budget = int(cfg.get("prefetch_daily_budget", 300) or 0)
 
-    need: list[dict] = []
-    for entry in hist_low:
-        game_id = entry.get("game_id")
-        if entry_needs_detail(entry, state, cfg, now, is_new=_is_new_today(entry, now)):
-            need.append(entry)
-        elif game_id and not state.unlisted(game_id) \
-                and state.has_appid(game_id) and not state.title_zh(game_id):
-            need.append(entry)
+    latest = pool if pool is not None else latest_entries(state)
+    candidates = [e for e in latest if _is_new_today(e, now)]
+    targets, info = detail_targets(candidates, state, cfg, now)
+
+    need = list(targets)
+    have = {e.get("game_id") for e in need}
+    for entry in latest:
+        gid = entry.get("game_id")
+        if not gid or gid in have or state.unlisted(gid):
+            continue
+        if state.has_appid(gid) and not state.title_zh(gid):
+            need.append({**entry, "_scope": "title"})
     need.sort(key=_start_key, reverse=True)
-    targets = need[:max(0, budget)]
-    return targets, {"budget": budget, "needed": len(need), "chosen": len(targets)}
+    chosen = need[:max(0, budget)]
+    return chosen, {**info, "budget": budget, "chosen": len(chosen)}
 
 
 def run_prefetch(cfg: dict, *, state: State | None = None,
@@ -1078,11 +1179,12 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
                  log: Callable[[str], None] = log) -> int:
     """批 B 预抓（.scratch/prefetch/spec.md R1）：只补缓存，**不出报表**。
 
-    与日常同一套筛选（collect + funnel）；对缺数据的条目按「最近出现在史低的优先」
+    与日常同一套**欠账公式**（S8 去 list 化：不再 collect + funnel 扫折扣列表，
+    目标纯 state 派生，见 :func:`prefetch_targets`）；按「最近出现在史低的优先」
     用独立预算 `prefetch_daily_budget` 补齐：
 
     1. 缺 appid / 好评率 → 复用日常的批量详情管线 :func:`fetch_details`
-       （lookup → GetItems → info/v2 降级，缓存命中不发请求）；
+       （lookup → GetItems → info/v2 降级，缓存命中不发请求，断点续传）；
     2. 缺中文名 → GetItems 已在批量详情里顺带写入；仍缺的（GetItems 无名等）
        走 Steam 逐游戏补（必须走 :mod:`src.steam`，全站合并限流 + 最小间隔 2 秒）。
 
@@ -1091,34 +1193,26 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     """
     tz = classify.zone(cfg["timezone"])
     now = datetime.now(tz)
-    sweep = resolve_sweep(cfg, audit=False)
-    if state is None:
-        state = State(resolve_path(cfg, "state_path"), tz=tz).load()
-    if client is None:
-        client = build_client(cfg)
-    if steam is None:
-        steam = build_steam_client(cfg)
-    if browse is None:
-        browse = build_steam_browse_client(cfg)
+    state = state or State(resolve_path(cfg, "state_path"), tz=tz).load()
+    client = client or build_client(cfg)
+    steam = steam or build_steam_client(cfg)
+    browse = browse or build_steam_browse_client(cfg)
+    clock = StageClock()
 
     log("=" * 70)
     log(f"SteamDailyLowest 预抓 --prefetch {now.isoformat(timespec='seconds')}"
-        f"（时区 {cfg['timezone']}，抓取口径 {sweep}）")
+        f"（时区 {cfg['timezone']}，纯 state 派生，不扫描折扣列表）")
     log("=" * 70)
 
     dropped = state.cleanup_expired(now, int(cfg["expired_retention_days"]))
-    items, normalized = collect(cfg, client, sweep)
-    result = funnel(normalized, cfg)
-    hist_low = result["hist_low"]
-    log(f"抓取 {len(items)} 条，史低 {len(hist_low)} 条，留存清理 {dropped} 条")
+    state.save(now)  # 先落盘：详情阶段的失败不带走清理结果（§3.3 同款思路）
+    log(f"留存清理：删除过期超过 {cfg['expired_retention_days']} 天的条目 {dropped} 条")
 
-    for entry in hist_low:
-        state.record_seen(entry, now)
-    state.save(now)  # 先落盘：详情阶段的失败不带走这一轮的攒库（§3.3）
-
-    targets, target_info = prefetch_targets(hist_low, state, cfg, now)
-    log(f"预抓目标 {target_info['chosen']} 个（缺数据 {target_info['needed']} 个，"
-        f"预算 {target_info['budget']}，顺序=最近出现在史低优先）")
+    pool = latest_entries(state)   # seen_deal 在本函数内不再变化，取一次复用（review-s8 P2）
+    targets, target_info = prefetch_targets(state, cfg, now, pool=pool)
+    log(f"预抓目标 {len(targets)} 个：当日新增 {target_info['new_today']}"
+        f" + 折扣期欠账 {target_info['backlog']} + unlisted 重判 {target_info['rejudge']}"
+        f"（预算 {target_info['budget']}，顺序=最近出现在史低优先）")
 
     # 1) 批量详情管线：lookup → GetItems → info/v2 降级（缓存命中不发请求，断点续传）
     detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse)
@@ -1153,7 +1247,7 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
             state.save(now)  # 断点续传：中途失败下次只补缺的
     state.save(now)
 
-    backlog = count_backlog(hist_low, state, cfg, now)
+    backlog = count_backlog(pool, state, cfg, now)
     log(f"预抓完成：详情新抓 {fetched} 个（info/v2 降级 {detail_stats['fallback_fetched']}）"
         f"· 中文名新取 {title_fetched} 个"
         f"（失败 {title_errors} 个，Steam 请求 {steam.calls} 次）；"
@@ -1166,15 +1260,15 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
         {
             "run_at": now.isoformat(timespec="seconds"),
             "mode": "prefetch",
-            "sweep": sweep,
-            "deals_fetched": len(items),
+            "derived_from_state": True,   # S8 起 targets 纯 state 派生，无本轮扫描
             "itad_requests": client.calls,
             "steam_requests": steam.calls,
             "steam_browse_requests": browse.calls,
-            "filtered": result["counts"],
-            "hist_low_total": len(hist_low),
             "prefetch_budget": target_info["budget"],
-            "prefetch_targets": target_info["chosen"],
+            "prefetch_targets": len(targets),
+            "detail_new_today": target_info["new_today"],
+            "detail_derived_backlog": target_info["backlog"],
+            "detail_rejudge": target_info["rejudge"],
             "detail_fetched": fetched,
             "detail_fallback_fetched": detail_stats["fallback_fetched"],
             "detail_unlisted_marked": listing["unlisted"],
@@ -1190,6 +1284,16 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     )
     state.save(now)
     log(f"状态库已写入：{resolve_path(cfg, 'state_path')}")
+    log(f"      ⏱ {clock.line()}")
+    write_step_summary("预抓运行摘要（纯 state 派生，不出报表）", [
+        ("预抓目标 / 新抓", f"{len(targets)} / {fetched}"),
+        ("unlisted 标记 / 翻案", f"{listing['unlisted']} / {listing['relisted']}"),
+        ("中文名新取", title_fetched),
+        ("目录欠账", backlog),
+        ("ITAD 请求", client.calls),
+        ("Steam 请求", steam.calls + browse.calls),
+        ("阶段耗时", clock.line()),
+    ])
     return 0
 
 
@@ -1326,13 +1430,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="体检：无 filter 全量抓取（162 页），统计完整分布与 §4.1 交叉校验，"
                              "不取详情、不出报表")
     parser.add_argument("--prefetch", action="store_true",
-                        help="预抓：同套筛选后按 prefetch_daily_budget 补详情缓存（只写 state、"
-                             "不出报表，.scratch/prefetch/spec.md R1）")
+                        help="预抓：纯 state 派生欠账（S8 起不扫描折扣列表），按 prefetch_daily_budget"
+                             " 补详情缓存（只写 state、不出报表）")
     parser.add_argument("--probe", action="store_true",
                         help="抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步），"
                              "报告写 output/probe_report.txt，只读状态库")
     parser.add_argument("--config", default=None, help="配置文件路径（默认 config.json）")
     args = parser.parse_args(argv)
+
+    # 退出码（S8 ⑨，告警按此分级）：
+    #   0 成功；1 未预期异常；2 配置错误；3 滥用封禁（Blocked）；4 请求失败（HttpError，
+    #     **仅报表产出前**——collect/低时间等阶段，页面没更新）；
+    #   5 详情/覆盖阶段失败（**含请求失败**——首版报表已产出，Pages 兜底发布，欠账自愈）。
+    #   4/5 的判别轴是「页面是否兜底」，不是异常类型（review-s8 P1-1）
 
     try:
         cfg = load_config(args.config)

@@ -66,15 +66,16 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 取出 data 分支（拿真实 appid / uuid 作探针材料，并作为报告落点）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: data
           path: statedata
+          fetch-depth: 0   # 报告回写含 pull --rebase，浅克隆 rebase 可能缺基线（review-s8 P1-3）
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -131,7 +132,7 @@ jobs:
 
       - name: 备份成 Artifact
         if: always() && hashFiles('probe_report.md') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: probe-report
           path: probe_report.md

@@ -1,0 +1,19 @@
+# 复合动作（S8 ⑥）：从 data 分支工作树恢复状态库 —— daily / prefetch 两 job 共用，
+# 消除原本逐字重复的 ~20 行恢复块。
+# 前置：已把 data 分支 checkout 到 statedata/（见 daily.yml「取出 data 分支」步骤）。
+name: '恢复状态库'
+description: '从 statedata/ 恢复 state/dynamic/cache 到 data/ 目录（缺失按空起步，可自愈）'
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      run: |
+        mkdir -p data
+        for f in state.json dynamic.json cache.json; do
+          if [ -f "statedata/data/$f" ]; then
+            cp "statedata/data/$f" "data/$f"
+            echo "$f：$(wc -c < "data/$f") 字节"
+          else
+            echo "$f 不存在，按空起步（缺失≠损坏，可重抓自愈）"
+          fi
+        done
