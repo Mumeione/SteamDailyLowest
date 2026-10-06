@@ -202,7 +202,8 @@ html, body {
 .card-summary { display: flex; gap: 14px; padding: 8px; align-items: center; cursor: pointer; }
 /* boxart 是 2:3 竖图，框跟着竖过来，不再裁切（卡片随之变高一点） */
 .thumb { width: 56px; height: 84px; flex: 0 0 56px; object-fit: cover; border-radius: 6px; background: #eceff3; }
-body.no-image .thumb { display: none; }
+/* S9-3：旧的「无图精简模式」是卡片时代的勾选框，已随 S9 退场 ——
+   新版是右下角浮动按钮 + body.compact，见文件末尾「浮动按钮 / 精简模式」一节 */
 /* S9：再把「标签行末尾的力度条」与「右侧价格列」之间单独多留一点（6px），
    否则力度条的 -95% 会和价格贴在一起 */
 .card-main { min-width: 0; flex: 1; padding-right: 6px; }
@@ -528,7 +529,7 @@ body.no-image .thumb { display: none; }
   width: 40px; height: 56px; flex: 0 0 40px; object-fit: cover;
   border-radius: 4px; background: #eceff3; display: block;
 }
-body.no-image .row-thumb { display: none; }
+/* 精简模式见文件末尾（body.compact） */
 .row-info { min-width: 0; flex: 1 1 auto; }
 .row-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-en {
@@ -624,4 +625,47 @@ body.no-image .row-thumb { display: none; }
 @media (max-width: 768px) {
   .about table.kv th { width: 88px; font-size: 12px; }
   .about table.logs { display: block; overflow-x: auto; }
+}
+
+
+/* ==================================================================
+   S9-3：浮动按钮 + 无图精简模式（refs.md C6 / C5）
+   ================================================================== */
+
+.floaters {
+  position: fixed; right: 16px; bottom: 20px; z-index: 30;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.btn-float {
+  width: 46px; height: 44px; padding: 0; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  font: inherit; font-size: 12px; line-height: 1.15; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  box-shadow: var(--shadow-card);
+  opacity: 0; visibility: hidden;
+  transition: opacity .15s ease, visibility .15s ease, background .15s ease;
+}
+.btn-float.show { opacity: 1; visibility: visible; }
+.btn-float:hover { background: #eef1f5; }
+.btn-float.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* 列表页底部的「加载更多」沿用 .pager 的居中，按钮略宽 */
+.pager .load-more { padding: 6px 16px; border-radius: 999px; }
+
+/* ---- 无图精简模式（用户原话：封面隐藏后中文名与原名同一行、卡片间距变小）---- */
+body.compact .row-thumb { display: none; }
+body.compact .row { margin-bottom: 3px; }
+body.compact .row-main { padding: 5px 10px; gap: 9px; }
+body.compact .row-info {
+  display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px;
+}
+/* ⚠️ flex 子项默认 min-width:auto —— 这两行都带 white-space:nowrap，
+   不给 min-width:0 的话长标题会撑破 .row-main（review 指出的溢出风险） */
+body.compact .row-title { flex: 0 1 auto; min-width: 0; }
+body.compact .row-en { flex: 1 1 auto; min-width: 0; min-height: 0; }
+body.compact .row-sub { flex: 1 1 100%; }
+
+@media (max-width: 768px) {
+  .floaters { right: 12px; bottom: 14px; }
+  .btn-float { width: 42px; height: 42px; }
 }

@@ -20,11 +20,15 @@
   if (!data) return;
 
   // 断点必须与 app.css 的 @media 用同一个值（payload 里下发，别写死第二份）
-  var breakpoint = (data.page_size && data.page_size.breakpoint) || 768;
+  var listCfg = data.list || {};
+  var breakpoint = listCfg.breakpoint || 768;
   var mq = window.matchMedia("(max-width: " + breakpoint + "px)");
-  function pageSize() {
-    return mq.matches ? data.page_size.mobile : data.page_size.desktop;
-  }
+  // 列表加载参数**从配置来**（payload 的 list 段，见 report.render）——
+  // 不在前端再写死一份阈值（review-s9-01 确立的仓库约定）。
+  var LIST_BATCH = listCfg.batch || 30;        // 每批追加几条（refs.md §9.2「20~30 条」）
+  var LIST_AUTO_MAX = listCfg.auto_max || 300; // 自动追加的总上限（「不做无限追加」）
+  var TOP_SHOW_AT = 400;                       // 滚动多少像素后显示「返回顶部」
+  var SCROLL_AHEAD = "200px";                  // 提前多远就开始加载下一批
 
   var ICONS = {
     steam: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.454 1.012H7.54zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.663 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.253 0-2.265-1.014-2.265-2.265z"/></svg>',
@@ -45,7 +49,7 @@
     return node;
   }
 
-  var state = { section: null, page: 1, filters: {} };
+  var state = { section: null, limit: LIST_BATCH, filters: {} };
   // 默认值由服务端下发（跟着 home_new_low_days 走）。
   // ⚠️ 兜底**不要再写 date: "d7"** —— 那等于在前端又写死一份窗口，与服务端脱钩
   // （review-s9-01 补充审查 #2）。模板恒发这个变量，取不到就当"全部不筛"，
@@ -390,38 +394,52 @@
   var pagerBox = document.getElementById("lv-pager");
   var emptyBox = document.getElementById("empty");
 
+  // 滚动加载（refs.md B12 / §9.2）：**只在板块列表页**做，首页不做（"首页不可滑动"）。
+  // 每批追加 LIST_BATCH 条；滑到底自动追加，底部按钮同时是手动兜底。
+  // 不做虚拟列表 —— 一次最多把该板块全部渲染出来（板块量级几百到一千出头）。
   function renderList(cards) {
-    var size = pageSize();
-    var totalPages = Math.max(1, Math.ceil(cards.length / size));
-    if (state.page > totalPages) state.page = totalPages;
-    if (state.page < 1) state.page = 1;
-    var start = (state.page - 1) * size;
-    fillRows(rowsBox, cards.slice(start, start + size));
-
+    var shown = cards.slice(0, state.limit);
+    fillRows(rowsBox, shown);
     pagerBox.textContent = "";
-    if (totalPages > 1) {
-      var prev = el("button", { type: "button", text: "上一页" });
-      var next = el("button", { type: "button", text: "下一页" });
-      prev.disabled = state.page <= 1;
-      next.disabled = state.page >= totalPages;
-      prev.addEventListener("click", function () {
-        state.page--; renderList(cards); scrollTop();
-      });
-      next.addEventListener("click", function () {
-        state.page++; renderList(cards); scrollTop();
-      });
-      pagerBox.appendChild(el("div", { class: "pager" }, [
-        prev,
-        el("span", { text: "第 " + state.page + " / " + totalPages + " 页 · 共 "
-          + cards.length + " 条" }),
-        next
-      ]));
+    var left = cards.length - shown.length;
+    if (left <= 0) {
+      if (cards.length > LIST_BATCH) {
+        pagerBox.appendChild(el("div", { class: "pager" }, [
+          el("span", { text: "已全部加载 " + cards.length + " 条" })]));
+      }
+      if (moreObserver) { moreObserver.disconnect(); moreObserver = null; }
+      return;
     }
+    // 到「自动追加上限」就停止自动追加，只留手动 —— refs.md §9.2「不做无限追加」。
+    // 否则「全部折扣」页（7000+ 条）会一直往下接，正是用户担心的「根本滑不到底」。
+    var auto = state.limit < LIST_AUTO_MAX;
+    var more = el("button", { type: "button", class: "load-more",
+      text: (auto ? "加载更多" : "继续加载") + "（还有 " + left + " 条）" });
+    more.addEventListener("click", function () {
+      state.limit += LIST_BATCH;
+      renderList(cards);
+    });
+    pagerBox.appendChild(el("div", { class: "pager" }, [
+      auto ? null : el("span", {
+        text: "已自动显示前 " + shown.length + " 条（共 " + cards.length
+              + " 条）· 建议用上方「筛选」缩小范围 · " }),
+      more
+    ]));
+    if (auto) observeMore(more);
   }
 
-  function scrollTop() {
-    var top = listBox.getBoundingClientRect().top + window.pageYOffset - 70;
-    window.scrollTo({ top: top, behavior: "smooth" });
+  // 观察「加载更多」按钮：进视口就自动点它 = 滚到底追加一批。
+  // ⚠️ jsdom / 老浏览器没有 IntersectionObserver —— 直接跳过，按钮本身就是兜底。
+  var moreObserver = null;
+  function observeMore(button) {
+    if (typeof window.IntersectionObserver !== "function") return;
+    if (moreObserver) moreObserver.disconnect();
+    moreObserver = new window.IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) { moreObserver.disconnect(); button.click(); return; }
+      }
+    }, { rootMargin: SCROLL_AHEAD });
+    moreObserver.observe(button);
   }
 
   // 用户有没有**手动**改过日期。没有的话，切到「全部折扣」页时日期自动放开成
@@ -430,7 +448,7 @@
 
   function openSection(key) {
     state.section = key;
-    state.page = 1;
+    state.limit = LIST_BATCH;
     if (!dateTouched) {
       state.filters.date = (key === "__all__") ? "all" : FILTER_DEFAULTS.date;
     }
@@ -441,6 +459,8 @@
     }
     homeBox.hidden = true;
     listBox.hidden = false;
+    // 换板块/改筛选后回到顶部 —— 原来是「翻页后回顶」，改成追加加载后别把这条丢了
+    window.scrollTo({ top: 0 });
     syncFilterVisibility();          // 板块页才显示「筛选」按钮
     document.getElementById("lv-title").textContent = SECTION_LABEL[key] || key;
     document.getElementById("lv-count").textContent = "加载中…";
@@ -465,7 +485,7 @@
 
   function openHome() {
     state.section = null;
-    state.page = 1;
+    state.limit = LIST_BATCH;
     var buttons = document.querySelectorAll("#nav .nav-item");
     for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
     listBox.hidden = true;
@@ -566,7 +586,7 @@
 
   function applyFilters() {
     syncFilterUI();
-    if (state.section) { state.page = 1; openSection(state.section); }
+    if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }
   }
 
   if (drawer && filterOpenBtn) {
@@ -596,6 +616,41 @@
   }
 
   // ------------------------------------------------------------------
+  // S9-3：浮动按钮 —— 无图精简模式 + 返回顶部（refs.md C6 / C5）
+  // ------------------------------------------------------------------
+  var COMPACT_KEY = "sdl.compact";
+  var btnCompact = document.getElementById("btn-compact");
+  var btnTop = document.getElementById("btn-top");
+
+  function setCompact(on, persist) {
+    document.body.classList.toggle("compact", on);
+    if (!btnCompact) return;
+    btnCompact.classList.add("show");          // 模式开关常驻，不随滚动隐藏
+    btnCompact.classList.toggle("on", on);
+    btnCompact.setAttribute("aria-pressed", on ? "true" : "false");
+    if (!persist) return;                      // 初始化时只应用读到的值，不反写
+    try { window.localStorage.setItem(COMPACT_KEY, on ? "1" : "0"); }
+    catch (e) { /* file:// 下可能被禁，忽略 */ }
+  }
+
+  if (btnCompact) {
+    var saved = false;
+    try { saved = window.localStorage.getItem(COMPACT_KEY) === "1"; } catch (e) { saved = false; }
+    setCompact(saved, false);                  // 用存下来的值初始化，但不回写
+    btnCompact.addEventListener("click", function () {
+      setCompact(!document.body.classList.contains("compact"), true);
+    });
+  }
+  if (btnTop) {
+    btnTop.addEventListener("click", function () {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    window.addEventListener("scroll", function () {
+      btnTop.classList.toggle("show", window.pageYOffset > TOP_SHOW_AT);
+    }, { passive: true });
+  }
+
+  // ------------------------------------------------------------------
   // 初始化
   // ------------------------------------------------------------------
   renderPicks();
@@ -603,7 +658,7 @@
 
   function onBreakpointChange() {
     renderPicks();                     // 每页张数随断点变（手机 4 / 电脑 5）
-    if (state.section) { state.page = 1; openSection(state.section); }
+    if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }
   }
   if (mq.addEventListener) mq.addEventListener("change", onBreakpointChange);
   else if (mq.addListener) mq.addListener(onBreakpointChange);

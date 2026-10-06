@@ -39,6 +39,15 @@
   数据已超过 {{ stale_banner_hours }} 小时未更新，可能抓取任务出了问题。
 </div>
 
+{# S9-3：浮动按钮（refs.md C6「按钮做成跟着页面走的 box 按钮」+ C5「返回顶部」）
+   —— 精简模式常驻，返回顶部滚动超过一屏才出现 #}
+<div class="floaters" id="floaters">
+  <button type="button" class="btn-float" id="btn-compact" title="无图精简模式"
+          aria-pressed="false">精简</button>
+  <button type="button" class="btn-float" id="btn-top" title="回到顶部"
+          aria-label="回到顶部">↑</button>
+</div>
+
 <main class="wrap">
 
   <div class="filterbar" id="filterbar">

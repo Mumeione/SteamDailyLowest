@@ -96,7 +96,7 @@ class RunDailyExitCodeTest(unittest.TestCase):
             "min_positive_ratio": 0.7, "min_review_count": 100,
             "notable_review_count": 10000, "absolute_min_positive_ratio": None,
             "compare_countries": ["UA", "IN"],
-            "page_size_mobile": 10, "page_size_desktop": 20,
+            "list_batch": 30, "list_auto_max": 300,
             "mobile_breakpoint_px": 768, "stale_banner_hours": 36,
             "upcoming_expiry_hours": 48,
             "new_game_days": 30, "new_game_refresh_days": 1,

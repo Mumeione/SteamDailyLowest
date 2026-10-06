@@ -67,8 +67,8 @@ class RenderPassTest(unittest.TestCase):
             "notable_review_count": 10000,
             "absolute_min_positive_ratio": None,
             "compare_countries": ["UA", "IN"],
-            "page_size_mobile": 10,
-            "page_size_desktop": 20,
+            "list_batch": 30,
+            "list_auto_max": 300,
             "mobile_breakpoint_px": 768,
             "stale_banner_hours": 36,
             "sweep_mode": "low_only",
@@ -161,7 +161,7 @@ class RenderPassTest(unittest.TestCase):
         self.assertNotIn("criteria_digest", payload)
         html = (self.out / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("criteria-box", html)
-        self.assertEqual(payload["page_size"]["breakpoint"], 768)
+        self.assertEqual(payload["list"]["breakpoint"], 768)
 
     def test_upcoming_view_renders_separately(self):
         """「即将过期」视图：独立进 view_groups，按钮 count 对应，暂不带比价。"""

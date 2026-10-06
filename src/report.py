@@ -839,9 +839,14 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         #: 底部抽屉筛选的分组/选项与默认值（refs.md §6.7）；前端 state.filters 用
         "filter_defaults": filter_defaults(cfg),
         #: 断点必须与 app.css 的 @media 一致，否则「布局按手机、每页按桌面」会错位
-        "page_size": {
-            "mobile": int(cfg.get("page_size_mobile", 10)),
-            "desktop": int(cfg.get("page_size_desktop", 20)),
+        #: 列表加载参数（S9-3 起由「每页条数」换成「每批追加 + 自动追加上限」）：
+        #: batch      = 每次追加几条（refs.md §9.2「20~30 条」）
+        #: auto_max   = **自动**追加的总上限，到了就只留手动按钮
+        #:              —— refs.md §9.2「不做无限追加」（否则「全部折扣」页 7000+ 条会滚不到底）
+        #: breakpoint = 必须与 app.css 的 @media 一致，否则「布局按手机、逻辑按桌面」会错位
+        "list": {
+            "batch": int(cfg.get("list_batch", 30)),
+            "auto_max": int(cfg.get("list_auto_max", 300)),
             "breakpoint": int(cfg.get("mobile_breakpoint_px", 768)),
         },
         # ⚠️ 原 `notice`（「本周 / 折扣中 / 全部」那句灰字说明）已随 S9 删除：
