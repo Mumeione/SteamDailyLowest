@@ -232,6 +232,8 @@ html, body {
   transition: transform .15s ease, box-shadow .15s ease;
 }
 .pick:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+/* 封面比例三档统一 **3:4**（2026-10-07 收尾，用户拍板）：原来手机 1:1 / 平板·PC 3:4，
+   断点处会跳。无封面时这个浅灰底就是占位块（尺寸由 aspect-ratio 保证与有封面一致）。 */
 .pick-art { position: relative; aspect-ratio: 3 / 4; background: #eceff3; }
 .pick-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pick-rank {
@@ -541,8 +543,8 @@ body.compact .row-sub { flex: 1 1 100%; }
   /* 抽屉改成从底部滑出（平板/PC 是右侧浮层） */
   .drawer { left: 0; right: 0; bottom: 0; max-height: 78vh; border-radius: 14px 14px 0 0; }
 
-  /* 大卡：手机一律 1:1 封面（单卡矮约 20%）；列数/每页张数由 app.js 按宽度算 */
-  .pick-art { aspect-ratio: 1 / 1; }
+  /* 大卡：列数/每页张数由 app.js 按宽度算（口径只在 app.js 的 picksPerPage，
+     这里不写第二份数字）；封面比例三档统一 3:4（原手机档的 1:1 覆盖已删 —— 断点处会跳） */
   /* 大卡标题行：手机上副标题太长会把「最值得买」挤成两行 → 副标题独占第二行 */
   .deck-head { flex-wrap: wrap; row-gap: var(--sp-1); }
   .deck-title { flex: 0 0 auto; }

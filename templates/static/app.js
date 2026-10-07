@@ -304,8 +304,8 @@
   // ------------------------------------------------------------------
   // 目标（refs §11.2 + 用户 2026-10-07 的三条纠正）：
   //   · 一排**最多 5 张**（PC 与平板都是 5）—— 之前 auto-fill 让 1100px 变成 6 张，太多；
-  //   · 手机（够窄的宽度）2 列 × 2 排 = 每页 4 张，且**单张不能太宽** ——
-  //     之前 768px 走手机档排成 2 列，单张 347px 大得离谱；
+  //   · 手机 2 列只出一排（张数随列数，**口径只在 picksPerPage 一份**），
+  //     且单张不能太宽 —— 之前 768px 走手机档排成 2 列，单张 347px 大得离谱；
   //   · 列数由**这里算出来并写进 inline style**，CSS 不再自己排 ——
   //     避免「公式算 6 列、CSS 排 4 列 → 一排只填 4/6 右边空一块」那种错位。
   // ⚠️ PICK_MIN 要跟 app.css 里 .pick 的观感一致（约 150px 起才放得下封面+价+力度条）。
@@ -329,9 +329,13 @@
     return Math.max(2, Math.min(PICK_MAX_COLS, cols));
   }
 
-  /** 每页张数：只有 2 列时排两排（手机 2×2 = 4 张，一排放不下多少信息），
-      3 列及以上正好一排（平板/PC 5 张）。 */
-  function picksPerPage(cols) { return cols <= 2 ? cols * 2 : cols; }
+  /** 每页张数 = 列数（2026-10-07 收尾，用户拍板）：原来手机 2 列 × 2 排 = 4 张
+      （≈570px）把首屏占满、四板块被推到首屏外 → 手机现在只出一排，板块区能在
+      首屏露头；平板/PC 不变。
+      ⚠️ 全站「每页几张」的具体数字只在本注释这一份，别在别处（CSS/其他注释）
+      再抄一份 —— 本次 review 抓过注释数字散布易漂移。也别把这个恒等函数内联掉：
+      文档与注释都按这个名字引用口径。 */
+  function picksPerPage(cols) { return cols; }
 
   var pickPage = 0;
   var picksBox = document.getElementById("picks");
@@ -845,9 +849,11 @@
   // ------------------------------------------------------------------
   renderPicks();
   renderSections();
+  // 「点卡片能点开」不做一次性气泡提示了（2026-10-07 用户裁定：悬停有呼吸/上浮
+  // 效果已经能表达可点，气泡多此一举）—— refs.md §6.7 B11 的招 3 整条作废。
 
   function onBreakpointChange() {
-    renderPicks();                     // 每页张数随断点变（手机 4 / 电脑 5）
+    renderPicks();                     // 每页张数随断点变（口径只在 picksPerPage）
     if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }
   }
   if (mq.addEventListener) mq.addEventListener("change", onBreakpointChange);
