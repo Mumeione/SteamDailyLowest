@@ -12,6 +12,9 @@ data/
 
 output/
 
+# agent 会话工作区（handoff/review 归档、活动清单），结论已沉淀进 docs/ 与 Obsidian
+.scratch/
+
 # 双 agent 的工作记忆与历史探针归档，不入库（探针结论已沉淀进 docs/DEVELOPMENT.md）
 .workbuddy/
 tools/probes/
