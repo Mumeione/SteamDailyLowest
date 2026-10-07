@@ -33,7 +33,7 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def load_breakpoints(data_js: str, fallback: tuple[int, int] = (768, 1100)) -> tuple[int, int]:
+def load_breakpoints(data_js: str, fallback: tuple[int, int] = (600, 1100)) -> tuple[int, int]:
     """两个断点都从**渲染出的 payload** 读（config.json → report.py → payload.list）。
 
     不在这里再写死一份 —— 否则「布局按一套、量尺按一套、预览按一套」，

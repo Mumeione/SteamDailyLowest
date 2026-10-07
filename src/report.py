@@ -898,7 +898,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "list": {
             "batch": int(cfg.get("list_batch", 30)),
             "auto_max": int(cfg.get("list_auto_max", 300)),
-            "breakpoint": int(cfg.get("mobile_breakpoint_px", 768)),
+            "breakpoint": int(cfg.get("mobile_breakpoint_px", 600)),
             #: S9-卡片：三档布局的第二个边界（≤ 它是平板档，> 它是 PC 档）。
             #: 与 breakpoint 一样必须与 app.css 的 @media 一致；工具脚本也从这里读。
             "tablet_breakpoint": int(cfg.get("tablet_breakpoint_px", 1100)),

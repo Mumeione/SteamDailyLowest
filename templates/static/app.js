@@ -137,6 +137,13 @@
     return "l-unk";                 // unknown：storeLow 缺失 → 灰虚线色条
   }
 
+  /** 史低徽章（「新史低/平史低」hl 标签）—— 行卡与大卡共用这一个实现。
+      别在卡片构造函数里内联回去：改徽章口径（如加新史低类型）只该改这一处。 */
+  function lowBadge(item) {
+    return el("span", { class: "hl" + (item.low_class === "new" ? " hl-new" : ""),
+                        text: item.low_label || "史低" });
+  }
+
   /** 子信息行：好评率 · 评价数 · 剩余天数。
    *
    * S9-卡片（用户 2026-10-07）：「60 好评和 90 好评是一个颜色、剩余 7 天和 2 天也是一个颜色」
@@ -227,8 +234,7 @@
       iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
     ]);
     var tags = el("div", { class: "row-tags" }, [
-      el("span", { class: "hl" + (item.low_class === "new" ? " hl-new" : ""),
-                   text: item.low_label || "史低" }),
+      lowBadge(item),
       links,
       cutBar(item.cut)     // 老口径顺序：史低标签 → 图标 → 力度条（力度条自适应铺满）
     ]);
@@ -359,9 +365,8 @@
     // ① 标题　② 史低类型 + 折扣 + **Steam**　③ 原价 + 现价 + **小黑盒**。
     // 顺序与行卡片一致（行卡片也是 Steam→小黑盒）。
     var lowRow = el("div", { class: "pick-low" }, [
-      // 我们的「新史低 / 平史低」= gg.deals 里那个 HL 徽章
-      el("span", { class: "hl" + (item.low_class === "new" ? " hl-new" : ""),
-                   text: item.low_label || "史低" }),
+      // 我们的「新史低 / 平史低」= gg.deals 里那个 HL 徽章（实现共用 lowBadge）
+      lowBadge(item),
       el("span", { class: "pick-cut", text: "-" + (item.cut || 0) + "%" }),
       el("span", { class: "links" }, [
         iconLink(item.steam_url, "Steam 商店页", ICONS.steam)
@@ -637,7 +642,12 @@
 
   // 用户有没有**手动**改过日期。没有的话，切到「全部折扣」页时日期自动放开成
   // 「全部」（refs §11.5 Q2：「全部折扣」页**不设限**），切回板块再收成默认窗口。
+  // ⚠️ 写点只有下面 touchDate / clearDateTouched 两个（架构整理时收敛的）——
+  //    新增改筛选的入口必须走它们，别直接赋值（漏更新 = 「全部折扣页日期意外
+  //    收紧/放开」的静默回归）。
   var dateTouched = false;
+  function touchDate() { dateTouched = true; }
+  function clearDateTouched() { dateTouched = false; }
 
   function openSection(key) {
     state.section = key;
@@ -780,7 +790,7 @@
 
   function applyFilters() {
     syncFilterUI();
-    if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }
+    if (state.section) openSection(state.section);   // limit 重置由 openSection 负责，别在这再重置一次
   }
 
   if (drawer && filterOpenBtn) {
@@ -789,7 +799,7 @@
     drawerMask.addEventListener("click", function () { setDrawer(false); });
     document.getElementById("filter-reset").addEventListener("click", function () {
       Object.keys(FILTER_DEFAULTS).forEach(function (k) { state.filters[k] = FILTER_DEFAULTS[k]; });
-      dateTouched = false;       // 重置后「全部折扣」页重新自动放开日期
+      clearDateTouched();        // 重置后「全部折扣」页重新自动放开日期
       applyFilters();
     });
     for (var f = 0; f < filterOpts.length; f++) {
@@ -797,7 +807,7 @@
         opt.addEventListener("click", function () {
           var group = opt.getAttribute("data-group");
           state.filters[group] = opt.getAttribute("data-value");
-          if (group === "date") dateTouched = true;
+          if (group === "date") touchDate();
           applyFilters();        // 选了就立刻生效，不用再点「完成」
         });
       })(filterOpts[f]);

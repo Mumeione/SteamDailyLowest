@@ -4,10 +4,11 @@
  *       → 行列表（核心）→ 板块列表页 → 浮动按钮/精简模式 → 关于网站 → 空状态
  *
  * ⚠️ **三档视口，只有两条边界**（用户 2026-10-07：只要手机/平板/PC 三档）：
- *     手机 = ≤ mobile_breakpoint_px(768)，**只考虑竖屏**
- *     平板 = 769 ~ tablet_breakpoint_px(1100)，横竖屏都要好用
+ *     手机 = ≤ mobile_breakpoint_px（**600**，曾为 768 —— 别照抄注释，以 payload 为准），**只考虑竖屏**
+ *     平板 = 601 ~ tablet_breakpoint_px（1100），横竖屏都要好用
  *     PC  = > 1100，只有横屏
- *   这两个值在 config.json / payload 里下发，本文件的 @media **必须与它们一致**；
+ *   这两个值在 config.json / payload 里下发，本文件的 @media **必须与它们一致**，
+ *   冒烟测有机械校验（tests/jsdom/ 的「CSS @media 边界 == payload 断点」）；
  *   工具脚本（make_preview.py）也从 payload 读，别再各写一份（批 F3 踩过）。
  *   布局尽量交给 grid/flex 自适应而不是加断点 —— 档位越多越难维护。
  */
@@ -206,11 +207,10 @@ html, body {
 .drawer-foot .chip { flex: 1 1 0; text-align: center; padding: 9px 12px; }
 
 /* ================= 首页大卡（「最值得买」）=================
-   S9-卡片（2026-10-07）：**每页张数 = 实际列数**（JS 按容器宽度算），列数交给
-   auto-fill 自适应 —— 之前 5 列写死，1100px 上每张约 208px 太占地方，
-   而且 5 张会排成 3+2 留一个孤儿。
-   ⚠️ 这里的 150px 必须与 app.js 的 PICK_MIN 一致，否则「算出来的列数」与
-      「CSS 真正排出来的列数」会错位。 */
+   列数/每页张数由 app.js 算好写进 inline style（口径只在 app.js 的 picksPerPage）；
+   下面 .deck-track 写死的 2 列只是「JS 没跑/被禁用时」的兜底，不是第二份口径。
+   ⚠️ app.js 的 PICK_MIN=150 要与本文件 .pick 的最小观感一致，否则「算出来的
+      列数」与「卡片放得下的内容」会错位。 */
 .picks { margin: var(--sp-3) 0 26px; }
 .deck-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 10px; }
 .deck-title { font-size: var(--fs-title); font-weight: 600; margin: 0; }
@@ -514,8 +514,9 @@ body.compact .row-sub { flex: 1 1 100%; }
 .about a:hover { text-decoration: underline; }
 
 /* ==================================================================
-   三档视口：手机 ≤768（只竖屏）/ 平板 769~1100（横竖屏）/ PC ≥1101（只横屏）
-   —— 只有这两条边界，与 config.json 的 mobile_breakpoint_px / tablet_breakpoint_px 一致。
+   三档视口：手机 ≤600（只竖屏）/ 平板 601~1100（横竖屏）/ PC ≥1101（只横屏）
+   —— 数值来自 config.json 的 mobile_breakpoint_px / tablet_breakpoint_px
+      （payload.list 下发；改 config 就要同步这两条 @media，冒烟测会校验）。
    ================================================================== */
 
 /* ---- 手机档 ---- */

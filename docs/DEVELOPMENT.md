@@ -1705,3 +1705,26 @@ From: ¥13.60   -90%               ← 价格 17px 促销红 + 折扣徽章（�
    null 再渲染一遍，断言「占位节点数 == 行数/大卡数」—— 不依赖当天数据碰巧有无
    封面卡片（依赖数据的写法会被静默跳过，review 抓过）。
 5. **手机顶栏生成时间两行：取消** —— 用户改主意，保持现状（一行小字）。
+
+### 架构整理（2026-10-07 下午，improve-codebase-architecture 勘察后落地）
+
+只做了便宜且零风险的三件；**候选「板块接缝（all.js 携带板块成员表）」与「payload
+拆袋（死字段清理）」动到生产管线，暂缓**，勘察报告在
+`%TEMP%/architecture-review-20261007-1456.html`（不入库）。
+
+1. **修复注释腐烂**：app.css 头部与「三档视口」注释仍写「手机 ≤768」，实际是
+   600（768→600 改版时注释没跟上）；.picks 注释还在描述已被 JS inline style
+   取代的 auto-fill 旧机制。均已改写。教训：守护约定别指望注释，见下条。
+2. **断点口径机械校验**：冒烟测新增「CSS @media 边界 == payload 下发的两断点」
+   断言（media 里的合法值 = 手机断点、+1、平板断点、+1）。注释不会报错，这里会。
+3. **jsdom 冒烟迁入仓库 `tests/jsdom/smoke_s9.js`**（原在 %TEMP%，不受版本控制、
+   换机失传）：OUT 路径改仓库相对；用法见脚本头注释（需 NODE_PATH 指到装有
+   jsdom 的 node_modules）。%TEMP% 那份作废，以仓库版为准。
+4. **app.js 小收敛**：史低徽章抽成 `lowBadge(item)`（行卡/大卡共用，改徽章口径
+   只改一处）；`applyFilters` 里重复的 `state.limit` 重置删除（openSection 会做）；
+   `dateTouched` 的写点收敛为 `touchDate()` / `clearDateTouched()` 两个函数。
+5. **机械校验首跑就抓到真错位**：payload 一直下发 `breakpoint: 768`，CSS 实际按
+   600 断 —— 本地 `config.json`（不入库）还写着 768，且 report.py / make_preview.py
+   的**代码回退默认值也是 768**。已修：本地 config 改 600（生产是
+   `cp config.example.json config.json`，本来就是 600）、两处回退值改 600。
+   这正是「断点一致性必须机械校验、不能靠注释」的实证。
