@@ -1736,3 +1736,17 @@ From: ¥13.60   -90%               ← 价格 17px 促销红 + 折扣徽章（�
    的**代码回退默认值也是 768**。已修：本地 config 改 600（生产是
    `cp config.example.json config.json`，本来就是 600）、两处回退值改 600。
    这正是「断点一致性必须机械校验、不能靠注释」的实证。
+
+### S10 收尾（2026-10-07，spec §5 定义的最后一轮「推送上线 + P2 延后项」）
+
+- **unlisted 冻结判定**提取 `run.unlisted_frozen()` —— 原来在
+  `entry_needs_detail` 与 `detail_targets` backlog 循环各写一遍
+  `(entry.start or "") == (mark.start or "")`（review-s6 P2）。
+- **`refresh_ttl_days` 去掉 `game_id` 参数**（从 entry 派生）—— review-s6 P2
+  的 Data Clumps：五参里它总是与 entry 结伴出现。
+- **`_scope` 批次口径常量化**：`run.py` 头部 `SCOPE_NEW / SCOPE_STALE /
+  SCOPE_REJUDGE / SCOPE_TITLE` —— 实际有四个取值（S9 的中文名补齐悄悄加了
+  第 4 个，评审时只有三个）。
+- 另两项按评审原判处理、不改代码：daily.yml 的 cp 块重复**已失效**（S8 重排后
+  只剩每 job 一个 `cp config`），`State.load` 自迁移写盘**保持现状**
+  （docstring 已声明，review-s6 判「可接受」）。

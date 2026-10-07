@@ -46,6 +46,14 @@ from src.steam_browse import SteamBrowseClient
 ROOT = Path(__file__).resolve().parent
 DETAIL_SAVE_EVERY = 20
 
+# ---- 详情抓取的批次口径（detail_targets 附在目标 dict 的 ``_scope`` 上）----
+# 消费方：fetch_details（「当日新增不冷却」+ rejudge 跳折扣活跃闸门，见 L506 附近）、
+# run_log 计数。review-s6 P2：别在调用点写裸字符串，口径改动只改这里。
+SCOPE_NEW = "new"          # 当日新增：跳过冷却与折扣活跃闸门
+SCOPE_STALE = "stale"      # 折扣活跃，但动态数据过了四档 TTL
+SCOPE_REJUDGE = "rejudge"  # unlisted 翻案重判：start 变了才进来，跳折扣活跃闸门
+SCOPE_TITLE = "title"      # 只补中文名（S9 clean_title_zh），不动评价数据
+
 
 def log(message: str) -> None:
     print(message, flush=True)
@@ -145,15 +153,17 @@ def discount_active(entry: dict, now: datetime) -> bool:
     return True
 
 
-def refresh_ttl_days(entry: dict, state: State, game_id: str, cfg: dict, now: datetime) -> int:
+def refresh_ttl_days(entry: dict, state: State, cfg: dict, now: datetime) -> int:
     """折扣感知的刷新 TTL（spec 决策 16，四档）：
 
     新游（release_date ≤ ``new_game_days``）1 天 → 到期窗口（expiry −
     ``upcoming_expiry_hours`` 起）1 天 → 折扣期普通条目 ``discount_refresh_days``
     （3 天）。调用方保证条目折扣活跃（非折扣期根本不进派生）。
+    game_id 从 ``entry`` 派生（review-s6 P2 Data Clumps：它总是结伴出现，
+    不该单独占一个参数）。
     """
     ng_days = int(cfg.get("new_game_days", 30) or 0)
-    meta = state.meta(game_id) or {}
+    meta = state.meta(entry.get("game_id")) or {}
     rd = meta.get("release_date")
     if ng_days > 0 and rd:
         try:
@@ -170,6 +180,15 @@ def refresh_ttl_days(entry: dict, state: State, game_id: str, cfg: dict, now: da
     return int(cfg.get("discount_refresh_days", 3))
 
 
+def unlisted_frozen(entry: dict, mark: dict | None) -> bool:
+    """unlisted 冻结判定（决策 17）：标记存在且仍是**同一折扣期**（start 一致）。
+
+    :func:`entry_needs_detail` 与 :func:`detail_targets` 的 backlog 循环共用
+    这一份 —— review-s6 P2：原来两处各写一遍，改口径容易漏一处。
+    """
+    return mark is not None and (entry.get("start") or "") == (mark.get("start") or "")
+
+
 def entry_needs_detail(entry: dict, state: State, cfg: dict, now: datetime,
                        *, is_new: bool = False) -> bool:
     """单条目级「要不要发详情请求」（S6 折扣感知口径，detail_targets 的原子判定）。
@@ -183,7 +202,7 @@ def entry_needs_detail(entry: dict, state: State, cfg: dict, now: datetime,
     if not game_id:
         return False
     mark = state.unlisted(game_id)
-    if mark is not None and (entry.get("start") or "") == (mark.get("start") or ""):
+    if unlisted_frozen(entry, mark):
         return False   # 同一折扣期内冻结（决策 17）
     if not is_new:
         if not discount_active(entry, now):
@@ -197,7 +216,7 @@ def entry_needs_detail(entry: dict, state: State, cfg: dict, now: datetime,
     fetched = classify.parse_time(dyn.get("fetched_at"), now.tzinfo)
     if fetched is None:
         return True
-    ttl_days = refresh_ttl_days(entry, state, game_id, cfg, now)
+    ttl_days = refresh_ttl_days(entry, state, cfg, now)
     return (now - fetched) >= timedelta(days=ttl_days)
 
 
@@ -229,11 +248,11 @@ def detail_targets(candidates: list[dict], state: State,
     - 排序：新史低（``low_kind == "N"``）优先 → 折扣力度降序（分层字典序的
       详情管线版，spec §3.3 决策 8）；同 game_id 多版本折扣取最近出现的为代表。
     - 返回的目标 dict 是 seen_deal 条目的**浅拷贝**并附 ``_scope``
-      （new / stale / rejudge），fetch_details 用它区分「当日新增不冷却」。
+      （取值 = 模块头部的 SCOPE_* 常量），fetch_details 用它区分「当日新增不冷却」。
     """
     cooldown = int(cfg.get("detail_retry_cooldown_days", 3))
 
-    new_targets = [{**e, "_scope": "new"} for e in candidates
+    new_targets = [{**e, "_scope": SCOPE_NEW} for e in candidates
                    if e.get("game_id")
                    and entry_needs_detail(e, state, cfg, now, is_new=True)]
     new_ids = {e.get("game_id") for e in candidates}
@@ -252,15 +271,15 @@ def detail_targets(candidates: list[dict], state: State,
     for gid, entry in latest.items():
         mark = state.unlisted(gid)
         if mark is not None:
-            if (entry.get("start") or "") == (mark.get("start") or ""):
+            if unlisted_frozen(entry, mark):
                 continue   # 同一折扣期内冻结
             if state.detail_recently_failed(gid, now, cooldown):
                 continue
-            backlog.append({**entry, "_scope": "rejudge"})   # 下次折扣 → 重判翻案
+            backlog.append({**entry, "_scope": SCOPE_REJUDGE})   # 下次折扣 → 重判翻案
             rejudge += 1
             continue
         if entry_needs_detail(entry, state, cfg, now):
-            backlog.append({**entry, "_scope": "stale"})
+            backlog.append({**entry, "_scope": SCOPE_STALE})
     backlog.sort(key=lambda e: (0 if e.get("low_kind") == "N" else 1,
                                 -(int(e.get("cut") or 0)), e.get("expiry") or ""))
     return new_targets + backlog, {
@@ -503,7 +522,7 @@ def fetch_details(client: ItadClient, state: State, targets: list[dict], cfg: di
     # run_log 的 detail_rejudge 计数与实际请求数不符。
     todo = [e for e in targets if e.get("game_id") and entry_needs_detail(
         e, state, cfg, now,
-        is_new=e.get("_scope") in ("new", "rejudge"))]
+        is_new=e.get("_scope") in (SCOPE_NEW, SCOPE_REJUDGE))]
     stats = {"fetched": 0, "fallback_fetched": 0, "fallback_skipped": 0}
     if not todo:
         return stats
@@ -1169,7 +1188,7 @@ def prefetch_targets(state: State, cfg: dict, now: datetime,
         if not gid or gid in have or state.unlisted(gid):
             continue
         if state.has_appid(gid) and not state.title_zh(gid):
-            need.append({**entry, "_scope": "title"})
+            need.append({**entry, "_scope": SCOPE_TITLE})
     need.sort(key=_start_key, reverse=True)
     chosen = need[:max(0, budget)]
     return chosen, {**info, "budget": budget, "chosen": len(chosen)}
