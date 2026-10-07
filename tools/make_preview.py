@@ -7,11 +7,16 @@
 
 产出（都在 output/，属 gitignore 范围，不是正式产物）：
   - preview_single.html   单文件，可直接拖进手机看
-  - preview_frames.html   同页并排多个 iframe，对照不同宽度（默认 360/430/769/1024）
+  - preview_frames.html   同页并排多个 iframe，对照**三档各一个代表宽度**
+                          （默认 390 手机 / 1024 平板 / 1440 电脑）
+
+  ⚠️ 默认只出三档：档位间距要按「手机 / 平板 / 电脑」三档看，宽度堆多了反而看不出重点
+     （用户 2026-10-07：「不是三个档位吗，frames 里面怎么有这么多」）。
+     要看边界行为（768 / 1100 附近）再手动传更多宽度。
 
 用法：
   python tools/make_preview.py
-  python tools/make_preview.py --widths 360,390,430,768,769,1024,1440
+  python tools/make_preview.py --widths 390,768,768,1100,1101,1440
 """
 from __future__ import annotations
 
@@ -28,14 +33,19 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def load_breakpoint(data_js: str, fallback: int = 768) -> int:
-    """断点从**渲染出的 payload** 读（config.json → report.py → page_size.breakpoint）。
+def load_breakpoints(data_js: str, fallback: tuple[int, int] = (768, 1100)) -> tuple[int, int]:
+    """两个断点都从**渲染出的 payload** 读（config.json → report.py → payload.list）。
 
-    不在这里再写死一份 768 —— 否则「布局按一套、量尺按一套、预览按一套」，
+    不在这里再写死一份 —— 否则「布局按一套、量尺按一套、预览按一套」，
     改断点时漏掉哪个就各说各话（批 F3 排错时正是这么踩的，见 fix-round1 步骤 5.2）。
+
+    返回 ``(手机上限, 平板上限)``：≤ 前者是手机、两者之间是平板、> 后者是 PC
+    （用户 2026-10-07：只要手机 / 平板 / PC 三档）。
     """
-    m = re.search(r'"breakpoint"\s*:\s*(\d+)', data_js)
-    return int(m.group(1)) if m else fallback
+    mob = re.search(r'"breakpoint"\s*:\s*(\d+)', data_js)
+    tab = re.search(r'"tablet_breakpoint"\s*:\s*(\d+)', data_js)
+    return (int(mob.group(1)) if mob else fallback[0],
+            int(tab.group(1)) if tab else fallback[1])
 
 
 def build_single(index_html: str, css: str, js: str, data_js: str,
@@ -106,10 +116,15 @@ FRAMES_TMPL = """<!DOCTYPE html>
 """
 
 
-def build_frames(widths: list[int], breakpoint: int) -> str:
+def build_frames(widths: list[int], mobile: int, tablet: int) -> str:
     blocks = []
     for w in widths:
-        tag = "手机" if w <= breakpoint else "平板/桌面"
+        if w <= mobile:
+            tag = "手机（竖屏）"
+        elif w <= tablet:
+            tag = "平板（横竖屏）"
+        else:
+            tag = "电脑（横屏）"
         blocks.append(
             f'  <div class="frame" style="width:{w}px">\n'
             f'    <div class="cap">{w}px · {tag}</div>\n'
@@ -123,8 +138,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="生成单文件预览（本地核对用）")
     ap.add_argument(
         "--widths",
-        default="360,430,769,1024",
-        help="preview_frames.html 里并排的宽度，逗号分隔（默认 360,430,769,1024）",
+        default="390,1024,1440",
+        help="preview_frames.html 里并排的宽度，逗号分隔（默认 390,1024,1440 三档各一个）",
     )
     args = ap.parse_args()
 
@@ -148,15 +163,17 @@ def main() -> int:
                           data_js, all_js=all_js)
     (OUTPUT / "preview_single.html").write_text(single, encoding="utf-8")
 
-    breakpoint = load_breakpoint(data_js)
+    mobile, tablet = load_breakpoints(data_js)
     widths = [int(x) for x in args.widths.split(",") if x.strip()]
     (OUTPUT / "preview_frames.html").write_text(
-        build_frames(widths, breakpoint), encoding="utf-8"
+        build_frames(widths, mobile, tablet), encoding="utf-8"
     )
 
     print(f"单文件预览：{OUTPUT / 'preview_single.html'}")
     print(f"宽度对照：  {OUTPUT / 'preview_frames.html'}"
-          f"（{', '.join(str(w) for w in widths)}px；手机/桌面按 payload 断点 {breakpoint}px 划分）")
+          f"（{', '.join(str(w) for w in widths)}px；"
+          f"手机 ≤{mobile} / 平板 {mobile + 1}~{tablet} / 电脑 >{tablet}"
+          f"，读自 payload，不是写死的）")
     return 0
 
 

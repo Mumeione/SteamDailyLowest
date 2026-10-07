@@ -52,7 +52,8 @@
       <span class="msg-tag">{{ msg_festival.season_label }}</span>
       <strong class="msg-name">{{ msg_festival.text }}</strong>
       <span class="msg-text">进行中</span>
-      {% if msg_festival.note %}<span class="msg-note">{{ msg_festival.note }}</span>{% endif %}
+      {# 用户 2026-10-07：只要「秋季 Steam 秋季特卖 进行中 10-01–10-08 · 还有 1 天」
+         这一句，**不要**补充说明（原「一年四大特卖之一」那种） #}
       <span class="msg-until">{{ msg_festival.range_text }} · {{ msg_festival.until_text }}</span>
       {% if msg_festival.url %}
       <a class="msg-link" href="{{ msg_festival.url }}" target="_blank" rel="noopener">详情</a>

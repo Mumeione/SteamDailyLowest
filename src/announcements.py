@@ -104,12 +104,13 @@ def _normalize(entry: dict, now: datetime) -> dict | None:
         "kind": "season" if entry.get("kind") == "season" else "event",
         "season": season,
         "season_label": SEASON_LABELS[season],
-        "note": str(entry.get("note") or "").strip() or None,
         "url": str(entry.get("url") or "").strip() or None,
         "start": start,
         "end": end,
         # 起止区间与「还有几天」的**文案都在服务端拼好** —— 别一半在这、一半在模板，
-        # 那样改一次口径要翻两个文件（review-s9-05 提到的文案分裂）
+        # 那样改一次口径要翻两个文件（review-s9-05 提到的文案分裂）。
+        # ⚠️ 原先还有 `note`（例「一年四大特卖之一」）—— 用户 2026-10-07 明确不要，
+        # 只要「季节 + 活动名 + 进行中 + 起止 + 还有几天」这一句，故字段一并删掉。
         "range_text": f"{start.strftime('%m-%d %H:%M')} – {end.strftime('%m-%d %H:%M')}",
         "end_text": end.strftime("%m-%d %H:%M"),
         "days_left": days_left,

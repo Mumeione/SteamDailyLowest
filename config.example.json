@@ -5,6 +5,7 @@
   "min_cut": 0,
   "max_price": null,
   "min_positive_ratio": 0.7,
+  "good_positive_ratio": 0.9,
   "min_review_count": 100,
   "only_type": "game",
   "exclude_mature": true,
@@ -44,7 +45,8 @@
   "steam_batch_size": 20,
   "list_batch": 30,
   "list_auto_max": 300,
-  "mobile_breakpoint_px": 768,
+  "mobile_breakpoint_px": 600,
+  "tablet_breakpoint_px": 1100,
   "site_repo_url": "https://github.com/Mumeione/SteamDailyLowest",
   "site_actions_url": "https://github.com/Mumeione/SteamDailyLowest/actions",
   "home_new_low_days": 7,
@@ -54,7 +56,7 @@
   "recommend_min_rate": 70,
   "recommend_min_count": 100,
   "recommend_weights": {
-    "fame": 35, "cut": 25, "review": 15, "gap": 15, "urgent": 5, "fresh": 5
+    "fame": 40, "cut": 30, "review": 20, "gap": 0, "urgent": 5, "fresh": 5
   },
   "max_deals": null,
   "run_log_keep": 30

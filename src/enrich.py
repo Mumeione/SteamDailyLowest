@@ -150,13 +150,16 @@ def enrich_steam(
              "final": (by_cc.get(cc) or {}).get("final")}
             for cc in countries if by_cc.get(cc)
         ]
-        entry["compare"] = _assemble_rows(raw_rows, entry, fx)
+        entry["compare"] = assemble_rows(raw_rows, entry, fx)
     facts["compare_fetched"] = sum(1 for by_cc in raw_by_appid.values() if by_cc)
     return facts
 
 
-def _assemble_rows(raw_rows: list[dict], entry: dict, fx: dict | None) -> list[dict]:
-    """把真查到的原币种行换算成卡片要展示的行。
+def assemble_rows(raw_rows: list[dict], entry: dict, fx: dict | None) -> list[dict]:
+    """把原币种行换算成卡片要展示的行（cny_minor / diff_pct 按传入汇率现算）。
+
+    **公开函数**：`tools/render_report.py` 用它把 cache.json 里的区域原价
+    组装成本地预览能看的比价行（2026-10-07），口径必须与生产完全一致。
 
     ``cny_minor`` 与 ``diff_pct`` 按当前传入的汇率现算（不进缓存）；
     汇率缺失时只显示原币种价（与旧行为一致）。

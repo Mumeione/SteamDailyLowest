@@ -8,8 +8,10 @@
 - 当日新增候选：state.seen_deal 里「折扣开始时间是今天」的条目
   （timestamp 缺失但今天首次见到的，沿用 §4.2 同一兜底口径）；
 - 详情 / 中文名 / 好评率：state.game_meta 缓存，merge_details 照常合并；
-- 跨区比价：比价不落缓存、本脚本又不发请求，所以从**上一次产出的
-  output/data.js** 里按 appid 回收（正式 run.py 跑过一次后就一直有）；
+- 跨区比价：本脚本不发请求，改从 `cache.json` 的**区域原价**推算
+  （现价 = 外区原价 × 国区折扣比例，refs §3.3 实测 15/20 与真查一致、5/20 差 1~2 点）——
+  ⚠️ 是**估算**，只为本地看版式；正式产物的比价由 enrich 每轮真查。
+  （曾经从旧产物回收：那条路的行是**已格式化**的，没有 final → 价格会渲染成「—」，已删。）
 - 汇率：data/fx_cache.json 的当天缓存，只读不取（没有就留空，页脚不显示）；
 - 概览统计：state.run_log 最近一次 mode=daily 的记录，缺的用可推导值补。
 
@@ -36,7 +38,9 @@ from run import (  # noqa: E402
     render_pass,
 )
 from src import classify  # noqa: E402
+from src import enrich  # noqa: E402
 from src.config import ConfigError, load_config, resolve_path  # noqa: E402
+from src.enrich import COMPARE_LABELS  # noqa: E402
 from src.state import State  # noqa: E402
 
 
@@ -67,8 +71,13 @@ def pick_upcoming_from_state(state: State, now: datetime, cfg: dict) -> list[dic
     return picked
 
 
-def load_fx_cache_only(cfg: dict, today: str) -> dict | None:
-    """只读当天的汇率缓存，不发请求。"""
+def load_fx_cache_only(cfg: dict, today: str, log=None) -> dict | None:
+    """只读汇率缓存，不发请求。
+
+    优先当天的；本地预览常常没有当天的（`fx_cache.json` 是上一次正式跑留下的），
+    这种情况退而用缓存里**最新的那一份**并在日志里写明日期 —— 页脚本来就会显示
+    汇率取数日期，所以不会让人误以为是今天的汇率。
+    """
     cache_path = Path(cfg.get("fx_cache_path") or "data/fx_cache.json")
     if not cache_path.is_absolute():
         cache_path = ROOT / cache_path
@@ -78,7 +87,57 @@ def load_fx_cache_only(cfg: dict, today: str) -> dict | None:
         fx = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return fx if fx.get("date") == today else None
+    if fx.get("date") == today:
+        return fx
+    if log and fx.get("date"):
+        log(f"[info] 汇率用的是缓存里最新的一份（{fx.get('date')}），不是今天的 ——"
+            f" 本地预览要看得见比价就得有汇率，页脚会照样标出取数日期")
+    return fx
+
+
+def graft_compare_from_cache(state, cfg: dict, entries: list[dict], fx: dict | None,
+                             log, appid_of) -> int:
+    """给**本地预览**补上跨区比价行，数据来自 `cache.json` 的区域原价。
+
+    ⚠️ 现价是**估算**：`外区现价 = 外区原价 × (国区现价 / 国区原价)`
+    （refs §3.3 实测：15/20 与真查完全一致，5/20 差 1~2 个百分点，成因是各区价格
+    四舍五入后反算）。**只用于本地看版式**；正式产物由 `src/enrich.py` 每轮真查，
+    且「真查即校准」会把区域重定价回写缓存。
+
+    ``appid_of``：条目 → appid 的解析函数。**必须传** —— `seen_deal` 里没有 appid，
+    它是 `game_meta` 的字段、由 `merge_details` 在渲染时才合并进去（2026-10-07 踩过：
+    直接用 `entry["appid"]` 结果一条都补不上）。
+    """
+    countries = [c for c in (cfg.get("compare_countries") or []) if c]
+    added = 0
+    for entry in entries:
+        if entry.get("compare"):
+            continue                      # 已有真查结果的（上一次产物的回收）不动
+        appid = appid_of(entry)
+        base, regular = entry.get("price_int"), entry.get("regular_int")
+        if not appid or not base or not regular:
+            continue
+        ratio = base / regular
+        raw_rows = []
+        for cc in countries:
+            initial = state.compare_original(appid, cc)
+            if initial is None:
+                continue
+            currency = (state.compare_cache.get(state.compare_key(appid, cc)) or {}).get("currency")
+            raw_rows.append({
+                "cc": cc,
+                "label": COMPARE_LABELS.get(cc, cc),
+                "currency": currency,
+                "final": int(round(initial * ratio)),
+            })
+        if not raw_rows:
+            continue
+        entry["compare"] = enrich.assemble_rows(raw_rows, entry, fx)
+        added += 1
+    if added:
+        log(f"[info] 比价行由 cache.json 的区域原价推算补上：{added} 条"
+            f"（现价 = 外区原价 × 国区折扣比例，仅本地预览用）")
+    return added
 
 
 def last_daily_stats(state: State) -> dict:
@@ -96,44 +155,10 @@ def resolve_output_dir(cfg: dict) -> Path:
     return out_dir
 
 
-def load_previous_compare(output_dir: Path) -> dict[int, list]:
-    """渲染**之前**从上一次产出的 data.js 里捞出 appid → 比价行（渲染会覆盖它）。"""
-    data_js = output_dir / "data.js"
-    if not data_js.exists():
-        return {}
-    try:
-        text = data_js.read_text(encoding="utf-8")
-        old = json.loads(text.split("=", 1)[1].rstrip().rstrip(";"))
-    except (OSError, ValueError, IndexError):
-        return {}
-    old_map: dict[int, list] = {}
-    for group in old.get("groups") or []:
-        for item in group.get("items") or []:
-            appid = item.get("appid")
-            if appid and item.get("compare"):
-                old_map[appid] = item["compare"]
-    return old_map
 
 
-def graft_compare(output_dir: Path, old_map: dict[int, list], log) -> int:
-    """渲染后把回收的比价行按 appid 注回新 payload 并重写 data.js。"""
-    if not old_map:
-        log("[info] 上一次产物里没有比价数据（正式 run.py 跑过一次后才会有）")
-        return 0
-    data_js = output_dir / "data.js"
-    payload = json.loads(data_js.read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
-    count = 0
-    for group in payload.get("groups") or []:
-        for item in group.get("items") or []:
-            rows = old_map.get(item.get("appid"))
-            if rows is not None:
-                item["compare"] = rows
-                count += 1
-    data_js.write_text(
-        "window.REPORT_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n",
-        encoding="utf-8",
-    )
-    return count
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,9 +202,9 @@ def main(argv: list[str] | None = None) -> int:
         log("状态库里没有今天的条目 —— 先正常跑一次 run.py，再改报表才有东西可渲染。")
         return 1
 
-    fx = load_fx_cache_only(cfg, today.isoformat())
+    fx = load_fx_cache_only(cfg, today.isoformat(), log)
     if not fx:
-        log("[warn] 汇率缓存里没有今天的数据：本轮页脚不显示汇率、比价不换算 CNY")
+        log("[warn] 汇率缓存缺失：本轮页脚不显示汇率、比价行只有原币种价（不换算 CNY）")
 
     last = last_daily_stats(state)
     hist_low_all = list(state.seen_deal.values())
@@ -190,9 +215,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         backlog = count_backlog(hist_low_all, state, cfg, now)
 
-    # 渲染会覆盖 output/data.js，比价行要先捞出来（全本地回收，不发 Steam 请求）
+    # 比价行：本地不发网络请求，只能从 cache.json 的**区域原价**推算
+    # （**渲染前注入**：S9 之后卡片是从 sections/picks/all.js 出来的，渲染后再改 payload
+    #   只能影响 groups，那几处现在基本是空的 —— 老实现就是这么失效的）
     output_dir = resolve_output_dir(cfg)
-    old_compare = load_previous_compare(output_dir)
+    all_entries = candidates + upcoming + hist_low_all
+    # seen_deal 里没有 appid（它是 game_meta 的字段），只能经 state.meta() 解析
+    def appid_of(entry: dict):
+        appid = entry.get("appid")
+        if appid:
+            return appid
+        meta = state.meta(entry.get("game_id")) or {}
+        return meta.get("appid")
+
+    estimated = graft_compare_from_cache(state, cfg, all_entries, fx, log, appid_of)
 
     def stats_of(detail_fetched: int, backlog_now: int):
         def build(info: dict) -> dict:
@@ -212,12 +248,11 @@ def main(argv: list[str] | None = None) -> int:
     info = render_pass(state, candidates, cfg, now, stats_of(0, backlog),
                        announce_merges=False, enrich_hook=None, fx=fx,
                        upcoming=upcoming, all_entries=hist_low_all)
-    grafted = graft_compare(output_dir, old_compare, log)
     log(f"测试报表已渲染：进列表 {info['shown']} 条（分档 {info['tier']}）；"
         f"即将过期进列表 {info['upcoming_shown']} 条；"
         f"全部视图数据 {info.get('all_shown', 0)} 条；"
-        f"比价行回收 {grafted} 条（本工具不发请求，比价只回收自旧产物/缓存；"
-        f"即将过期的比价待正式跑写入 low_time/compare 暂存后才有）")
+        f"比价行：按 cache.json 的区域原价推算 {estimated} 条"
+        f"（本工具不发网络请求；正式产物由 enrich 每轮真查）")
     log(f"  index.html : {info['paths']['index']}")
     log(f"  data.js    : {info['paths']['data_js']}")
     return 0

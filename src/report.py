@@ -110,6 +110,43 @@ def fx_display(cfg: dict, fx: dict | None) -> dict | None:
 # 现在写在 README 的「筛选条件」一节；改阈值时记得同步那里。
 
 
+#: 卡片的两个**分档配色**判据（S9-卡片，用户 2026-10-07）：
+#: 「60 好评和 90 好评一个颜色、剩 7 天和剩 2 天也是一个颜色」→ 都要分档。
+#: 阈值仍集中在配置（`good_positive_ratio` / `min_positive_ratio` / `upcoming_expiry_hours`
+#: / `home_new_low_days`），前端只挂类名，不再自己写一份。
+GOOD_POSITIVE_RATIO = 0.9
+
+
+def rate_tier(reviews: dict | None, cfg: dict | None = None) -> str | None:
+    """好评率配色档：``high``（≥ good_positive_ratio，默认 90%）/ ``ok``（≥ 展示门槛）/
+    ``low``（低于门槛 —— 只有「高热度 · 口碑不一」那一档才会出现）；没有详情返回 ``None``。"""
+    if not reviews or reviews.get("score") is None:
+        return None
+    score = float(reviews["score"])
+    good = float((cfg or {}).get("good_positive_ratio", GOOD_POSITIVE_RATIO)) * 100
+    floor = float((cfg or {}).get("min_positive_ratio", 0.7)) * 100
+    if score >= good:
+        return "high"
+    return "ok" if score >= floor else "low"
+
+
+def days_tier(days_left: int | None, cfg: dict | None = None) -> str | None:
+    """剩余天数配色档：``urgent``（≤ 即将过期窗口，默认 48h = 2 天）/ ``soon``（一周内）/
+    ``later``（还有一周以上）；不知道天数返回 ``None``。
+
+    边界都从配置推：``upcoming_expiry_hours`` 向上取整到天 = urgent，
+    ``home_new_low_days``（默认 7）= 「一周内」的分界。「今天结束」（0 天）归 urgent。
+    """
+    if days_left is None:
+        return None
+    hours = int((cfg or {}).get("upcoming_expiry_hours", DEFAULT_UPCOMING_HOURS))
+    urgent_max = max(0, (hours + 23) // 24)
+    later_min = int((cfg or {}).get("home_new_low_days", DEFAULT_HOME_DAYS))
+    if days_left <= urgent_max:
+        return "urgent"
+    return "soon" if days_left < later_min else "later"
+
+
 CURRENCY_SYMBOLS = {
     "CNY": "¥",
     "USD": "$",
@@ -220,8 +257,13 @@ def clean_title_zh(title_zh: str | None, title: str | None) -> str | None:
     return title_zh
 
 
-def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
-    """把状态库条目（已合并详情）拼成卡片数据。"""
+def build_card(entry: dict, now: datetime, labels: dict | None = None,
+               cfg: dict | None = None) -> dict:
+    """把状态库条目（已合并详情）拼成卡片数据。
+
+    ``cfg`` 只用于**配色分档的阈值**（好评率 / 剩余天数，见 rate_tier / days_tier）——
+    不传就用模块默认值，所以老的调用与测试照常工作。
+    """
     currency = entry.get("currency")
     appid = entry.get("appid")
     reviews = entry.get("reviews")
@@ -279,6 +321,9 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         "low_class": low_class,
         "low_label": classify.steam_low_label(low_class),
         "days_left": days_left,
+        # S9-卡片：剩余天数与好评率的**配色档**（前端只挂类名，阈值在服务端算）
+        "days_tier": days_tier(days_left, cfg),
+        "rate_tier": rate_tier(reviews, cfg),
         "last_low_text": last_low_text,
         # 权重公式 v2「间隔」项用的数值天数（平史低有值，新史低/取不到为 None）
         "last_low_days": last_low_days,
@@ -296,9 +341,8 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
         ),
         "expiry_text": expiry_dt.astimezone(now.tzinfo).strftime("%Y-%m-%d %H:%M") if expiry_dt else None,
         "reviews": reviews,
-        "reviews_text": (
-            f"{reviews['score']}% · {reviews['count']:,} 条" if reviews else None
-        ),
+        # 注：原 `reviews_text`（"94% · 22,300 条"）已删 —— S9-卡片要给「94%」单独上色，
+        # 前端拿 reviews.score / count 自己拼（服务端再拼一遍字符串就是第二份口径来源）
         "tier": tier,
         "tier_label": label_map.get(tier, tier),
         "steam_url": f"https://store.steampowered.com/app/{appid}/" if appid else None,
@@ -402,6 +446,9 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
 #: 10000，等于撒谎；而且**前端从头到尾没渲染过它**（refs B6 只要条数）—— 既是谎言
 #: 又是死数据（review-s9-01 补充审查 #1）。板块口径改在「关于网站」页由
 #: :func:`criteria_notes` 从配置生成，那里才是唯一来源。
+#: ⚠️ 加/改板块要同时动三处（这是已知的重复分派，暂时保留、改动面大）：
+#: ① :func:`_in_section`（判据）② :func:`_section_sort`（板块内排序）
+#: ③ :func:`render` 里 all.js 的 `section_order`（列表页顺序）—— 有单测与冒烟锁定。
 HOME_SECTIONS = [
     {"key": "new_low", "label": "新史低"},
     {"key": "expiring", "label": "即将到期"},
@@ -509,10 +556,16 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
 #: 间隔（gap）缺数据时**不计分、按剩余权重归一化**（refs.md §10.3 + Q-A：
 #: 用户裁决不扩抓「上次史低时间」，等数据自然累积）。
 RECOMMEND_WEIGHTS = {
-    "fame": 35,     # 名气：对数压缩，20 万评价封顶
-    "cut": 25,      # 折扣：95% 满分
-    "review": 15,   # 口碑：50% → 0 分，90% → 满分
-    "gap": 15,      # 间隔：距上次史低天数，一年以上满分
+    "fame": 40,     # 名气：对数压缩，20 万评价封顶
+    "cut": 30,      # 折扣：95% 满分
+    "review": 20,   # 口碑：50% → 0 分，90% → 满分
+    # ⚠️ 间隔项在**轮播池里永远是空的**：池子是新史低，而 `last_low_days` 只有平史低才有值
+    # （新史低的「上次史低」就是本次，不是「间隔」）。refs §10.2 原给它 15 分，那 15 分
+    # 实际上从不参与打分（总分按剩余 85 分归一化）→ 等于把名气/折扣悄悄放大，
+    # 与文档写的权重对不上（用户 2026-10-07：「怎么感觉排出来结果有点不同」）。
+    # 现默认 0，那 15 分并进名气 / 折扣 / 口碑。要真用间隔分，得让平史低也进池子，
+    # 或者扩抓 storelow（用户 2026-10-06 裁决：不扩）。
+    "gap": 0,
     "urgent": 5,    # 紧迫：快到期
     "fresh": 5,     # 新鲜：折扣刚开始
 }
@@ -540,13 +593,14 @@ def recommend_weights(cfg: dict | None) -> dict:
 def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
     """顶部大卡的推荐分（0~100）。**不满足前置门槛返回 ``None``** = 不进推荐位。
 
-    六项归一（refs.md §10.2 轮播版）：
+    打分项归一（refs.md §10.2 轮播版；**默认不含「间隔」** —— 见 RECOMMEND_WEIGHTS 的注释）：
 
     - 名气 ``log10(评价数+1) / log10(20 万+1)`` —— 用对数压，否则 156 万评价
       的游戏会把其余项压成噪声（§7.1 实测：彩虹六号 35% 折扣霸榜就是这么来的）
     - 折扣 ``折扣% / 95``
     - 口碑 ``(好评率 − 50) / 40``
-    - 间隔 ``log10(距上次史低天数 + 1) / log10(367)`` —— **只有平史低有这个数**
+    - 间隔 ``log10(距上次史低天数 + 1) / log10(367)`` —— **只有平史低有这个数**，
+      轮播池全是新史低 → 默认权重给 0，等于不参与（配置里配了才会算）
     - 紧迫 剩 ≤1 天 1.0 / ≤2 天 0.6 / ≤7 天 0.2 / 更久 0
       （原文按小时给档，卡片只有「剩 X 天」的日历天，按天近似）
     - 新鲜 折扣开始 ≤2 天 1.0 / ≤7 天 0.6 / 更早 0
@@ -845,6 +899,9 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
             "batch": int(cfg.get("list_batch", 30)),
             "auto_max": int(cfg.get("list_auto_max", 300)),
             "breakpoint": int(cfg.get("mobile_breakpoint_px", 768)),
+            #: S9-卡片：三档布局的第二个边界（≤ 它是平板档，> 它是 PC 档）。
+            #: 与 breakpoint 一样必须与 app.css 的 @media 一致；工具脚本也从这里读。
+            "tablet_breakpoint": int(cfg.get("tablet_breakpoint_px", 1100)),
         },
         # ⚠️ 原 `notice`（「本周 / 折扣中 / 全部」那句灰字说明）已随 S9 删除：
         # 页面上唯一的消费者 `<p class="notice">` 没了，而文案讲的又是已经不存在的
@@ -866,10 +923,21 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     # ⚠️ 产物是 all.js（window.ALL_DATA = {...}）而不是 .json —— 前端用动态
     # <script> 标签加载，不受 CORS 限制，本地 file:// 直开也能用；fetch 会失败
     if all_cards is not None:
+        # S9-卡片：板块列表页（首页点「查看更多」进去的那张页）的顺序 ——
+        # 首页四板块的顺序由 `_section_sort` 决定，而 all.js 的分组顺序是
+        # 「tier 分组 + (-cut, title)」，两者本来不一致（现象：点进去顺序变样）。
+        # 这里把每个板块的**完整 appid 顺序**一起下发，前端 featured 模式下按它排 ——
+        # 排序口径仍然只有服务端一份，前端不复制规则。
         all_payload = {
             "generated_at": payload["generated_at"],
             "generated_at_text": payload["generated_at_text"],
             "groups": build_groups(all_cards, cfg),
+            "section_order": {
+                spec["key"]: [card["appid"] for card in sorted(
+                    _section_members(spec["key"], all_cards, cfg),
+                    key=_section_sort(spec["key"]))]
+                for spec in HOME_SECTIONS
+            },
         }
         (output_dir / "all.js").write_text(
             "window.ALL_DATA = " + json.dumps(all_payload, ensure_ascii=False) + ";\n",

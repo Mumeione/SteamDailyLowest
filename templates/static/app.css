@@ -1,22 +1,74 @@
+/* 报表样式（S9 首页版）
+ * ================================================================
+ * 结构：变量与阶梯 → 顶栏 → 消息区 → 筛选行/抽屉 → 首页大卡 → 四板块
+ *       → 行列表（核心）→ 板块列表页 → 浮动按钮/精简模式 → 关于网站 → 空状态
+ *
+ * ⚠️ **三档视口，只有两条边界**（用户 2026-10-07：只要手机/平板/PC 三档）：
+ *     手机 = ≤ mobile_breakpoint_px(768)，**只考虑竖屏**
+ *     平板 = 769 ~ tablet_breakpoint_px(1100)，横竖屏都要好用
+ *     PC  = > 1100，只有横屏
+ *   这两个值在 config.json / payload 里下发，本文件的 @media **必须与它们一致**；
+ *   工具脚本（make_preview.py）也从 payload 读，别再各写一份（批 F3 踩过）。
+ *   布局尽量交给 grid/flex 自适应而不是加断点 —— 档位越多越难维护。
+ */
+
 :root {
   --bg: #f5f6f8;
   --card: #ffffff;
   --line: #e3e5e9;
   --text: #1c1e21;
   --muted: #6b7280;
+  --faint: #9aa1ab;
   --accent: #2563eb;
-  --new-low: #d92b2b;
+
+  /* ===== 颜色语义（一个颜色只干一件事）=====
+     S9-卡片（用户 2026-10-07 选「都用红，但三个色号」）：
+       新史低 #e05656 / 现价 #d92b2b / 比价贵 #b91c1c —— 三处红不再同一个号
+     绿 = 折扣力度（力度条 + 百分比）与「比价便宜」，两者都是「划算」方向。
+     ⚠️ 别让「新史低」变绿 —— 会跟折扣力度串味（S9 犯过这个错）。 */
+  --new-low: #e05656;
   --store-low: #6b7280;
   --price: #0a7d33;
-  /* 现价用促销红（超市促销逻辑，用户反馈绿色不显眼）；
-     与比价的「便宜绿/贵红」语义色分开 —— diff-cheap 仍绿，避免贵贱分不清 */
   --price-now: #d92b2b;
-  /* ===== S9-1（2026-10-06）新增：卡片阴影两档 =====
-     静止极淡、悬停加深。方向稿 v2 定稿值（A 的底色 + B 的浮动）。
-     字号定稿：中文名 14 / 现价 18 / 英文名·评价·史低标签 11 /
-     剩余天数·折扣百分比·划线原价 12 / 板块标题 14 */
+  --dear: #b91c1c;
+  /* Steam 的「好评」色（品牌蓝 #66c0f4 专为深底设计、白底 11px 只有 ~1.9:1 对比度，
+     按批 C2 的结论压深一档；用户 2026-10-07：「评价的百分比用 steam 的颜色」）。 */
+  --steam-blue: #1f96d2;
+  /* 警示但**不用红**：用户说「结束日期不要用红色，现在红色太多了」——
+     剩余天数紧迫、口碑偏低都用琥珀，把红留给「新史低 / 现价 / 比价贵」三件事。 */
+  --warn: #b45309;
+
   --shadow-card: 0 1px 2px rgba(16, 24, 40, .05);
   --shadow-card-hover: 0 6px 16px rgba(16, 24, 40, .13);
+
+  /* ===== 字号阶梯（6 档，别再单点加新尺寸）=====
+     11 辅助（英文名 / 评价 / 标签 / 划线原价 / 页脚）
+     12 次要（剩余天数 / 折扣% / 卡片子信息 / 大卡标题）
+     14 正文（中文名 / 导航 / 正文默认）
+     16 价格（行列表与大卡统一；用户：不能比导航栏之类的大，抢视觉注意力）
+     17 区块标题（板块名 / 最值得买 / 列表页标题）
+     19 站点名（全站最大，唯一） */
+  --fs-aux: 11px;
+  --fs-sub: 12px;
+  --fs-body: 14px;
+  --fs-price: 16px;
+  --fs-title: 17px;
+  --fs-brand: 19px;
+
+  /* ===== 间距阶梯（5 档）===== */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  /* 行内力度条的**最大长度** —— 它是页面上唯一能自由伸缩的元素，不设上限时
+     在宽行里会拉成几百 px 的长条（用户 2026-10-07：「平板的力度条太长了」）。
+     想让它长/短只改这一个数。 */
+  --cut-bar-max: 150px;
+
+  /* 大卡右下角「图标列」的宽度：两枚图标都在这条列里居中，中心点对齐 */
+  --icon-col: 20px;
 }
 
 * { box-sizing: border-box; }
@@ -26,378 +78,27 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", Roboto, sans-serif;
+  font: var(--fs-body)/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", Roboto, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
 
 .wrap {
-  /* S9：容器从 900px 放宽到 1440px —— 用户 2026-10-06 反馈
-     「900px 限制太大」，参照 gg.deals（1080 视口下内容约 970px，基本流式全宽）。
-     留白用 clamp 随视口伸缩，手机上仍是 12px。 */
   max-width: 1200px;
   margin: 0 auto;
   padding: 0 clamp(12px, 4vw, 56px);
 }
 
-/* 顶栏 */
-.topbar { background: var(--card); border-bottom: 1px solid var(--line); }
-.topbar .wrap { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-top: 10px; padding-bottom: 10px; }
-.topbar h1 { font-size: 17px; margin: 0; }
-.generated { font-size: 12px; color: var(--muted); }
+/* ================= 顶栏（吸顶）================= */
+.topbar { position: sticky; top: 0; z-index: 20; background: var(--card); border-bottom: 1px solid var(--line); }
+.topbar-inner { display: flex; align-items: center; gap: 18px; padding-top: 10px; padding-bottom: 10px; }
+.topbar .generated { flex: 0 0 auto; font-size: var(--fs-sub); color: var(--muted); }
 
-/* ---- S9-3 顶部消息区（refs.md §4 A-3 / B2）----
-   在顶栏下方，**最多两行**：① 季节特卖 / 活动条 ② 一条提示（数据陈旧告警或站点通知）。
-   没内容整块不显示（模板初始就 hidden；只有陈旧告警要等页面打开才知道，由 app.js 决定）。
-   季节主题色用**整块铺色 + 白字**表达，不靠文字颜色 —— 免得跟「折扣力度绿 / 新史低红」
-   这些有含义的颜色串味（refs.md C1 的顾虑）。 */
-.msgbar[hidden], .msg-alert[hidden] { display: none; }
-.msgbar .msg {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; line-height: 1.4;
-}
-/* 色带**通栏铺满**（横向 padding 交给里面的 .wrap），条本身比提示行厚一档 ——
-   用户原话「节日需要加宽条宽和放大字号」 */
-.msg-fest { color: #fff; padding: 13px 0; font-size: 14px; }
-.msg-fest.season-spring { background: linear-gradient(90deg, #15803d, #22a35a); }
-.msg-fest.season-summer { background: linear-gradient(90deg, #0369a1, #0ea5e9); }
-.msg-fest.season-autumn { background: linear-gradient(90deg, #b45309, #ea8a1f); }
-.msg-fest.season-winter { background: linear-gradient(90deg, #3730a3, #6366f1); }
-.msg-inner { display: flex; align-items: center; gap: 10px; }
-.msg-fest .msg-tag {
-  flex: 0 0 auto; font-size: 11px; font-weight: 700; padding: 2px 7px;
-  border-radius: 999px; background: rgba(255, 255, 255, .22);
-}
-/* 「使用其他字体」（A-3 原话）：页面要能**离线双击打开**、拉不了字体文件，
-   所以只能用系统字体栈做区分 —— 活动名走衬线体（Windows 宋体 / macOS Songti /
-   安卓 Noto Serif），其余文字仍是无衬线，一眼能分出「这是活动、不是数据」。 */
-.msg-fest .msg-name {
-  font-size: 17px; font-weight: 700; letter-spacing: .2px;
-  font-family: Georgia, "Songti SC", "SimSun", "Noto Serif CJK SC", "Noto Serif", serif;
-}
-.msg-fest .msg-note, .msg-fest .msg-until { font-size: 12px; opacity: .92; }
-.msg-fest .msg-until { margin-left: auto; white-space: nowrap; }
-.msg-fest .msg-link { color: #fff; font-size: 12px; }
-/* 第二行 —— 陈旧告警两档（黄 = Actions 延迟 / 红 = 今天压根没更新）+ 站点通知（红底白字） */
-.msg-alert { justify-content: center; text-align: center; padding: 9px 12px; }
-.msg-alert.is-warn { background: #f5b301; color: #3b2f00; }
-.msg-alert.is-stale, .msg-alert.is-notice { background: #b91c1c; color: #fff; }
-.msg-alert a { color: inherit; }
-@media (max-width: 768px) {
-  .msg-fest { padding: 10px 0; font-size: 13px; }
-  .msg-inner { flex-wrap: wrap; gap: 6px; }
-  .msg-fest .msg-name { font-size: 15px; }
-  /* 补充说明（例「一年四大特卖之一」）手机上省掉，别把色带顶成三行 */
-  .msg-fest .msg-note { display: none; }
-  .msg-fest .msg-until { margin-left: 0; flex: 1 1 100%; }
-}
-
-/* 批 F3：顶部概览 —— **手机两行、电脑一行**，各自写死，不靠 nth-child 猜。
-   ⚠️ 两个踩过的坑：
-   1) flex-wrap 在「刚好塞下 4 个」时排出 4+1（手机实测）；
-   2) `grid-column: span 3 / span 2` 是**无效写法** —— 简写里 start 的 span 会覆盖
-      line 值，若 end 也是 span 且导致 start 变成 span(count+1) 就是循环依赖，
-      浏览器直接丢弃整条声明（截图里每框独占一行就是这么来的）。
-      正确写法见下面第 2 排的 `nth-child(n+4)` 规则。
-   —— 手机（≤768px）3 列 2 行（3 + 2），平板/电脑 5 列 1 行。 */
-.overview {
-  display: grid;
-  gap: 8px;
-  margin: 12px 0;
-}
-.stat-box {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 10px;
-  min-width: 0;
-}
-/* 平板起（>768px）：固定 5 列，一行放下。
-   罕见情况下会多出第 6 个框（「史低待确认」，只在 ITAD 缺 storeLow 时出现）——
-   让它独占第 2 行会很突兀，所以让它**跨满整行**。 */
-@media (min-width: 769px) {
-  .overview { grid-template-columns: repeat(5, 1fr); }
-  .overview > .stat-box:nth-child(6) { grid-column: 1 / -1; }
-}
-/* 手机（≤768px）：**两行**，每行按框数等分铺满，写死跨格数不靠 nth-child 猜。
-   - 5 个框（常态，无「待确认」）：3 + 2  → 第 1 排各占 1/3，第 2 排各占 1/2
-   - 6 个框（有「待确认」）：3 + 3 → 两排都是 3 个，各占 1/3
-   基准列数取 6 的公倍数，用 span 2（1/3）与 span 3（1/2）拼出来，两种都是整数格 */
-@media (max-width: 768px) {
-  .overview { grid-template-columns: repeat(6, 1fr); gap: 6px; }
-  /* 第 1 排固定 3 个，各占 2 格（= 总宽 1/3） */
-  .overview > .stat-box:nth-child(-n+3) { grid-column: span 2; }
-  /* 第 2 排：常态只剩 2 个 → 各占 3 格（= 总宽 1/2），两个正好铺满。
-     有第 6 个框时，第 4~6 个各占 2 格，与第 1 排同款 3 列 */
-  .overview > .stat-box:nth-child(n+4) { grid-column: span 3; }
-  .overview:has(> .stat-box:nth-child(6)) > .stat-box:nth-child(n+4) {
-    grid-column: span 2;
-  }
-}
-.stat-label {
-  font-size: 11px; color: var(--muted); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
-.stat-value { font-size: 20px; font-weight: 600; line-height: 1.3; }
-.stat-unit { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 2px; }
-/* 史低构成沿用色点语义：新=红 / 平=灰 / 待确认=灰
-   （批 F5：待确认数字原为紫 #5b4bd6，与 .point-unknown 及卡片灰虚线色条不一致，统一为灰） */
-.stat-value.stat-new { color: var(--new-low); }
-.stat-value.stat-tie { color: var(--store-low); }
-.stat-value.stat-unknown { color: var(--store-low); }
-.point { display: inline-flex; align-items: center; gap: 5px; }
-.point::before {
-  content: ""; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--line);
-}
-.point-new::before { background: var(--new-low); }
-.point-tie::before { background: var(--store-low); }
-.point-unknown::before { background: var(--store-low); }
-
-/* 筛选栏 */
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
-.filter {
-  font: inherit;
-  font-size: 13px;
-  padding: 5px 10px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  border-radius: 999px;
-  color: var(--text);
-  cursor: pointer;
-}
-.filter.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.filter:disabled { opacity: .45; cursor: not-allowed; }
-
-/* ⚠️ 原 `.notice`（筛选栏下面那行灰色说明）已随 S9 删除 ——
-   页面上的消费者没了，`report.py` 里那个 `notice` 字段也一并去掉了（review-s9-01 #4）。 */
-
-.toggle { margin-left: auto; font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
-
-/* 批 F：页面上不再有「筛选条件」折叠框 —— 判定口径全部写进 README 的
-   「筛选条件」一节（属于文档，不占手机屏幕高度）。
-   `.point` 色点样式保留：分组头在多组时仍用它显示新/平构成 */
-
-/* 分组 */
-.group { margin-bottom: 14px; }
-/* 批 F2：分组头默认**一行**（电脑端）；手机端（见媒体查询）改成两行 ——
-   一行放「箭头 + 分组名 + 条数」，一行放「好评率 ≥70% 且评价数 ≥100」，
-   否则那一长串入组条件会把标题挤得转行、整块挤成一团 */
-.group-head {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 14px; font-weight: 600;
-  padding: 6px 2px; cursor: pointer; user-select: none;
-}
-.group-head .group-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.group-head .group-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-/* count 自动右靠：后面的史低构成跟着排到同一侧（批 E spec E5）——
-   批 G（2026-09-25）起「折扣开始」已挪进 .group-title，不再在这一侧 */
-.group-head .count { font-weight: 400; color: var(--muted); font-size: 12px; }
-.group-head .group-start { font-weight: 400; font-size: 11px; color: var(--muted); }
-.group-head .low-points { margin-top: 0; gap: 10px; font-size: 11px; }
-/* 分组标题旁的入组条件：让「好评达标」这类标签不靠猜 */
-.group-head .group-criteria {
-  font-weight: 400; font-size: 11px; color: var(--muted);
-  background: #eef1f5; border-radius: 4px; padding: 1px 6px;
-}
-.group-head .group-label { flex: 0 0 auto; }
-.group-head .arrow { transition: transform .15s ease; color: var(--muted); font-size: 12px; }
-.group.collapsed .arrow { transform: rotate(-90deg); }
-.group.collapsed .cards, .group.collapsed .pager, .group.collapsed .group-tools-box { display: none; }
-
-/* R1：组内排序工具条（复用 .filter 圆角按钮外观，尺寸略小） */
-.group-tools-box { padding: 0 2px 6px; }
-.group-tools { display: flex; flex-wrap: wrap; gap: 6px; }
-.group-tools .filter { font-size: 12px; padding: 3px 9px; }
-
-/* 卡片 */
-.card {
-  background: var(--card);
-  border-radius: 8px;
-  margin-bottom: 8px;
-  overflow: hidden;
-  /* S9-1：去掉原来的 1px 描边，改用阴影分层（描边+阴影同时上会显脏） */
-  box-shadow: var(--shadow-card);
-  transition: transform .15s ease, box-shadow .15s ease;
-}
-/* S9-1：悬停上浮 2px + 阴影加深（方向稿里的「B 的浮动效果」）。
-   手机没有 hover，这条只在电脑/鼠标设备上生效。 */
-.card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-card-hover);
-}
-/* 系统开了「减少动态效果」时不位移，只保留阴影变化 */
-@media (prefers-reduced-motion: reduce) {
-  .card { transition: box-shadow .15s ease; }
-  .card:hover { transform: none; }
-}
-/* 批 E spec E2：左侧色条 = 史低类型，页面的**主视觉锚点** ——
-   N/H/S 原本只体现在 11px 小标签的字体色上，几乎看不出来 */
-.card { border-left: 6px solid var(--line); }
-.card.low-new { border-left-color: var(--new-low); }
-.card.low-tie { border-left-color: var(--store-low); }
-.card.low-unknown { border-left: 6px dashed var(--store-low); }
-/* S9：用户反馈缩窄后偏紧凑 —— 卡内整体间距 10 -> 14px */
-.card-summary { display: flex; gap: 14px; padding: 8px; align-items: center; cursor: pointer; }
-/* boxart 是 2:3 竖图，框跟着竖过来，不再裁切（卡片随之变高一点） */
-.thumb { width: 56px; height: 84px; flex: 0 0 56px; object-fit: cover; border-radius: 6px; background: #eceff3; }
-/* S9-3：旧的「无图精简模式」是卡片时代的勾选框，已随 S9 退场 ——
-   新版是右下角浮动按钮 + body.compact，见文件末尾「浮动按钮 / 精简模式」一节 */
-/* S9：再把「标签行末尾的力度条」与「右侧价格列」之间单独多留一点（6px），
-   否则力度条的 -95% 会和价格贴在一起 */
-.card-main { min-width: 0; flex: 1; padding-right: 6px; }
-.card-title { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-price { text-align: right; flex: 0 0 auto; }
-.price-now { color: var(--price-now); font-weight: 700; font-size: 18px; }
-.price-regular { font-size: 12px; color: var(--muted); text-decoration: line-through; }
-/* 批 F：改回 11px —— 批 E 第三轮把它提到 13px 近黑，用户反馈太大，
-   价格区三行（现价 / 原价 / 剩 X 天）里它不该抢现价的视觉 */
-.days-left { font-size: 12px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
-
-/* 链接图标：并入档位标签行（.tags 内、紧跟「好评达标」等档位标签右侧）——
-   与标签同行天然对齐（批 C2，替代此前的「沉底对齐」方案） */
-.card-links { display: flex; align-items: center; gap: 6px; align-self: center; }
-.icon-link { display: inline-flex; color: var(--muted); }
-.icon-link:hover { color: var(--accent); }
-.icon-link svg { width: 16px; height: 16px; fill: currentColor; display: block; }
-
-/* R6：英文名 —— 始终显示在中文标题下方的灰色小字；固定占一行高度，
-   让有/没有中文名的卡片在双列网格里高度对齐 */
-.card-title-en {
-  font-size: 11px; font-weight: 400; color: var(--muted);
-  line-height: 1.3; margin: 0 0 2px; min-height: 1.3em;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* 默认一行两卡；窄屏（≤断点，与分页断点一致）收成单列 */
-.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
-/* S9：容器放宽到 1440px 后，宽屏一行放 3 张（900px 时代放不下，
-   现在限制取消了）。1100px 以下仍保持 2 列。 */
-@media (min-width: 1100px) {
-  .cards { grid-template-columns: repeat(3, 1fr); }
-}
-.cards .card { margin-bottom: 0; }
-
-/* 无封面图：保留占位空块（.thumb 自带浅灰底），双列网格不错位，只是没有图片 */
-.thumb-empty { }
-
-.tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #eef1f5; color: var(--muted); }
-/* 批 E：卡片不再放档位标签（同组内必然相同，分组头已写明），原 .tag-quality 已删 */
-/* 史低类型（批 E spec E1/E2）：只剩「新 / 平」两档 —— 「店史低」退役，
-   本页全是 Steam 店史低，用它会产生「那别家呢」的误读 */
-.tag-low-new { background: #fdecec; color: var(--new-low); }
-.tag-low-tie { background: #eef1f5; color: var(--store-low); }
-.tag-low-unknown { background: #eef1f5; color: var(--store-low); }
-.tag-pending { background: #f1f0ff; color: #5b4bd6; }
-/* 重构 S5：精选扁平列表没有档位分组 —— 「好评达标 / 高热度 · 口碑不一」
-   降级为卡片标签（featured 组才渲染）。口碑不一用暖色提醒，好评达标保持中性 */
-.tag-tier { background: #eef1f5; color: var(--muted); }
-.tag-tier-notable { background: #fff4e5; color: #b26a00; }
-
-/* 折扣力度条（批 E spec E2）：填充宽 = cut%，颜色沿用原有的折扣绿，
-   取代原来那个和 N/H/S 抢注意力的绿色 -XX% pill。
-   位置在**链接图标之后**（第二轮调整），宽度给足让它真正能当「力度」读 */
-.cut-bar {
-  display: inline-block; width: 88px; height: 5px; vertical-align: middle;
-  border-radius: 3px; background: #eceff3; overflow: hidden;
-}
-.cut-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--price); }
-/* 折扣百分比跟力度条同一个信息块：同色、同档次的存在感。
-   字号沿革：11px → 批 E 放大到 13px → 批 F 撤回 11px → 用户手动定 12px */
-.cut-num { font-size: 12px; color: var(--price); font-weight: 700; }
-.cut-wrap { display: inline-flex; align-items: center; gap: 4px; }
-
-.card-detail { border-top: 1px dashed var(--line); padding: 8px 10px 10px; font-size: 13px; display: none; }
-.card.open .card-detail { display: block; }
-.detail-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--muted); }
-.detail-row b { color: var(--text); font-weight: 500; }
-/* 上次史低：有日期可悬停/点按的值加虚线下划线提示可交互 */
-.detail-row b.has-alt { cursor: pointer; border-bottom: 1px dashed var(--muted); }
-
-/* 批 E spec E3（用户第二轮改回）：详情左右两栏 ——
-   左栏 = 史低天数 + 折扣结束；右栏 = 跨区比价。
-   没有比价行时右栏为空，前端回落单栏（避免出现半张空表格）；窄屏堆叠 */
-.detail-cols { display: flex; gap: 10px; }
-.detail-col { flex: 1; min-width: 0; }
-.detail-col + .detail-col { border-left: 1px dashed var(--line); padding-left: 10px; }
-
-/* 比价 ±百分比：负=比国区便宜（绿），正=贵（红），0=同价 */
-.diff-cheap { color: var(--price); font-weight: 600; }
-.diff-dear { color: var(--new-low); font-weight: 600; }
-.diff-same { color: var(--muted); }
-
-.pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 0 10px; font-size: 13px; color: var(--muted); }
-.pager button {
-  font: inherit; font-size: 13px; padding: 4px 10px;
-  border: 1px solid var(--line); background: var(--card); border-radius: 6px; cursor: pointer;
-}
-.pager button:disabled { opacity: .45; cursor: not-allowed; }
-
-/* ---- S9-3 空状态（refs.md B13：无内容 / 加载中 / 加载失败都要有插画）----
-   插画是 app.js 里的内联 SVG（常量字符串），配色只用站点现有色：
-   新史低红 #d92b2b / 力度绿 #0a7d33 / 主色蓝 #2563eb / 中性灰。 */
-.empty { text-align: center; color: var(--muted); padding: 30px 0 36px; }
-.empty-art { width: 104px; height: 104px; display: block; margin: 0 auto 10px; }
-/* 「加载中」那圈靠 CSS 转，不在 SVG 里写 SMIL —— 老安卓 WebView 对 SMIL 支持不稳 */
-.empty-art.is-spin { animation: sdl-spin 1.2s linear infinite; }
-@keyframes sdl-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .empty-art.is-spin { animation: none; } }
-.empty-text { margin: 0; font-size: 13px; }
-.empty-retry {
-  margin-top: 12px; font: inherit; font-size: 13px; padding: 6px 16px;
-  border: 1px solid var(--line); background: var(--card); border-radius: 999px; cursor: pointer;
-}
-.empty-retry:hover { background: #eef1f5; }
-.footer { color: var(--muted); font-size: 12px; padding: 16px 12px 32px; }
-.footer p { margin: 4px 0; }
-
-/* 断点必须与 app.js 的 data.page_size.breakpoint 一致（默认 768px） */
-@media (max-width: 768px) {
-  .topbar h1 { font-size: 15px; }
-  /* 批 F3：概览的列数/跨格规则已提到上面专门的媒体查询块里（与平板那档对照着看更清楚），
-     这里只留尺寸微调 */
-  .stat-value { font-size: 18px; }
-  .stat-label { font-size: 11px; }
-  /* 批 F2：分组头改两行 —— 第一行「箭头 + 组名 + 入组条件 + 折扣开始」
-     （= 整个 .group-title），第二行「条数 + 新/平构成」（= .group-meta），
-     否则条件文案把标题挤得转行。批 G（2026-09-25）把「折扣开始」从后者挪进前者 */
-  .group-head { flex-wrap: wrap; row-gap: 3px; align-items: baseline; }
-  .group-head .group-title { flex: 1 1 auto; }
-  .group-head .group-meta { flex: 1 1 100%; margin-left: 18px; }
-  .group-head .group-criteria { white-space: normal; }
-  /* S9-1：封面 / 中文名字号 / 力度条**不再在手机端单独缩小** ——
-     统一沿用桌面档（方向稿 v2 就是这一档，字号也是在这基础上定的）。
-     手机验证后如果觉得卡片太高，再单独给手机收一档。 */
-
-  /* 布局收单列 = 每页条数切到手机档，两者永远同断点（§7.3） */
-  .cards { grid-template-columns: 1fr; }
-  .cards .card { margin-bottom: 0; }
-
-  /* 窄屏详情回落单栏纵向堆叠，分隔线改横向 */
-  .detail-cols { flex-direction: column; gap: 0; }
-  .detail-col + .detail-col {
-    border-left: 0; padding-left: 0;
-    border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 6px;
-  }
-}
-
-/* ==================================================================
-   S9 首页布局（参照 gg.deals）：吸顶导航 + 顶部大卡横排 + 四板块两栏行列表
-   ================================================================== */
-
-/* ---- 吸顶导航 ---- */
-.topbar { position: sticky; top: 0; z-index: 20; }
-.topbar-inner { display: flex; align-items: center; gap: 18px; }
-/* ---- 站点名（标识化，refs.md B1「艺术字体」）----
-   ⚠️ 页面要能**离线双击打开**、不联网不打包 → **没有字体文件可用**
-   （内联字体会让 CSS 涨几十 KB，用户明确不要）。所以这里用纯 CSS 拼标识感：
-   一个自绘小标记（向下的箭头落在底线上 = 价格探底）+ 双色分段 +
-   「Steam」段渐变裁字。不支持渐变裁字的浏览器会退回纯蓝字，不会变透明看不见。 */
+/* 站点名：自绘小标记 + 双色分段（纯 CSS 拼标识感 —— 页面要能离线双击打开，
+   不引字体文件；不支持渐变裁字的浏览器退回纯蓝字，不会变透明看不见） */
 .brand {
-  display: inline-flex; align-items: center; gap: 7px;
-  font-size: 19px; font-weight: 800; letter-spacing: -.5px;
-  text-decoration: none; color: var(--text); flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto;
+  font-size: var(--fs-brand); font-weight: 800; letter-spacing: -.5px;
+  text-decoration: none; color: var(--text);
 }
 .brand-mark { width: 22px; height: 22px; display: block; color: #1d4ed8; flex: 0 0 auto; }
 .brand-mark path, .brand-mark rect { fill: currentColor; }
@@ -411,116 +112,120 @@ html, body {
 }
 .brand-b { color: var(--text); }
 .brand:hover .brand-b { color: var(--accent); }
-.nav { display: flex; gap: 4px; flex: 1 1 auto; flex-wrap: wrap; }
 
-/* ---- 手机端导航折叠（汉堡按钮 → 竖排浮层）----
-   电脑端这个按钮是 display:none、导航保持横排（只在 ≤768px 的媒体查询里出现）。 */
+.nav { display: flex; gap: var(--sp-1); flex: 1 1 auto; flex-wrap: wrap; }
+.nav-item {
+  font: inherit; font-size: var(--fs-body); padding: 6px 12px; border: 0; background: none;
+  color: var(--text); border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.nav-item:hover { background: #eef1f5; }
+.nav-item.active { background: var(--accent); color: #fff; }
+
+/* 手机端导航折叠（汉堡 → 竖排浮层）；PC/平板上按钮 display:none、导航保持横排 */
 .nav-toggle {
-  display: none;
-  width: 38px; height: 34px; flex: 0 0 auto;
+  display: none; width: 38px; height: 34px; flex: 0 0 auto;
   align-items: center; justify-content: center;
-  border: 1px solid var(--line); border-radius: 9px;
-  background: var(--card); padding: 0; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--card);
+  padding: 0; cursor: pointer;
 }
 .nav-toggle .bars { display: block; width: 17px; }
 .nav-toggle .bars i {
   display: block; height: 2px; margin: 3px 0; border-radius: 1px;
   background: var(--text); transition: transform .18s ease, opacity .18s ease;
 }
-/* 展开时三条线转成 ×，比"箭头旋转"更像安卓上的返回/收起 */
 .nav-toggle[aria-expanded="true"] .bars i:nth-child(1) { transform: translateY(5px) rotate(45deg); }
 .nav-toggle[aria-expanded="true"] .bars i:nth-child(2) { opacity: 0; }
 .nav-toggle[aria-expanded="true"] .bars i:nth-child(3) { transform: translateY(-5px) rotate(-45deg); }
-.nav-item {
-  font: inherit; font-size: 14px; padding: 6px 12px; border: 0; background: none;
-  color: var(--text); border-radius: 6px; cursor: pointer; white-space: nowrap;
-}
-.nav-item:hover { background: #eef1f5; }
-.nav-item.active { background: var(--accent); color: #fff; }
-.topbar .generated { flex: 0 0 auto; }
 
-/* ---- 筛选胶囊行 ---- */
-.filterbar { display: flex; align-items: center; gap: 6px; margin: 14px 0 4px; }
+/* ================= 顶部消息区 =================
+   最多两行：① 季节特卖/活动条（四季主题色、衬线字体、色带通栏但内容套 .wrap 与正文对齐）
+   ② 提示条（数据陈旧告警 >26h 黄 / >36h 红，或站点通知红底白字；陈旧告警优先）。
+   色带用整块铺色表达季节，不靠文字颜色 —— 免得跟「力度绿 / 新史低红」串味。 */
+.msgbar[hidden], .msg-alert[hidden] { display: none; }
+.msgbar .msg { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-body); line-height: 1.4; }
+.msg-fest { color: #fff; padding: 13px 0; }
+.msg-fest.season-spring { background: linear-gradient(90deg, #15803d, #22a35a); }
+.msg-fest.season-summer { background: linear-gradient(90deg, #0369a1, #0ea5e9); }
+.msg-fest.season-autumn { background: linear-gradient(90deg, #b45309, #ea8a1f); }
+.msg-fest.season-winter { background: linear-gradient(90deg, #3730a3, #6366f1); }
+.msg-inner { display: flex; align-items: center; gap: 10px; }
+.msg-fest .msg-tag {
+  flex: 0 0 auto; font-size: var(--fs-aux); font-weight: 700; padding: 2px 7px;
+  border-radius: 999px; background: rgba(255, 255, 255, .22);
+}
+.msg-fest .msg-name {
+  font-size: var(--fs-price); font-weight: 700; letter-spacing: .2px;
+  font-family: Georgia, "Songti SC", "SimSun", "Noto Serif CJK SC", "Noto Serif", serif;
+}
+.msg-fest .msg-until { font-size: var(--fs-sub); opacity: .92; }
+.msg-fest .msg-until { margin-left: auto; white-space: nowrap; }
+.msg-fest .msg-link { color: #fff; font-size: var(--fs-sub); }
+.msg-alert { justify-content: center; text-align: center; padding: var(--sp-2) 12px; }
+.msg-alert.is-warn { background: #f5b301; color: #3b2f00; }
+.msg-alert.is-stale, .msg-alert.is-notice { background: #b91c1c; color: #fff; }
+.msg-alert a { color: inherit; }
+
+/* ================= 筛选行 + 底部抽屉 ================= */
+.filterbar { display: flex; align-items: center; gap: 6px; margin: var(--sp-3) 0 var(--sp-1); }
 .chip {
-  font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 999px;
+  font: inherit; font-size: var(--fs-sub); padding: 5px 12px; border-radius: 999px;
   border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer;
 }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.filterbar .summary { margin-left: auto; font-size: 12px; color: var(--muted); }
-
-/* ---- 底部抽屉筛选（refs.md §6.7）----
-   手机上从屏幕底部滑出（安卓习惯），电脑上同一个面板改成右侧浮层。
-   好处是维度可以随便加，不会把顶栏挤爆。 */
+.filterbar .summary { margin-left: auto; font-size: var(--fs-sub); color: var(--muted); }
 .filter-open { display: inline-flex; align-items: center; gap: 6px; }
 .f-badge {
-  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-  background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+  min-width: 16px; height: 16px; padding: 0 var(--sp-1); border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: var(--fs-aux); font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
 }
-.chip.opt.active {
-  background: var(--accent); border-color: var(--accent); color: #fff;
-}
-/* 没有数据的日期：置灰不可点（refs §11.5 Q2）。
-   `disabled` 已经让它点不动了，这里只是让它**看起来**点不动。 */
-.chip.opt:disabled, .chip.opt.is-off {
-  opacity: .4; cursor: not-allowed; text-decoration: line-through;
-}
+.chip.opt.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* 没有数据的日期：置灰不可点（refs §11.5 Q2） */
+.chip.opt:disabled, .chip.opt.is-off { opacity: .4; cursor: not-allowed; text-decoration: line-through; }
 .drawer-mask { position: fixed; inset: 0; background: rgba(16, 24, 40, .42); z-index: 40; }
 .drawer {
   position: fixed; z-index: 41; background: var(--card);
-  display: flex; flex-direction: column;
-  box-shadow: 0 -8px 24px rgba(16, 24, 40, .18);
+  display: flex; flex-direction: column; box-shadow: 0 -8px 24px rgba(16, 24, 40, .18);
 }
-/* ⚠️ .drawer 自带 display:flex，会盖掉 [hidden] 的默认 display:none —— 必须显式写回来 */
+/* ⚠️ .drawer 自带 display:flex，会盖掉 [hidden] 的 display:none —— 必须显式写回来 */
 .drawer[hidden], .drawer-mask[hidden], .f-badge[hidden] { display: none; }
 .drawer-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 14px; border-bottom: 1px solid var(--line);
+  padding: var(--sp-3) 14px; border-bottom: 1px solid var(--line);
 }
 .drawer-close {
-  border: 0; background: none; font-size: 16px; color: var(--muted);
-  cursor: pointer; padding: 4px 6px; font-family: inherit;
+  border: 0; background: none; font-size: var(--fs-price); color: var(--muted);
+  cursor: pointer; padding: var(--sp-1) 6px; font-family: inherit;
 }
-.drawer-body { overflow-y: auto; padding: 4px 14px 14px; flex: 1 1 auto; }
+.drawer-body { overflow-y: auto; padding: var(--sp-1) 14px 14px; flex: 1 1 auto; }
 .fgroup { padding: 10px 0; border-bottom: 1px dashed var(--line); }
 .fgroup:last-child { border-bottom: 0; }
-.fgroup-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.fgroup-title { font-size: var(--fs-sub); font-weight: 600; margin-bottom: var(--sp-2); }
 .fgroup-items { display: flex; flex-wrap: wrap; gap: 6px; }
-.drawer-foot {
-  display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line);
-}
+.drawer-foot { display: flex; gap: var(--sp-2); padding: 10px 14px; border-top: 1px solid var(--line); }
 .drawer-foot .chip { flex: 1 1 0; text-align: center; padding: 9px 12px; }
 
-/* 抽屉的两种形态写进各自的媒体查询里 —— 之前手机那档写在顶层（靠 769px 覆盖生效），
-   缩进看着像在某个查询里，容易被误读（review-s9-01 补充审查 #7）。 */
-@media (max-width: 768px) {
-  .drawer {
-    left: 0; right: 0; bottom: 0; max-height: 78vh;
-    border-radius: 14px 14px 0 0;
-  }
-}
-@media (min-width: 769px) {
-  .drawer {
-    right: 0; top: 0; bottom: 0; left: auto; width: 380px;
-    max-height: none; border-radius: 0;
-    border-left: 1px solid var(--line);
-  }
-}
-
-/* ---- 顶部大卡横排 ---- */
-.picks { margin: 14px 0 26px; }
-.deck-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
-.deck-title { font-size: 17px; font-weight: 600; margin: 0; }
-.deck-sub { font-size: 12px; color: var(--muted); }
+/* ================= 首页大卡（「最值得买」）=================
+   S9-卡片（2026-10-07）：**每页张数 = 实际列数**（JS 按容器宽度算），列数交给
+   auto-fill 自适应 —— 之前 5 列写死，1100px 上每张约 208px 太占地方，
+   而且 5 张会排成 3+2 留一个孤儿。
+   ⚠️ 这里的 150px 必须与 app.js 的 PICK_MIN 一致，否则「算出来的列数」与
+      「CSS 真正排出来的列数」会错位。 */
+.picks { margin: var(--sp-3) 0 26px; }
+.deck-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 10px; }
+.deck-title { font-size: var(--fs-title); font-weight: 600; margin: 0; }
+.deck-sub { font-size: var(--fs-sub); color: var(--muted); }
 .deck-nav { margin-left: auto; display: flex; gap: 6px; }
 .round {
   width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line);
-  background: var(--card); color: var(--text); font-size: 16px; line-height: 1;
+  background: var(--card); color: var(--text); font-size: var(--fs-price); line-height: 1;
   cursor: pointer; padding: 0;
 }
 .round:hover:not(:disabled) { background: #eef1f5; }
 .round:disabled { opacity: .35; cursor: not-allowed; }
-.deck-track { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+/* 列数由 app.js 算好写进 inline style（`repeat(N, 1fr)`，N ≤ 5）—— 这里只是
+   JS 没跑/被禁用时的兜底（2 列），不要再在 CSS 里写第二份列数规则。 */
+.deck-track { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-3); }
 .pick {
   background: var(--card); border-radius: 8px; overflow: hidden; cursor: pointer;
   box-shadow: var(--shadow-card); position: relative;
@@ -530,222 +235,352 @@ html, body {
 .pick-art { position: relative; aspect-ratio: 3 / 4; background: #eceff3; }
 .pick-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pick-rank {
-  position: absolute; left: 8px; top: 8px; min-width: 26px; height: 26px; border-radius: 13px;
-  background: rgba(0,0,0,.62); color: #fff; font-size: 12px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center; padding: 0 8px;
+  position: absolute; left: var(--sp-2); top: var(--sp-2); min-width: 26px; height: 26px;
+  border-radius: 13px; background: rgba(0, 0, 0, .62); color: #fff;
+  font-size: var(--fs-sub); font-weight: 700;
+  display: flex; align-items: center; justify-content: center; padding: 0 var(--sp-2);
 }
-/* 大卡信息区：**白底**（用户 2026-10-07 反馈深色不合适，改回白色）。
-   排版：标题两行 → 力度条/价格一行 → 链接/划线原价一行，两行左右都有内容。 */
-.pick-body { padding: 9px 10px 10px; }
+/* 大卡信息区：三排（用户 2026-10-07 定稿）——
+   ① 标题　② 史低类型 + 折扣徽章 + 小黑盒　③ 原价（划线）+ 现价 + Steam。
+   不再有 `From:` 字样；力度条不在大卡里。两枚图标放同一条「图标列」居中（中心点对齐）。 */
+.pick-body { padding: 8px 9px 9px; }
 .pick-title {
-  font-size: 13px; font-weight: 600; line-height: 1.35; min-height: 2.7em;
+  font-size: var(--fs-body); font-weight: 600; line-height: 1.35; min-height: 2.7em;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.pick-foot { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
-.pick-price { font-size: 16px; font-weight: 700; color: var(--price-now); margin-left: auto; }
-.pick-meta { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
-.pick-meta .links svg { fill: #9aa1ab; }
-.pick-meta .links a:hover svg { fill: var(--accent); }
-.pick-was {
-  margin-left: auto; font-size: 12px; color: var(--muted); text-decoration: line-through;
+/* 第 2 排：新史低/平史低 + 折扣（绿底徽章 = 折扣力度色） */
+.pick-low { display: flex; align-items: center; gap: 5px; margin-top: 6px; }
+.pick-low .links svg { fill: var(--faint); }
+.pick-low .links a:hover svg { fill: var(--accent); }
+.pick-cut {
+  font-size: var(--fs-aux); font-weight: 700; color: var(--price);
+  background: #e8f5ec; border-radius: 3px; padding: 1px 5px;
 }
-/* 史低标签：**沿用 S9 之前的口径** —— 新史低是**红**（与行左侧色条同色），
-   平史低/待确认用中性灰。
-   ⚠️ **别用绿色** —— 绿在本站专属「折扣力度」（`.cut-bar` / `.cut-num`），
-   混用会让"新史低"和"折扣"串味（S9 犯过这个错，见 handoff §4.1）。 */
+/* 第 3 排：原价（划线）→ 现价 → 图标贴右 */
+.pick-price-row { display: flex; align-items: baseline; gap: 6px; margin-top: 5px; }
+.pick-was { font-size: var(--fs-aux); color: var(--muted); text-decoration: line-through; }
+.pick-price { font-size: var(--fs-title); font-weight: 700; color: var(--price-now); }
+/* 大卡右下角的两枚图标：同一个**固定宽度的图标列**、各自在列内**居中** ——
+   两枚图标中心点因此落在同一条竖线上（用户 2026-10-07：要中心对齐、不是左右对齐；
+   两枚图形宽高比不同，靠「墨迹铺满 + 列内居中」才看着一致）。 */
+.pick-low .links,
+.pick-price-row .links {
+  margin-left: auto; width: var(--icon-col, 20px); justify-content: center;
+}
+.pick-price-row .links { align-self: center; }
+.pick-price-row .links svg { fill: var(--faint); }
+.pick-price-row .links a:hover svg { fill: var(--accent); }
+
+/* 史低标签：新史低红（与左侧色条同色）、平史低/待确认中性灰。
+   ⚠️ 别用绿 —— 绿专属「折扣力度」。 */
 .hl {
-  display: inline-block; background: #eef1f5; color: var(--store-low); font-weight: 700;
-  font-size: 11px; padding: 1px 5px; border-radius: 3px;
+  display: inline-block; background: #eef1f5; color: var(--store-low);
+  font-weight: 700; font-size: var(--fs-aux); padding: 1px 5px; border-radius: 3px;
 }
-.hl.hl-new { background: #fdecec; color: var(--new-low); }
+.hl.hl-new { background: #fbdada; color: var(--new-low); }
 
-/* ---- 四板块两栏 ---- */
-.sections { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; align-items: start; }
-.section-col { min-width: 0; }
-/* 同一列内相邻板块的竖直间距 —— 分栏搬到 JS 之后，grid 的 row-gap 没人接手了 */
-.section { min-width: 0; margin-bottom: 12px; }
-.sec-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 0 8px; }
-.sec-title { font-size: 15px; font-weight: 600; margin: 0; }
-.sec-count { font-size: 12px; color: var(--muted); }
+/* ================= 四板块 =================
+   **手机单列、平板与 PC 两列**（用户 2026-10-07：「平板缩小一点可以放两列」）。
+   单列时 .section-col 变 display:contents，让 4 个 section 直接成为网格项 ——
+   JS 打的 order 才能把顺序复原成「新史低→即将到期→热门→大额折扣」。 */
+.sections { display: grid; grid-template-columns: 1fr; gap: 0 var(--sp-5); align-items: start; }
+.section-col { display: contents; }
+@media (min-width: 601px) {
+  .sections { grid-template-columns: 1fr 1fr; }
+  .section-col { display: block; min-width: 0; }
+}
+.section { min-width: 0; margin-bottom: var(--sp-4); }
+.sec-head { display: flex; align-items: baseline; gap: var(--sp-2); padding: var(--sp-1) 0 var(--sp-2); }
+.sec-title { font-size: var(--fs-title); font-weight: 600; margin: 0; }
+.sec-count { font-size: var(--fs-sub); color: var(--muted); }
 .sec-more {
-  margin-left: auto; font-size: 12px; color: var(--accent); background: none; border: 0;
-  cursor: pointer; padding: 0; font-family: inherit;
+  margin-left: auto; font-size: var(--fs-sub); color: var(--accent);
+  background: none; border: 0; cursor: pointer; padding: 0; font-family: inherit;
 }
 
-/* ---- 行列表（一行一个游戏）---- */
+/* ================= 行列表（一行一个游戏）★ 页面主体 =================
+   **两种内部结构**，按**行自己的宽度**切换（容器查询 `@container`，见下方 480px 那条）：
+
+   ① **两行结构**（行宽 < 480px：手机 1 列、平板 2 列）
+      [封面（跨两行、高度撑满）] [中文名/英文名/评价·剩余]        [价格]
+                                [新史低][图标] [—力度条—] [-95%]   ← 左对齐连贯，不留大空白
+   ② **一行结构**（行宽 ≥ 480px：768 单列、PC 2 列）
+      [封面] [中文名/英文名/评价·剩余] [新史低][图标] [—力度条—] [-95%] [价格]
+      ↑ 力度条在行中间吸收剩余宽度（用户 2026-10-07：768 沿用 1440 那种「力度条居中、
+        不放底部」的排法）
+
+   为什么按行宽而不是视口宽度：同一个视口下「1 列」和「2 列」的行宽能差一倍
+   （768 单列 707px、1100 两列 494px），按视口判会两边都不对。
+   ⚠️ 不支持 `@container` 的老浏览器会一直用两行结构 —— 那是安全的一侧。
+   ⚠️ container-type: inline-size 让 .row 的宽度不再被内容撑开（这正是我们要的）。 */
 .row {
   background: var(--card); border-left: 6px solid var(--line); border-radius: 8px;
-  /* 行间距 6 -> 8px：两列并排时 6px 显得糊成一片（refs.md C3/C4） */
-  margin-bottom: 8px; overflow: hidden; box-shadow: var(--shadow-card);
+  margin-bottom: var(--sp-2); overflow: hidden; box-shadow: var(--shadow-card);
   transition: transform .15s ease, box-shadow .15s ease;
+  container-type: inline-size; container-name: row;
 }
 .row.l-new { border-left-color: var(--new-low); }
+.row.l-tie { border-left-color: var(--store-low); }
 .row.l-unk { border-left: 6px dashed var(--store-low); }
 .row:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
-.row-main { display: flex; align-items: center; gap: 12px; padding: 8px 10px; cursor: pointer; }
+.row-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "thumb info price" "thumb tags tags";
+  align-items: center;
+  gap: 6px var(--sp-2);
+  padding: var(--sp-2) 10px;
+  cursor: pointer;
+}
+/* 封面**跨两行并撑满高度**（不再固定 44×62）—— 这是「标签占封面位置」那个问题的解 */
 .row-thumb {
-  /* 40×56 -> 44×62：refs.md B8 用户原话「图片太小了…留足位置」 */
-  width: 44px; height: 62px; flex: 0 0 44px; object-fit: cover;
-  border-radius: 5px; background: #eceff3; display: block;
+  grid-area: thumb; align-self: stretch;
+  width: 52px; height: auto; min-height: 62px;
+  object-fit: cover; border-radius: 5px; background: #eceff3; display: block;
 }
-/* 精简模式见文件末尾（body.compact） */
-.row-info { min-width: 0; flex: 1 1 auto; }
-.row-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-info { grid-area: info; min-width: 0; }
+.row-title { font-size: var(--fs-body); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-price { grid-area: price; text-align: right; padding-left: var(--sp-1); }
 .row-en {
-  font-size: 11px; color: var(--muted); min-height: 1.3em; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--fs-aux); color: var(--muted); min-height: 1.3em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.row-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row-tags { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
-/* 力度条按 refs.md B10 自适应：原 72px 电脑上「有点细有点短」，
-   给到 96px（与旧卡片档一致），手机上再收窄，别把标题挤没 */
-.row-tags .cut-bar { width: 96px; }
-.row-price { text-align: right; flex: 0 0 auto; padding-left: 4px; }
-.row-price .now { font-size: 18px; font-weight: 700; color: var(--price-now); }
-.row-price .was { font-size: 12px; color: var(--muted); text-decoration: line-through; }
-.row-detail { border-top: 1px dashed var(--line); padding: 8px 10px 10px; font-size: 13px; display: none; }
+.row-sub { font-size: var(--fs-sub); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 好评率 / 剩余天数分档（类名由服务端 rate_tier / days_tier 给，阈值在 report.py）
+   好评率用 **Steam 的那套色**（好评蓝 / 中性灰 / 警示琥珀），紧迫度用琥珀 —— 都不碰红。 */
+.rate-high { color: var(--steam-blue); font-weight: 600; }
+.rate-ok { color: var(--muted); }
+.rate-low { color: var(--warn); font-weight: 600; }
+.days-urgent { color: var(--warn); font-weight: 700; }
+.days-soon { color: var(--text); }
+.days-later { color: var(--faint); }
+
+/* 标签行（两行结构）：用 **grid 明确定列宽**——标签 | 图标 | 力度条 | 百分比，
+   **左对齐连续排**，力度条列宽 = `min(可用, --cut-bar-max)`、下限 48px。
+   ⚠️ 这里不能用 `flex` + `flex-basis`：实测 Chromium 会把 `.cut-wrap`（flex-basis auto、
+   内容里是 flex-basis 150px 的力度条）算成 81px 宽，结果力度条被压到最小 48px
+   （`probe_bar.js` 实测：row 344 / tags 262 / wrap 81 / bar 48）。
+   grid 的列宽是确定的，不会再出现这种「谁把谁挤没了」。 */
+.row-tags {
+  grid-area: tags; min-width: 0;
+  display: grid; align-items: center; gap: 6px; justify-content: start;
+  grid-template-columns: auto auto minmax(48px, var(--cut-bar-max)) auto;
+}
+.row-tags .cut-wrap { display: contents; }
+.row-tags .cut-bar { width: auto; min-width: 0; }
+
+/* ---- 行宽够（≥480px）→ 一行结构 ---- */
+@container row (min-width: 480px) {
+  .row-main {
+    display: flex; flex-wrap: nowrap; align-items: center;
+    gap: var(--sp-3); padding: var(--sp-2) 10px;
+  }
+  .row-thumb { flex: 0 0 44px; width: 44px; height: 62px; min-height: 0; align-self: auto; }
+  .row-info { flex: 1 1 130px; }
+  .row-tags { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; }
+  .row-price { flex: 0 0 auto; }
+  /* 一行结构里反过来：让力度条吸收剩余宽度（标题与标签之间的空档由它填） */
+  .row-tags .cut-wrap { display: inline-flex; flex: 1 1 auto; justify-content: flex-end; }
+  .row-tags .cut-bar { flex: 1 1 96px; width: auto; min-width: 48px; max-width: var(--cut-bar-max); }
+}
+.row-price .now { font-size: var(--fs-price); font-weight: 700; color: var(--price-now); }
+.row-price .was { font-size: var(--fs-aux); color: var(--muted); text-decoration: line-through; }
+/* 详情区字号**比正文小一档**（用户 2026-10-07：平板两列时外区价格那行会换行、太挤） */
+.row-detail { border-top: 1px dashed var(--line); padding: var(--sp-2) 10px 10px; font-size: var(--fs-sub); display: none; }
 .row.open .row-detail { display: block; }
 
-/* ---- 板块完整列表页 ---- */
+/* 折扣力度条：填充宽 = cut%，颜色与百分比同为「折扣绿」。
+   宽度由上面的 .row-tags 规则自适应；这条只给大卡之外的默认值兜底 */
+.cut-wrap { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.cut-bar {
+  display: inline-block; width: 88px; height: 5px; vertical-align: middle;
+  border-radius: 3px; background: #eceff3; overflow: hidden;
+}
+.cut-bar > i { display: block; height: 100%; border-radius: 3px; background: var(--price); }
+.cut-num { font-size: var(--fs-sub); color: var(--price); font-weight: 700; }
+
+/* 链接图标 */
+.links { display: inline-flex; align-items: center; gap: 6px; }
+.icon-link { display: inline-flex; color: var(--muted); }
+.icon-link:hover { color: var(--accent); }
+/* 高度统一 16px、宽度按各图形自己的框比例算（`width:auto`）。
+   ⚠️ 两个 svg 的 viewBox 都是正方形 `0 0 24 24`（**别裁到墨迹范围**，见 app.js ICONS.heihe 注释）——
+   裁了会让图形贴到 svg 元素边缘、被 overflow:hidden 切掉约 0.45px；
+   留天然留白后墨迹完整，且两枚在「图标列」里居中 → 中心点对齐（见 --icon-col）。 */
+.icon-link svg { height: 16px; width: auto; fill: currentColor; display: block; }
+
+/* 展开详情：左「距上次史低 / 折扣结束」右「跨区比价」；无比价数据时回落单栏 */
+.detail-cols { display: flex; gap: 10px; }
+.detail-col { flex: 1; min-width: 0; }
+.detail-col + .detail-col { border-left: 1px dashed var(--line); padding-left: 10px; }
+.detail-row { display: flex; justify-content: space-between; gap: var(--sp-2); padding: 2px 0; color: var(--muted); }
+.detail-row b { color: var(--text); font-weight: 500; }
+/* 「₴182.20 ≈ ¥27.30」整体不拆行 —— 拆开读不出来；放不下时宁可让差价百分比掉到下一行 */
+.detail-row b .nowrap { white-space: nowrap; }
+/* 右栏没有比价数据时的一行说明（本地预览就是这个形态；正式运行有真数据） */
+.detail-note { color: var(--faint); font-size: var(--fs-sub); padding: 2px 0; }
+/* 「距上次史低」有日期时可在「天数 ↔ 日期」间点按切换（手机没有 hover） */
+.detail-row b.has-alt { cursor: pointer; border-bottom: 1px dashed var(--muted); }
+/* 比价 ±百分比：负 = 比国区便宜（绿），正 = 贵（深红），0 = 同价 */
+.diff-cheap { color: var(--price); font-weight: 600; }
+.diff-dear { color: var(--dear); font-weight: 600; }
+.diff-same { color: var(--muted); }
+
+/* ================= 板块完整列表页 ================= */
 .listview { margin-top: 18px; }
-.lv-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
-.lv-title { font-size: 17px; font-weight: 600; margin: 0; }
-.lv-count { font-size: 12px; color: var(--muted); }
-.listview .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; align-items: start; }
+.lv-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 10px; }
+.lv-title { font-size: var(--fs-title); font-weight: 600; margin: 0; }
+.lv-count { font-size: var(--fs-sub); color: var(--muted); }
+.listview .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 6px var(--sp-5); align-items: start; }
 
-/* 四板块两列在 900 以下收单列（1080 视口本来就能看两列，原来 1100 就收，
-   于是 1000px 宽的单行里中间空一大片 —— 用户截图反馈）。
-   ⚠️ 只动 .sections：.deck-track / .listview 的断点保持 1100，别一起挪。
-   单列时 .section-col 变 display:contents，让 4 个 section 直接成为网格项，
-   JS 打的 order 才生效（顺序复原成「新史低→即将到期→热门→大额折扣」）。 */
-@media (max-width: 900px) {
-  .sections { grid-template-columns: 1fr; }
-  .section-col { display: contents; }
+.pager { display: flex; align-items: center; justify-content: center; gap: var(--sp-3); padding: var(--sp-1) 0 10px; font-size: var(--fs-sub); color: var(--muted); }
+.pager button {
+  font: inherit; font-size: var(--fs-sub); padding: var(--sp-1) 10px;
+  border: 1px solid var(--line); background: var(--card); border-radius: 6px; cursor: pointer;
 }
-@media (max-width: 1100px) {
-  .deck-track { grid-template-columns: repeat(3, 1fr); }
-  .listview .rows { grid-template-columns: 1fr; }
-}
-@media (max-width: 768px) {
-  /* 顶栏在手机上收成**一行**：站点名 | 生成时间 | 汉堡按钮；
-     导航改成绝对定位的竖排浮层（盖上内容，点空白处/按 Esc 收起）。
-     ⚠️ 之前是「导航占第二行 + 横向滚动」，不符合 B1 要的折叠面板。 */
-  .topbar-inner { position: relative; flex-wrap: nowrap; gap: 8px; align-items: center; }
-  .brand { margin-right: auto; font-size: 17px; }
-  .brand-mark { width: 20px; height: 20px; }
-  .topbar .generated { font-size: 11px; }
-  .nav-toggle { display: inline-flex; }
-  .nav {
-    position: absolute; top: 100%; left: 0; right: 0; z-index: 30;
-    display: none; flex-direction: column; gap: 2px;
-    padding: 6px; margin: 0;
-    background: var(--card);
-    border: 1px solid var(--line); border-top: 0;
-    border-radius: 0 0 10px 10px;
-    box-shadow: 0 10px 20px rgba(16, 24, 40, .14);
-  }
-  .nav.open { display: flex; }
-  .nav-item {
-    width: 100%; text-align: left; padding: 11px 12px;
-    font-size: 15px; border-radius: 8px;
-  }
-  /* 大卡：手机上每页 4 张（2 列 × 2 排，没有落单的第三排），
-     封面从 3:4 收成 1:1 —— 单卡矮约 20%、整块从 3 排降到 2 排（约 45%） */
-  .deck-track { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .pick-art { aspect-ratio: 1 / 1; }
-  .pick-title { min-height: 2.6em; }
-  .pick-price { font-size: 15px; }
+.pager button:disabled { opacity: .45; cursor: not-allowed; }
+.pager .load-more { padding: 6px 16px; border-radius: 999px; }
 
-  /* 行列表：手机上把「史低标签 + 两个图标 + 力度条」整条挪到第二行，
-     第一行是 封面 + 名称 + 价格。
-     ⚠️ 之前是靠在手机上隐藏 `.row-tags .links` 来腾地方 ——
-     用户 2026-10-07 指出手机上两个链接不见了，改成换行而不是藏。 */
-  .row-main { flex-wrap: wrap; gap: 8px 9px; }
-  .row-info { flex: 1 1 auto; }
-  .row-price { order: 2; }
-  .row-tags { order: 3; flex: 1 1 100%; }
-}
-
-
-/* ===== S9：「关于网站」页 ===== */
-.about { padding-top: 6px; }
-.about h1 { font-size: 22px; margin: 12px 0 6px; }
-.about .lead { color: var(--muted); font-size: 13px; margin: 0; }
-.about .block {
-  background: var(--card); border-radius: 8px; box-shadow: var(--shadow-card);
-  padding: 14px 16px; margin-bottom: 12px;
-}
-.about .block h2 { font-size: 15px; margin: 0 0 10px; }
-.about table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
-.about table.kv th,
-.about table.kv td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
-.about table.kv tr:last-child th,
-.about table.kv tr:last-child td { border-bottom: 0; }
-.about table.kv th { color: var(--muted); font-weight: 400; white-space: nowrap; width: 110px; }
-.about table.logs { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--muted); }
-.about table.logs th,
-.about table.logs td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #eef1f5; white-space: nowrap; }
-.about table.logs th { font-weight: 600; color: var(--text); }
-.about .num { font-variant-numeric: tabular-nums; }
-.about a, .foot-links a { color: var(--accent); text-decoration: none; }
-.about a:hover, .foot-links a:hover { text-decoration: underline; }
-.foot-links .sep { color: var(--muted); margin: 0 4px; }
-@media (max-width: 768px) {
-  .about table.kv th { width: 88px; font-size: 12px; }
-  .about table.logs { display: block; overflow-x: auto; }
-}
-
-
-/* ==================================================================
-   S9-3：浮动按钮 + 无图精简模式（refs.md C6 / C5）
-   ================================================================== */
-
-.floaters {
-  position: fixed; right: 16px; bottom: 20px; z-index: 30;
-  display: flex; flex-direction: column; gap: 8px;
-}
+/* ================= 浮动按钮 + 无图精简模式 ================= */
+.floaters { position: fixed; right: 16px; bottom: 20px; z-index: 30; display: flex; flex-direction: column; gap: var(--sp-2); }
 .btn-float {
   width: 46px; height: 44px; padding: 0; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--text);
-  font: inherit; font-size: 12px; line-height: 1.15; cursor: pointer;
+  font: inherit; font-size: var(--fs-sub); line-height: 1.15; cursor: pointer;
   display: flex; align-items: center; justify-content: center; text-align: center;
-  box-shadow: var(--shadow-card);
-  opacity: 0; visibility: hidden;
+  box-shadow: var(--shadow-card); opacity: 0; visibility: hidden;
   transition: opacity .15s ease, visibility .15s ease, background .15s ease;
 }
 .btn-float.show { opacity: 1; visibility: visible; }
 .btn-float:hover { background: #eef1f5; }
 .btn-float.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* 列表页底部的「加载更多」沿用 .pager 的居中，按钮略宽 */
-.pager .load-more { padding: 6px 16px; border-radius: 999px; }
-
-/* ---- 无图精简模式（用户原话：封面隐藏后中文名与原名同一行、卡片间距变小）---- */
+/* 精简模式（用户：封面隐藏后中文名与原名同一行、卡片间距变小） */
 body.compact .row-thumb { display: none; }
 body.compact .row { margin-bottom: 3px; }
 body.compact .row-main { padding: 5px 10px; gap: 9px; }
-body.compact .row-info {
-  display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px;
-}
-/* ⚠️ flex 子项默认 min-width:auto —— 这两行都带 white-space:nowrap，
-   不给 min-width:0 的话长标题会撑破 .row-main（review 指出的溢出风险） */
+body.compact .row-info { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+/* ⚠️ flex 子项默认 min-width:auto —— 带 nowrap 的两行不给 min-width:0 会撑破 .row-main */
 body.compact .row-title { flex: 0 1 auto; min-width: 0; }
 body.compact .row-en { flex: 1 1 auto; min-width: 0; min-height: 0; }
 body.compact .row-sub { flex: 1 1 100%; }
 
-@media (max-width: 768px) {
+/* ================= 空状态（无内容 / 加载中 / 加载失败）=================
+   插画是 app.js 里的内联 SVG 常量（不能引图片文件：页面要能离线双击打开）。 */
+.empty { text-align: center; color: var(--muted); padding: 30px 0 36px; }
+.empty-art { width: 104px; height: 104px; display: block; margin: 0 auto 10px; }
+/* 「加载中」那圈靠 CSS 转，不在 SVG 里写 SMIL —— 老安卓 WebView 支持不稳 */
+.empty-art.is-spin { animation: sdl-spin 1.2s linear infinite; }
+@keyframes sdl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .empty-art.is-spin { animation: none; } }
+.empty-text { margin: 0; font-size: var(--fs-body); }
+.empty-retry {
+  margin-top: var(--sp-3); font: inherit; font-size: var(--fs-body); padding: 6px 16px;
+  border: 1px solid var(--line); background: var(--card); border-radius: 999px; cursor: pointer;
+}
+.empty-retry:hover { background: #eef1f5; }
+
+/* ================= 页脚 ================= */
+.footer { color: var(--muted); font-size: var(--fs-sub); padding: var(--sp-4) 12px 32px; }
+.footer p { margin: var(--sp-1) 0; }
+.foot-links a { color: var(--accent); text-decoration: none; }
+.foot-links a:hover { text-decoration: underline; }
+.foot-links .sep { color: var(--muted); margin: 0 var(--sp-1); }
+
+/* ================= 「关于网站」页 ================= */
+.about { padding-top: 6px; }
+.about h1 { font-size: 22px; margin: var(--sp-3) 0 6px; }
+.about .lead { color: var(--muted); font-size: var(--fs-body); margin: 0; }
+.about .block {
+  background: var(--card); border-radius: 8px; box-shadow: var(--shadow-card);
+  padding: 14px 16px; margin-bottom: var(--sp-3);
+}
+.about .block h2 { font-size: var(--fs-title); margin: 0 0 10px; }
+.about table.kv { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
+.about table.kv th,
+.about table.kv td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
+.about table.kv tr:last-child th,
+.about table.kv tr:last-child td { border-bottom: 0; }
+.about table.kv th { color: var(--muted); font-weight: 400; white-space: nowrap; width: 110px; }
+.about table.logs { width: 100%; border-collapse: collapse; font-size: var(--fs-sub); color: var(--muted); }
+.about table.logs th,
+.about table.logs td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #eef1f5; white-space: nowrap; }
+.about table.logs th { font-weight: 600; color: var(--text); }
+.about .num { font-variant-numeric: tabular-nums; }
+.about a { color: var(--accent); text-decoration: none; }
+.about a:hover { text-decoration: underline; }
+
+/* ==================================================================
+   三档视口：手机 ≤768（只竖屏）/ 平板 769~1100（横竖屏）/ PC ≥1101（只横屏）
+   —— 只有这两条边界，与 config.json 的 mobile_breakpoint_px / tablet_breakpoint_px 一致。
+   ================================================================== */
+
+/* ---- 手机档 ---- */
+@media (max-width: 600px) {
+  /* 顶栏收成一行：站点名 | 生成时间 | 汉堡；导航改成绝对定位的竖排浮层 */
+  .topbar-inner { position: relative; flex-wrap: nowrap; gap: var(--sp-2); align-items: center; }
+  .brand { margin-right: auto; }
+  .brand-mark { width: 20px; height: 20px; }
+  .topbar .generated { font-size: var(--fs-aux); }
+  .nav-toggle { display: inline-flex; }
+  .nav {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 30;
+    display: none; flex-direction: column; gap: 2px; padding: 6px; margin: 0;
+    background: var(--card); border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 10px 10px; box-shadow: 0 10px 20px rgba(16, 24, 40, .14);
+  }
+  .nav.open { display: flex; }
+  .nav-item { width: 100%; text-align: left; padding: 11px 12px; border-radius: 8px; }
+
+  /* 消息区：季节条换行（起止时间另起一行） */
+  .msg-fest { padding: 10px 0; }
+  .msg-inner { flex-wrap: wrap; gap: 6px; }
+  .msg-fest .msg-until { margin-left: 0; flex: 1 1 100%; }
+
+  /* 抽屉改成从底部滑出（平板/PC 是右侧浮层） */
+  .drawer { left: 0; right: 0; bottom: 0; max-height: 78vh; border-radius: 14px 14px 0 0; }
+
+  /* 大卡：手机一律 1:1 封面（单卡矮约 20%）；列数/每页张数由 app.js 按宽度算 */
+  .pick-art { aspect-ratio: 1 / 1; }
+  /* 大卡标题行：手机上副标题太长会把「最值得买」挤成两行 → 副标题独占第二行 */
+  .deck-head { flex-wrap: wrap; row-gap: var(--sp-1); }
+  .deck-title { flex: 0 0 auto; }
+  .deck-nav { order: 2; }
+  .deck-sub { order: 3; flex: 1 1 100%; }
+
+  /* 行卡片：手机与平板共用**两行结构**（见 .row-main 的 grid 定义），
+     这里只调封面窄一点（手机一列，行宽小） */
+  .row-thumb { width: 48px; }
+
+  /* 详情回落单栏纵向堆叠，分隔线改横向 */
+  .detail-cols { flex-direction: column; gap: 0; }
+  .detail-col + .detail-col {
+    border-left: 0; padding-left: 0;
+    border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 6px;
+  }
+
+  /* 列表页行卡片：手机单列（两列见 .listview .rows 的默认值与 PC 档） */
+  .listview .rows { grid-template-columns: 1fr; }
+
   .floaters { right: 12px; bottom: 14px; }
   .btn-float { width: 42px; height: 42px; }
+  .about table.kv th { width: 88px; font-size: var(--fs-sub); }
+  .about table.logs { display: block; overflow-x: auto; }
 }
 
-
-/* S9-3 收尾：窄屏下行内力度条收窄（refs.md B10「手机上看刚好合适」），
-   桌面用上面那条 96px 的自适应档 */
-@media (max-width: 768px) {
-  .row-tags .cut-bar { width: 72px; }
-  .row-thumb { width: 40px; height: 56px; flex-basis: 40px; }
+/* ---- PC 档（≥1101）：抽屉改右侧浮层 ----
+       行卡片的一行结构改由 @container 按**行宽**判断（见上文 480px 那条）：
+       768 单列的行宽 707px 也走一行，PC 两列 532px 同样走一行。 */
+@media (min-width: 1101px) {
+  .drawer {
+    right: 0; top: 0; bottom: 0; left: auto; width: 380px;
+    max-height: none; border-radius: 0; border-left: 1px solid var(--line);
+  }
 }
 
-
-/* 大卡窄（约 200px），力度条用行列表那档 96px 会挤掉百分比 —— 单独收一档 */
-.pick .cut-bar { width: 64px; }
+/* 减少动态效果时不位移，只保留阴影变化 */
+@media (prefers-reduced-motion: reduce) {
+  .row, .pick { transition: box-shadow .15s ease; }
+  .row:hover, .pick:hover { transform: none; }
+}

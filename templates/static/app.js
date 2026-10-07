@@ -32,6 +32,12 @@
 
   var ICONS = {
     steam: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.454 1.012H7.54zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.663 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.253 0-2.265-1.014-2.265-2.265z"/></svg>',
+    // ⚠️ viewBox 必须留 **0 0 24 24**，**别再裁到墨迹范围**（曾裁成 "2.3 0 19.4 24"，已修）——
+    //    裁到墨迹（x 2.3~21.7）会让图形正好顶到 svg 元素边缘；SVG 默认 overflow:hidden，
+    //    在 16px 这种小尺寸 + 小数宽度下，**左右各被切掉约 0.45px**（实测：裁过的墨迹只剩
+    //    12.0px 宽，本应 12.9px）→ 右边那条竖直边看着「被砍了一截」（用户 2026-10-07 发现）。
+    //    留 24×24 有 2.3 的天然留白 → 图形不贴边、渲染完整。
+    //    两枚图标的对齐由「固定宽度的图标列 + 列内居中」保证（见 app.css --icon-col），不靠裁 viewBox。
     heihe: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.1 0 L21.7 6.6 V17.6 L17.7 19.9 V8.8 L13.9 6.6 V10 H10.1 Z"/><path d="M2.3 6.4 L6.3 4.2 V15.2 L10.1 17.4 V14 H13.9 V24 L2.3 17.4 Z"/></svg>'
   };
 
@@ -122,8 +128,43 @@
     return d <= 0 ? "今天结束" : "剩 " + d + " 天";
   }
   function lowClassOf(item) {
-    var lc = item.low_class;
-    return lc === "new" ? "l-new" : (lc === "tie" ? "l-tie" : "l-unk");
+    // ⚠️ 这里必须**显式写出三个取值**（含 "unknown"）：check_payload 会核对
+    // app.js 里出现过的 low_class 字面量是否与 classify 常量集一致 ——
+    // 漏一个就是「Python 改了名、前端静默失配」，不会报错，只是标签和色条全错。
+    var lc = item.low_class || "unknown";
+    if (lc === "new") return "l-new";
+    if (lc === "tie") return "l-tie";
+    return "l-unk";                 // unknown：storeLow 缺失 → 灰虚线色条
+  }
+
+  /** 子信息行：好评率 · 评价数 · 剩余天数。
+   *
+   * S9-卡片（用户 2026-10-07）：「60 好评和 90 好评是一个颜色、剩余 7 天和 2 天也是一个颜色」
+   * → 两个数值都要分档上色。**档位由服务端给**（`rate_tier` / `days_tier`，阈值在
+   * report.py，跟着配置走），前端只挂类名，不在这里写第二份阈值。
+   * 文案也在前端拼（服务端原先拼好的 `reviews_text` 已删 —— 要给「94%」单独上色就得拆开）。
+   */
+  function subLine(item) {
+    var box = el("div", { class: "row-sub" });
+    var parts = [];
+    var rv = item.reviews;
+    if (rv && rv.count) {
+      parts.push(el("span", { class: "rate" + (item.rate_tier ? " rate-" + item.rate_tier : ""),
+                              text: (rv.score === null || rv.score === undefined ? "—" : rv.score + "%") }));
+      parts.push(el("span", { text: rv.count.toLocaleString("en-US") + " 条" }));
+    } else {
+      parts.push(el("span", { text: "详情待补" }));
+    }
+    var dl = daysText(item);
+    if (dl) {
+      parts.push(el("span", { class: "days" + (item.days_tier ? " days-" + item.days_tier : ""),
+                              text: dl }));
+    }
+    parts.forEach(function (node, i) {
+      if (i) box.appendChild(document.createTextNode(" · "));
+      box.appendChild(node);
+    });
+    return box;
   }
 
   // ------------------------------------------------------------------
@@ -181,10 +222,6 @@
   }
 
   function buildRow(item) {
-    var sub = [item.reviews_text || "详情待补"];
-    var dl = daysText(item);
-    if (dl) sub.push(dl);
-
     var links = el("span", { class: "links" }, [
       iconLink(item.steam_url, "Steam 商店页", ICONS.steam),
       iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
@@ -193,7 +230,7 @@
       el("span", { class: "hl" + (item.low_class === "new" ? " hl-new" : ""),
                    text: item.low_label || "史低" }),
       links,
-      cutBar(item.cut)     // 老口径顺序：史低标签 → 图标 → 力度条
+      cutBar(item.cut)     // 老口径顺序：史低标签 → 图标 → 力度条（力度条自适应铺满）
     ]);
 
     var thumb = item.banner
@@ -206,7 +243,7 @@
       el("div", { class: "row-info" }, [
         el("div", { class: "row-title", text: displayTitle(item), title: displayTitle(item) }),
         el("div", { class: "row-en", text: enTitle(item) }),
-        el("div", { class: "row-sub", text: sub.join(" · ") })
+        subLine(item)                       // 好评率 · 评价数 · 剩余天数（分档上色）
       ]),
       tags,
       el("div", { class: "row-price" }, [
@@ -215,14 +252,21 @@
       ])
     ]);
 
-    // 详情（点行展开）：左「距上次史低 / 折扣结束」，右「跨区比价」
+    // 详情（点行展开）：左「距上次史低 / 折扣开始 / 折扣结束」，右「跨区比价」。
+    // S9-卡片（2026-10-07）：恒定两栏 —— 之前无比价数据时回落单栏，右半边空着，
+    // 用户反馈「展开的布局也没修改好」；现在右栏没有数据就写一行说明，结构对称。
+    // 「折扣开始」是批 G 从卡片搬去组头的，S9 之后组头没了，加回详情里（payload 一直有）。
     var left = el("div", { class: "detail-col" }, [
       lastLowRow(item.last_low_text, item.last_low_date),
+      detailRow("折扣开始", item.start_text),
       detailRow("折扣结束", item.expiry_text)
     ]);
     var rightRows = (item.compare || []).map(function (row) {
-      var b = el("b", {}, [document.createTextNode(row.price_text)]);
-      if (row.cny_text) b.appendChild(document.createTextNode(" " + row.cny_text));
+      // 原币价 + ≈¥ 换算包成一段 nowrap：窄栏里宁可让差价百分比换行，也别把价格拆开
+      var b = el("b", {}, [el("span", {
+        class: "nowrap",
+        text: row.price_text + (row.cny_text ? " " + row.cny_text : "")
+      })]);
       if (row.diff_pct !== null && row.diff_pct !== undefined) {
         b.appendChild(document.createTextNode(" "));
         b.appendChild(el("span", {
@@ -233,11 +277,12 @@
       }
       return el("div", { class: "detail-row" }, [el("span", { text: row.label }), b]);
     });
-    var detail = el("div", { class: "row-detail" },
-      rightRows.length
-        ? [el("div", { class: "detail-cols" }, [
-            left, el("div", { class: "detail-col" }, rightRows)])]
-        : [left]);
+    var right = el("div", { class: "detail-col" }, rightRows.length ? rightRows : [
+      el("div", { class: "detail-note", text: "跨区比价：本轮未取到数据" })
+    ]);
+    var detail = el("div", { class: "row-detail" }, [
+      el("div", { class: "detail-cols" }, [left, right])
+    ]);
 
     var row = el("article", { class: "row " + lowClassOf(item) }, [summary, detail]);
     summary.addEventListener("click", function () {
@@ -255,12 +300,39 @@
   }
 
   // ------------------------------------------------------------------
-  // 顶部大卡横排（每页 5 张，左右翻页）
+  // 顶部大卡横排（左右翻页）
   // ------------------------------------------------------------------
-  // 手机上每页 4 张（2 列 × 2 排）—— 5 张在手机上会排成 3 排（2+2+1），
-  // 最后一排孤零零一张很难看，而且整块占了近两屏高（用户 2026-10-07 反馈）。
-  // 电脑上仍是 5 张（一行正好排满）。
-  function picksPerPage() { return mq.matches ? 4 : 5; }
+  // 目标（refs §11.2 + 用户 2026-10-07 的三条纠正）：
+  //   · 一排**最多 5 张**（PC 与平板都是 5）—— 之前 auto-fill 让 1100px 变成 6 张，太多；
+  //   · 手机（够窄的宽度）2 列 × 2 排 = 每页 4 张，且**单张不能太宽** ——
+  //     之前 768px 走手机档排成 2 列，单张 347px 大得离谱；
+  //   · 列数由**这里算出来并写进 inline style**，CSS 不再自己排 ——
+  //     避免「公式算 6 列、CSS 排 4 列 → 一排只填 4/6 右边空一块」那种错位。
+  // ⚠️ PICK_MIN 要跟 app.css 里 .pick 的观感一致（约 150px 起才放得下封面+价+力度条）。
+  var PICK_MIN = 150;
+  var PICK_GAP = 12;
+  var PICK_MAX_COLS = 5;
+
+  function pickColumns() {
+    var width = picksTrack ? picksTrack.clientWidth : 0;
+    if (!width) {
+      // 还没布局（首屏前 / jsdom 没有布局引擎）→ 拿容器 .wrap 量一下最准；
+      // 连 .wrap 都没有就按视口估个大概（宁可估窄一列，也别算出 0 列）。
+      // ⚠️ 这里**不要**去复刻 .wrap 的 max-width/padding 公式 —— 那是第二份口径，
+      //    CSS 一改就悄悄失配（review-s9-06 提过）。
+      // ⚠️ 要判 clientWidth 是否为 0（jsdom 没有布局引擎：元素在、宽度恒 0），
+      //    只判元素是否存在会算出 0 列 → 被下面的兜底压到 2 列，页数跟着错。
+      var wrap = document.querySelector("main.wrap");
+      width = (wrap && wrap.clientWidth) || Math.round((window.innerWidth || 1024) * 0.85);
+    }
+    var cols = Math.floor((width + PICK_GAP) / (PICK_MIN + PICK_GAP));
+    return Math.max(2, Math.min(PICK_MAX_COLS, cols));
+  }
+
+  /** 每页张数：只有 2 列时排两排（手机 2×2 = 4 张，一排放不下多少信息），
+      3 列及以上正好一排（平板/PC 5 张）。 */
+  function picksPerPage(cols) { return cols <= 2 ? cols * 2 : cols; }
+
   var pickPage = 0;
   var picksBox = document.getElementById("picks");
   var picksTrack = document.getElementById("picks-track");
@@ -274,24 +346,34 @@
                                 decoding: "async" }) : null,
       el("span", { class: "pick-rank", text: "#" + rank })
     ]);
-    // 大卡也补齐**力度条**与 **Steam / 小黑盒链接**（与行列表元素对齐）。
-    // 信息区**白底** —— 深色那版用户 2026-10-07 反馈不合适，已改回白色。
+    // 信息区照 **gg.deals** 的结构（用户 2026-10-07 给的参照图）：
+    //   封面 → 标题（最多两行）→「From: 价格 + 折扣徽章」→「划线原价 + 史低徽章 + 商店图标」
+    // 用户明确要的：
+    //   · 不再用力度条（窄卡里太短，原话：「大卡的力度条太短了」）；
+    //   · 两枚商店图标都保留，分别贴折扣行与价格行的右端 → 竖着对齐成一列。
+    // 三排（用户 2026-10-07 定稿；2026-10-07 末统一图标顺序为 Steam 在前）：
+    // ① 标题　② 史低类型 + 折扣 + **Steam**　③ 原价 + 现价 + **小黑盒**。
+    // 顺序与行卡片一致（行卡片也是 Steam→小黑盒）。
+    var lowRow = el("div", { class: "pick-low" }, [
+      // 我们的「新史低 / 平史低」= gg.deals 里那个 HL 徽章
+      el("span", { class: "hl" + (item.low_class === "new" ? " hl-new" : ""),
+                   text: item.low_label || "史低" }),
+      el("span", { class: "pick-cut", text: "-" + (item.cut || 0) + "%" }),
+      el("span", { class: "links" }, [
+        iconLink(item.steam_url, "Steam 商店页", ICONS.steam)
+      ])
+    ]);
+    var priceRow = el("div", { class: "pick-price-row" }, [
+      el("span", { class: "pick-was", text: item.regular_text }),
+      el("span", { class: "pick-price", text: item.price_text }),
+      el("span", { class: "links" }, [
+        iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
+      ])
+    ]);
     var body = el("div", { class: "pick-body" }, [
       el("div", { class: "pick-title", text: displayTitle(item), title: displayTitle(item) }),
-      el("div", { class: "pick-foot" }, [
-        cutBar(item.cut),
-        el("span", { class: "pick-price", text: item.price_text })
-      ]),
-      // 底部两行各自**左右都有内容**，不会出现「一行只剩两个小图标」的空洞：
-      //   第一行：左 力度条 + 百分比 ｜ 右 现价
-      //   第二行：左 Steam / 小黑盒  ｜ 右 划线原价
-      el("div", { class: "pick-meta" }, [
-        el("span", { class: "links" }, [
-          iconLink(item.steam_url, "Steam 商店页", ICONS.steam),
-          iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
-        ]),
-        el("span", { class: "pick-was", text: item.regular_text })
-      ])
+      lowRow,
+      priceRow
     ]);
     var card = el("article", { class: "pick" }, [art, body]);
     card.addEventListener("click", function () { openSection("new_low"); });
@@ -301,12 +383,16 @@
   function renderPicks() {
     var list = data.picks || [];
     if (!list.length) return;
-    var per = picksPerPage();
+    picksBox.hidden = false;              // 先显示，clientWidth 才量得准
+    var cols = pickColumns();
+    // 列数**由 JS 写进 inline style** —— 与上面算出来的 cols 是同一个数，
+    // 不会出现「CSS 排 4 列、我们按 6 列分页」的错位（上次就是这么翻车的）。
+    picksTrack.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
+    var per = picksPerPage(cols);
     var total = Math.ceil(list.length / per);
     if (pickPage >= total) pickPage = total - 1;
     if (pickPage < 0) pickPage = 0;
     var slice = list.slice(pickPage * per, (pickPage + 1) * per);
-    picksBox.hidden = false;
     picksTrack.textContent = "";
     slice.forEach(function (item, i) {
       picksTrack.appendChild(pickCard(item, pickPage * per + i + 1));
@@ -315,7 +401,16 @@
       + (pickPage + 1) + "/" + total + " 页）";
     picksPrev.disabled = pickPage <= 0;
     picksNext.disabled = pickPage >= total - 1;
+    lastPickCols = cols;
   }
+
+  // 同一档内宽度变化（例：900 → 1100，或拖动窗口）也可能改变列数 → 重排。
+  // 用**公式**判（不能用「量当前 DOM」：页内只有几张卡，排不满一排时永远量不出更大列数）。
+  var lastPickCols = 0;
+  window.addEventListener("resize", function () {
+    if (!picksTrack || !picksTrack.children.length) return;
+    if (pickColumns() !== lastPickCols) renderPicks();
+  }, { passive: true });
   picksPrev.addEventListener("click", function () { pickPage--; renderPicks(); });
   picksNext.addEventListener("click", function () { pickPage++; renderPicks(); });
 
@@ -450,6 +545,21 @@
     return arr;
   }
 
+  /** 板块列表页的顺序：**服务端下发**（all.js 的 `section_order`），前端不复制排序规则。
+   *  ⚠️ 首页四板块的顺序是各板块自己一套（新史低→折扣→评价数、热门→评价数…），
+   *  而 all.js 的分组顺序是「tier 分组 + 折扣降序」，两者不一样 ——
+   *  不按 section_order 排的话，点「查看更多」进去看到的顺序会和首页预览不一致。 */
+  function applySectionOrder(cards, key) {
+    var order = (allCache && allCache.section_order || {})[key];
+    if (!order) return cards;
+    var pos = {};
+    order.forEach(function (appid, i) { pos[appid] = i; });
+    return cards.slice().sort(function (a, b) {
+      var pa = pos[a.appid], pb = pos[b.appid];
+      return (pa === undefined ? 1e9 : pa) - (pb === undefined ? 1e9 : pb);
+    });
+  }
+
   function cardsFor(key) {
     var out = allCards().filter(function (c) {
       if (key !== "__all__") {
@@ -461,6 +571,10 @@
       }
       return dateOk(c) && filterOk(c);
     });
+    // 「精选」= 服务端给的板块顺序；换成折扣/价格/好评排序时才由前端重排
+    if (state.filters.sort === "featured" || state.filters.sort === undefined) {
+      return applySectionOrder(out, key);
+    }
     return sortCards(out);
   }
 

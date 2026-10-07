@@ -21,6 +21,8 @@ DEFAULTS: dict = {
     "min_cut": 0,
     "max_price": None,
     "min_positive_ratio": 0.7,
+    # 好评率的「高分档」线（卡片上好评率分档上色用：≥ 它是高分色，≥ min_positive_ratio 是普通色）
+    "good_positive_ratio": 0.9,
     "min_review_count": 100,
     "only_type": "game",
     "exclude_mature": True,
@@ -74,7 +76,13 @@ DEFAULTS: dict = {
     "steam_batch_size": 20,
     "page_size_mobile": 10,
     "page_size_desktop": 20,
-    "mobile_breakpoint_px": 768,
+    # S9-卡片（用户 2026-10-07：「现在的档位太多了，只要手机、平板、pc 三个」）：
+    # mobile = 手机竖屏上限（≤ 它是手机档）；tablet = 平板上限（≤ 它是平板档）
+    # 手机只有竖屏 / 平板横竖屏都要好用 / PC 只有横屏。CSS 的 @media 必须与这两个值一致。
+    # 手机上限 600：常见手机竖屏最大约 430px，600 足够；**768（iPad 竖屏）算平板**
+    # —— 用户 2026-10-07：「平板缩小一点可以放两列」，而 768 卡在原来那条线上会掉进手机档。
+    "mobile_breakpoint_px": 600,
+    "tablet_breakpoint_px": 1100,
     "max_deals": None,
     "run_log_keep": 30,
 }

@@ -756,7 +756,7 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
         _, _, all_shown = build_view(all_entries)
         all_cards = []
         for entry in all_shown:
-            card = report.build_card(entry, now, labels)
+            card = report.build_card(entry, now, labels, cfg)
             card["views"] = [
                 key for key in classify.VIEW_KEYS
                 if classify.in_view(key, entry, now, cfg)
@@ -771,8 +771,8 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
         }
         info["all_shown"] = len(all_shown)
 
-    cards = [report.build_card(entry, now, labels) for entry in shown]
-    upcoming_cards = [report.build_card(entry, now, labels) for entry in upcoming_shown]
+    cards = [report.build_card(entry, now, labels, cfg) for entry in shown]
+    upcoming_cards = [report.build_card(entry, now, labels, cfg) for entry in upcoming_shown]
     info["paths"] = report.render(
         cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
         upcoming_items=upcoming_cards if has_upcoming else None,

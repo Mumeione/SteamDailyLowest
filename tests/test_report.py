@@ -593,15 +593,24 @@ class RecommendScoreTest(unittest.TestCase):
         self.assertLess(small, huge)
         self.assertLess((huge - small) / huge, 0.15)   # 差不到 15%，不是数量级差
 
-    def test_missing_gap_is_normalized_not_zero(self):
-        """间隔缺数据时该项**不计分**，并把总分按剩余权重归一化回 100 ——
-        否则「有数据」的那批会被凭空扣掉 15 分，等于变相惩罚数据更全的游戏。"""
-        no_gap = report.recommend_score(self.card("没间隔数据", gap=None))
-        zero_gap = report.recommend_score(self.card("间隔 0 天", gap=0))
-        self.assertGreater(no_gap, zero_gap)   # 缺 ≠ 0 分
-        # 归一化后满分仍是 100：各项拉满、无间隔时应该接近满分
+    def test_gap_has_no_weight_by_default(self):
+        """**轮播版默认不再给「间隔」权重**（2026-10-07）：池子是新史低，而 `last_low_days`
+        只有平史低才有值 → 原来那 15 分从不参与打分（总分按 85 分归一化），等于把名气/折扣
+        悄悄放大，和文档写的权重对不上（用户：「怎么感觉排出来结果有点不同」）。
+        所以默认权重里 gap = 0，有/没有间隔数据的结果**完全一样**。"""
+        self.assertEqual(report.recommend_weights({})["gap"], 0)
+        self.assertEqual(report.recommend_score(self.card("有间隔", gap=300)),
+                         report.recommend_score(self.card("没间隔", gap=None)))
+
+    def test_missing_gap_is_normalized_when_config_asks_for_it(self):
+        """谁要是把间隔权重配回来，缺数据的项仍然**不计分**、总分按剩余权重归一化 ——
+        不能因为「数据更全」就系统性吃亏，也不能缺项就当 0 分。"""
+        cfg = {"recommend_weights": {"gap": 20}}
+        no_gap = report.recommend_score(self.card("没间隔", gap=None), cfg)
+        zero_gap = report.recommend_score(self.card("间隔 0 天", gap=0), cfg)
+        self.assertGreater(no_gap, zero_gap)     # 缺 ≠ 0 分
         best = report.recommend_score(self.card("满分", cut=95, count=200_000,
-                                                rate=95, days_left=0, ago=0, gap=None))
+                                                rate=95, days_left=0, ago=0, gap=None), cfg)
         self.assertAlmostEqual(best, 100.0, places=1)
 
     def test_score_prefers_bigger_cut_when_fame_ties(self):
@@ -805,6 +814,61 @@ class TopbarTest(unittest.TestCase):
         self.assertNotIn('id="nav-toggle"', html)
 
 
+class CardTierColourTest(unittest.TestCase):
+    """S9-卡片：好评率与剩余天数的**配色档**（用户 2026-10-07 原话：「60 好评和 90 好评
+    是一个颜色，剩余 7 天和剩余 2 天也是一个颜色」）。
+
+    档位在服务端算（阈值跟着配置走），前端只挂 `rate-*` / `days-*` 类名 ——
+    所以这里钉的是「边界值 + 跟配置联动」，DOM 那侧由 jsdom 冒烟测钉。
+    """
+
+    NOW = datetime(2026, 10, 6, 20, 0, tzinfo=classify.zone("Asia/Shanghai"))
+
+    def _card(self, cfg: dict | None = None, **kw) -> dict:
+        entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
+                 "expiry": "2026-10-08T01:00:00+08:00", "tier": classify.TIER_QUALITY}
+        entry.update(kw)
+        return report.build_card(entry, self.NOW, report.tier_labels(CFG), cfg or CFG)
+
+    def test_rate_tier_three_levels(self):
+        for score, expect in ((95, "high"), (90, "high"), (89, "ok"), (70, "ok"), (69, "low")):
+            card = self._card(reviews={"score": score, "count": 500})
+            self.assertEqual(card["rate_tier"], expect, f"好评率 {score}%")
+
+    def test_rate_tier_has_no_value_without_reviews(self):
+        self.assertIsNone(self._card()["rate_tier"])
+
+    def test_rate_tier_follows_config(self):
+        """阈值来自配置：把「高口碑线」降到 80%、「展示门槛」降到 60% 后分档跟着变。"""
+        cfg = dict(CFG, good_positive_ratio=0.8, min_positive_ratio=0.6)
+        self.assertEqual(self._card(cfg, reviews={"score": 85, "count": 500})["rate_tier"], "high")
+        self.assertEqual(self._card(cfg, reviews={"score": 65, "count": 500})["rate_tier"], "ok")
+        self.assertEqual(self._card(cfg, reviews={"score": 55, "count": 500})["rate_tier"], "low")
+
+    def test_days_tier_three_levels(self):
+        for days, expect in ((0, "urgent"), (2, "urgent"), (3, "soon"), (6, "soon"),
+                             (7, "later"), (30, "later")):
+            self.assertEqual(report.days_tier(days, CFG), expect, f"剩 {days} 天")
+
+    def test_days_tier_bounds_come_from_config(self):
+        """urgent 边界 = 即将过期窗口（48h → 2 天）；later 边界 = 三板块时间窗（7 天）。"""
+        cfg = {"upcoming_expiry_hours": 72, "home_new_low_days": 14}
+        self.assertEqual(report.days_tier(3, cfg), "urgent")     # 72h 窗口 → 3 天内都算急
+        self.assertEqual(report.days_tier(4, cfg), "soon")
+        self.assertEqual(report.days_tier(13, cfg), "soon")     # 窗口放宽到 14 天
+        self.assertEqual(report.days_tier(14, cfg), "later")
+
+    def test_days_tier_none_when_unknown(self):
+        self.assertIsNone(report.days_tier(None, CFG))
+
+    def test_card_carries_both_tiers(self):
+        card = self._card(reviews={"score": 93, "count": 500})
+        self.assertEqual(card["rate_tier"], "high")
+        self.assertEqual(card["days_tier"], "urgent")   # 10-08 01:00 收摊按 10-07 结束 → 1 天
+        # 服务端的 `reviews_text` 已删：前端要给「93%」单独上色，字符串在两边各拼一份会分叉
+        self.assertNotIn("reviews_text", card)
+
+
 class MessageBarTest(unittest.TestCase):
     """S9-3 顶部消息区（refs.md §4 A-3 / B2）：节日条 + 一行提示，最多两行。
 
@@ -833,12 +897,13 @@ class MessageBarTest(unittest.TestCase):
     def test_festival_row_rendered_with_season_colour(self):
         content = self._content({"festivals": [{
             "name": "Steam 秋季特卖", "kind": "season",
-            "start": "2026-10-01 01:00", "end": "2026-10-08 01:00",
-            "note": "一年四大特卖之一"}]})
+            "start": "2026-10-01 01:00", "end": "2026-10-08 01:00"}]})
         html = (self._render_with(content) / "index.html").read_text(encoding="utf-8")
         self.assertIn('class="msg msg-fest season-autumn"', html)
         self.assertIn("Steam 秋季特卖", html)
-        self.assertIn("一年四大特卖之一", html)
+        # 用户 2026-10-07：节日条只要「季节 + 活动名 + 进行中 + 起止 + 还有几天」，
+        # 不要补充说明（原 note 字段已从数据与代码里删掉）
+        self.assertNotIn("一年四大特卖之一", html)
         self.assertIn("还有 1 天", html)          # 10-08 01:00 收摊按 10-07 结束算
         self.assertNotIn('id="msgbar" hidden', html)
 
