@@ -1,0 +1,72 @@
+{
+  "_readme": [
+    "首页顶部消息区的内容源（refs.md §4 A-3 / B2、§11.5 Q5）。手工维护，改完直接生效。",
+    "时间一律北京时间，写成 \"YYYY-MM-DD HH:MM\"；只写 \"YYYY-MM-DD\" 时 start 算当天 00:00、end 算当天 23:59。",
+    "start <= 北京时间此刻 <= end 的活动才会显示；同时有多个时，kind=season 的季节特卖优先。",
+    "season 可省，默认按开始月份推：3-5 春 / 6-8 夏 / 9-11 秋 / 12-2 冬。",
+    "notices 是站点通知（红底白字），格式同上，可加 url。它和「数据陈旧告警」共用顶部第二行，陈旧告警优先。",
+    "数据来源：Steamworks 文档 Sales and Marketing → Upcoming Steam Events（唯一官方出处），",
+    "整理过程见 .scratch/refactor-2026q4/festivals.md；建议每季度核对一次。",
+    "口径：只维护四大季节特卖 + 关注度高的几个（万圣节尖叫节、Next Fest）。主题游戏节太碎、对史低影响小，不填。",
+    "黑色星期五特卖 Valve 尚未公布具体日期，公布后自己补一行即可。"
+  ],
+  "festivals": [
+    {
+      "name": "Steam 秋季特卖",
+      "kind": "season",
+      "start": "2026-10-01 01:00",
+      "end": "2026-10-08 01:00",
+      "note": "一年四大特卖之一"
+    },
+    {
+      "name": "Steam 冬季特卖",
+      "kind": "season",
+      "start": "2026-12-17 01:00",
+      "end": "2027-01-04 01:00",
+      "note": "一年四大特卖之一"
+    },
+    {
+      "name": "Steam 春季特卖",
+      "kind": "season",
+      "start": "2027-03-18 01:00",
+      "end": "2027-03-25 01:00",
+      "note": "一年四大特卖之一"
+    },
+    {
+      "name": "Steam 夏季特卖",
+      "kind": "season",
+      "start": "2027-06-24 01:00",
+      "end": "2027-07-08 01:00",
+      "note": "一年四大特卖之一"
+    },
+    {
+      "name": "Steam 尖叫节 Scream V",
+      "kind": "event",
+      "start": "2026-10-26 01:00",
+      "end": "2026-11-02 01:00",
+      "note": "万圣节主题游戏节"
+    },
+    {
+      "name": "Steam Next Fest（10 月）",
+      "kind": "event",
+      "start": "2026-10-19 01:00",
+      "end": "2026-10-26 01:00",
+      "note": "未发售新作的试玩节"
+    },
+    {
+      "name": "Steam Next Fest（2 月）",
+      "kind": "event",
+      "start": "2027-02-22 01:00",
+      "end": "2027-03-01 01:00",
+      "note": "未发售新作的试玩节"
+    },
+    {
+      "name": "Steam Next Fest（6 月）",
+      "kind": "event",
+      "start": "2027-06-14 01:00",
+      "end": "2027-06-21 01:00",
+      "note": "未发售新作的试玩节"
+    }
+  ],
+  "notices": []
+}

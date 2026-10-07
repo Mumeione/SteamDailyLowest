@@ -64,6 +64,29 @@ TIER_LABELS = {
 
 _SHANGHAI_FALLBACK = timezone(timedelta(hours=8))
 
+#: 「剩 X 天」的凌晨宽容（小时）：Steam 折扣与特卖全球统一收摊，换算到北京时间落在
+#: 01:00~02:00，买家语义上就是「今天结束」——多出的几小时可忽略（2026-09-27 用户定案）。
+#: 03:00 起主跑（03:14）已进入新的一天，之后的过期时刻按正常日历天算（6:00 容差过大弃用）。
+#: ⚠️ 卡片的「剩 X 天」与顶部活动条（`src/announcements.py`）的「还有 X 天」共用它，
+#: 别再各写一份常量。
+EARLY_MORNING_EXPIRY_HOUR = 3
+
+
+def days_until(end_dt: datetime, now: datetime) -> int:
+    """从 ``now`` 到 ``end_dt`` 的**日历天**差，含凌晨宽容，负数钳到 0。
+
+    卡片「剩 X 天」与活动条「还有 X 天」共用这一份口径（原先两处各写一遍，
+    改一处漏一处 = 页面两处数字打架）。两个参数应当是**同一时区**的时刻；
+    任一侧没有时区信息时不做换算（测试里会传 naive 的 now）。
+    """
+    end = end_dt
+    if end.tzinfo is not None and now.tzinfo is not None:
+        end = end.astimezone(now.tzinfo)
+    days = (end.date() - now.date()).days
+    if end.hour < EARLY_MORNING_EXPIRY_HOUR:
+        days -= 1
+    return max(0, days)
+
 
 def zone(name: str) -> tzinfo:
     """取时区对象；拿不到 IANA 数据时对 Asia/Shanghai 回落到固定 +08:00。"""

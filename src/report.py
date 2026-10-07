@@ -17,7 +17,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from . import classify
+from . import announcements, classify
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = ROOT / "templates"
@@ -53,11 +53,8 @@ VIEWS = [
 #: 「全部」本身也在其中 —— 它就是 all.js 的原始分组。
 LAZY_VIEWS = ("week", "active", "all")
 
-#: 「剩 X 天」的凌晨宽容阈值（北京时间的整点小时）：local expiry 落在
-#: 00:00~02:59 的折扣按「前一天深夜收摊」计天数。Steam 折扣的全球统一
-#: 结束时刻换算到北京是凌晨 1~2 点；03:00 起主跑（03:14）已进入新的一天，
-#: 之后的过期时刻按正常日历天算（用户 2026-09-27 定案，6:00 容差过大弃用）。
-EARLY_MORNING_EXPIRY_HOUR = 3
+#: 「剩 X 天」的凌晨宽容阈值已挪到 `classify.EARLY_MORNING_EXPIRY_HOUR`
+#: （2026-10-07：卡片与顶部活动条共用 `classify.days_until`，不再各留一份常量）
 
 
 def group_specs(cfg: dict) -> list[dict]:
@@ -235,17 +232,12 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None) -> dict:
     # 批 E spec E1：史低分类改用 Steam 口径，不再把 ITAD 的 flag 直接搬到页面上
     low_class = classify.steam_low_class(entry, now.tzinfo)
     # 「剩 X 天」按**日期差**算（10-02 结束、今天 09-24 → 剩 8 天），不用小时差：
-    # 用户要看的是「还剩几个日历天」这种粗粒度信息，精确时刻放在详情里（批 E spec E2）
-    # 2026-09-27 追加凌晨宽容：Steam 折扣全球统一收摊（夏令时北京 01:00 / 冬令时 02:00），
-    # 明天凌晨 3 点前过期的折扣，买家语义上就是「今天结束」——多出的那几个小时可忽略
-    # （用户定案），直接按前一天结束计天数，避免出现「还剩 1 天」其实是今晚就收的误导。
+    # 用户要看的是「还剩几个日历天」这种粗粒度信息，精确时刻放在详情里（批 E spec E2）。
+    # 2026-09-27 追加凌晨宽容、2026-10-07 与活动条的「还有 X 天」合并到同一份口径，
+    # 两者都走 classify.days_until（原先两处各写一遍，容易改一处漏一处）。
     days_left = None
     if expiry_dt is not None:
-        local_expiry = expiry_dt.astimezone(now.tzinfo)
-        days_left = (local_expiry.date() - now.date()).days
-        if local_expiry.hour < EARLY_MORNING_EXPIRY_HOUR:
-            days_left -= 1
-        days_left = max(0, days_left)
+        days_left = classify.days_until(expiry_dt, now)
     # §3.6 史低天数（「距上次史低」那一行）：new = 这次就是新纪录（没有具体日期）；
     # tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 low_time_cache）。
     # 主文本只放天数保证单行（日期太长会把整行挤成两排），具体日期由
@@ -823,6 +815,11 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_text": now.strftime("%Y-%m-%d %H:%M"),
         "stale_banner_hours": int(cfg.get("stale_banner_hours", 36)),
+        #: S9-3 顶部消息区：>26h 黄（Actions 延迟）/>36h 红（今天没更新）。
+        #: 阈值从配置来，前端不再写死第二份（review-s9-01 确立的约定）——
+        #: 留在 payload 里是因为「数据新不新鲜」只能等页面打开时才知道，
+        #: 服务端算不了（渲染时刻 ≠ 访客打开时刻）。
+        "stale_warn_hours": int(cfg.get("stale_warn_hours", 26)),
         "sweep": stats.get("sweep"),
         "overview": stats,
         "low_points": low_points,
@@ -914,6 +911,10 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
            + [{"key": "__all__", "label": "全部折扣"}])
 
     links = site_links(cfg)
+    # S9-3 顶部消息区（refs.md §4 A-3 / B2）：**渲染时**按北京时间筛出「正在进行」的
+    # 活动与通知 —— 前端不判日期（访客本机时区会把日子算错，见 announcements.py）。
+    # 筛不出东西就是 None，模板里那一行整块不渲染（用户口径：没活动就不显示）。
+    messages = announcements.current(now, cfg.get("announcements_path"))
     template = env.get_template("index.html.j2")
     html = template.render(
         payload=payload,
@@ -925,7 +926,8 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         fx=payload["fx"],
         low_points=low_points,
         generated_at_text=payload["generated_at_text"],
-        stale_banner_hours=payload["stale_banner_hours"],
+        msg_festival=messages["festival"],
+        msg_notice=messages["notice"],
         # 置灰统计用与首页四板块**同一个池子**，否则「选项没置灰但点进去是空的」
         filter_groups=filter_specs(cfg, home_pool),
         filter_defaults=payload["filter_defaults"],

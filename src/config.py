@@ -28,7 +28,14 @@ DEFAULTS: dict = {
     "expired_retention_days": 7,
     "upcoming_expiry_hours": 48,
     "week_window_days": 14,
+    # 顶部消息区的「数据陈旧」两档阈值（refs.md B2：>26h 黄 = Actions 延迟 /
+    # >36h 红 = 今天压根没更新）。`stale_banner_hours` 是红档，键名沿用不改
+    # （relocate 会让 Actions 里的旧配置静默失配）。
     "stale_banner_hours": 36,
+    "stale_warn_hours": 26,
+    # 首页顶部「节日/活动条 + 站点通知」的内容文件（仓库内手工维护，见
+    # src/announcements.py；文件坏了只是不显示顶部条，不影响出报表）
+    "announcements_path": "content/announcements.json",
     "timezone": "Asia/Shanghai",
     "state_path": "data/state.json",
     "expiring_snapshot_path": "data/expiring.json",

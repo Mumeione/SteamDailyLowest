@@ -49,6 +49,52 @@
     return node;
   }
 
+  // ------------------------------------------------------------------
+  // 空状态插画（refs.md B13「没有、加载中、失败都可以加一个小插画，但要符合
+  // 网站现有的色彩主题」）—— 自绘 SVG 常量：不引图片文件（页面要能离线双击打开）。
+  // 配色只用站点现有色：新史低红 #d92b2b / 主色蓝 #2563eb / 灰 #c9cfd8 · #e3e5e9。
+  // ------------------------------------------------------------------
+  var EMPTY_ART = {
+    // 无内容：卡片框 + 往下探的箭头 + 底部一条红线（呼应站点名那个「价格探底」标记）
+    none: '<svg class="empty-art" viewBox="0 0 120 120" aria-hidden="true">'
+      + '<rect x="24" y="30" width="72" height="54" rx="9" fill="none" stroke="#c9cfd8"'
+      + ' stroke-width="3" stroke-dasharray="8 6"/>'
+      + '<path d="M60 42v24" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round"/>'
+      + '<path d="M50 58l10 10 10-10" fill="none" stroke="#2563eb" stroke-width="4"'
+      + ' stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<rect x="30" y="94" width="60" height="5" rx="2.5" fill="#d92b2b" opacity=".5"/></svg>',
+    // 加载中：转圈（旋转交给 CSS 的 .is-spin —— 老安卓 WebView 对 SVG 动画支持不稳）
+    loading: '<svg class="empty-art is-spin" viewBox="0 0 120 120" aria-hidden="true">'
+      + '<circle cx="60" cy="60" r="30" fill="none" stroke="#e3e5e9" stroke-width="9"/>'
+      + '<path d="M60 30a30 30 0 0 1 30 30" fill="none" stroke="#2563eb" stroke-width="9"'
+      + ' stroke-linecap="round"/></svg>',
+    // 加载失败：虚线圈 + 感叹号（红 = 出错，与站点的新史低红同色，不另造一个红）
+    fail: '<svg class="empty-art" viewBox="0 0 120 120" aria-hidden="true">'
+      + '<circle cx="60" cy="58" r="29" fill="none" stroke="#d92b2b" stroke-width="3.5"'
+      + ' stroke-dasharray="9 7" opacity=".85"/>'
+      + '<path d="M60 41v23" stroke="#d92b2b" stroke-width="5" stroke-linecap="round"/>'
+      + '<circle cx="60" cy="74" r="3.6" fill="#d92b2b"/></svg>'
+  };
+
+  var emptyBox = document.getElementById("empty");
+
+  function hideEmpty() { if (emptyBox) emptyBox.hidden = true; }
+
+  /** 空状态三态。``onRetry`` 给了就多一个「重试」按钮（只有「加载失败」用）。 */
+  function setEmpty(kind, text, onRetry) {
+    if (!emptyBox) return;
+    emptyBox.textContent = "";
+    var holder = el("div", {});
+    holder.innerHTML = EMPTY_ART[kind] || EMPTY_ART.none;   // 常量字符串，无用户输入
+    if (holder.firstChild) emptyBox.appendChild(holder.firstChild);
+    emptyBox.appendChild(el("p", { class: "empty-text", text: text }));
+    if (onRetry) {
+      emptyBox.appendChild(el("button", { type: "button", class: "empty-retry",
+                                         text: "重试", onclick: onRetry }));
+    }
+    emptyBox.hidden = false;
+  }
+
   var state = { section: null, limit: LIST_BATCH, filters: {} };
   // 默认值由服务端下发（跟着 home_new_low_days 走）。
   // ⚠️ 兜底**不要再写 date: "d7"** —— 那等于在前端又写死一份窗口，与服务端脱钩
@@ -295,9 +341,8 @@
   // 把下面那个板块顶得老远（1080 视口收到单列时更明显）。
   function renderSections() {
     var sections = data.sections || [];
-    var emptyBox = document.getElementById("empty");
     sectionsBox.textContent = "";
-    if (!sections.length) { emptyBox.hidden = false; return; }
+    if (!sections.length) { setEmpty("none", "今天没有符合条件的折扣。"); return; }
     var cols = [el("div", { class: "section-col" }), el("div", { class: "section-col" })];
     var heights = [0, 0];
     sections.forEach(function (sec, idx) {
@@ -311,7 +356,7 @@
       heights[i] += 1 + (sec.items || []).length;
     });
     cols.forEach(function (col) { sectionsBox.appendChild(col); });
-    emptyBox.hidden = true;
+    hideEmpty();
   }
 
   // ------------------------------------------------------------------
@@ -423,7 +468,6 @@
   var listBox = document.getElementById("listview");
   var rowsBox = document.getElementById("rows");
   var pagerBox = document.getElementById("lv-pager");
-  var emptyBox = document.getElementById("empty");
 
   // 滚动加载（refs.md B12 / §9.2）：**只在板块列表页**做，首页不做（"首页不可滑动"）。
   // 每批追加 LIST_BATCH 条；滑到底自动追加，底部按钮同时是手动兜底。
@@ -497,19 +541,19 @@
     document.getElementById("lv-count").textContent = "加载中…";
     rowsBox.textContent = "";
     pagerBox.textContent = "";
-    emptyBox.hidden = true;
+    setEmpty("loading", "正在加载折扣数据…");
     loadAll(function (_json, err) {
       if (err) {
         document.getElementById("lv-count").textContent = "";
-        emptyBox.hidden = false;
-        emptyBox.textContent = "全部数据加载失败（" + ((err && err.message) || "网络错误")
-          + "），可点站点名回首页后重试。";
+        setEmpty("fail",
+          "全部数据加载失败（" + ((err && err.message) || "网络错误") + "），可以点下面的按钮重试。",
+          function () { openSection(state.section); });
         return;
       }
       var cards = cardsFor(state.section);
       document.getElementById("lv-count").textContent = cards.length + " 条";
-      emptyBox.hidden = !!cards.length;
-      emptyBox.textContent = "这个板块暂时没有符合条件的折扣。";
+      if (cards.length) hideEmpty();
+      else setEmpty("none", "这个板块暂时没有符合条件的折扣。");
       renderList(cards);
     });
   }
@@ -522,7 +566,8 @@
     listBox.hidden = true;
     homeBox.hidden = false;
     syncFilterVisibility();          // 首页不显示「筛选」（它不作用于首页板块）
-    emptyBox.hidden = !!(data.sections || []).length;
+    if ((data.sections || []).length) hideEmpty();
+    else setEmpty("none", "今天没有符合条件的折扣。");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -694,8 +739,52 @@
   if (mq.addEventListener) mq.addEventListener("change", onBreakpointChange);
   else if (mq.addListener) mq.addListener(onBreakpointChange);
 
-  var generated = new Date(data.generated_at);
-  if ((Date.now() - generated.getTime()) / 3600000 > data.stale_banner_hours) {
-    document.getElementById("stale-banner").hidden = false;
+  // ------------------------------------------------------------------
+  // S9-3：顶部消息区第二行（refs.md A-3 / B2）
+  //   最多一行，优先级：**数据陈旧告警 > 站点通知**（用户 2026-10-07 拍板 ——
+  //   数据可不可信比公告更要紧，节日期间也不能把告警压掉）。
+  //   告警两档：>26h 黄（Actions 延迟）/>36h 红（今天压根没更新）。
+  //   阈值两档都从 payload 来，不在前端写死（review-s9-01 确立的约定）。
+  //   ⚠️ 这件事只能在浏览器里算：渲染时刻 ≠ 访客打开时刻，服务端算不了。
+  // ------------------------------------------------------------------
+  var msgbar = document.getElementById("msgbar");
+  var alertBox = document.getElementById("msg-alert");
+
+  /** 画第二行并顺带把整块消息区显示出来 —— 告警与通知走同一条路，
+      别再各写一遍「设类名 / 设文案 / 取消 hidden」。 */
+  function paintAlert(cls, text) {
+    if (!alertBox) return;
+    alertBox.className = "msg msg-alert " + cls;
+    alertBox.textContent = text;
+    alertBox.hidden = false;
+    if (msgbar) msgbar.hidden = false;
   }
+
+  function renderAlert() {
+    if (!alertBox) return;
+    var warnHours = data.stale_warn_hours || 26;
+    var redHours = data.stale_banner_hours || 36;
+    var hours = (Date.now() - new Date(data.generated_at).getTime()) / 3600000;
+    if (hours > redHours) {
+      paintAlert("is-stale", "数据已 " + Math.round(hours) + " 小时没更新，今天可能没抓到 —— "
+        + "页面上的折扣未必还是这个价。");
+      return;
+    }
+    if (hours > warnHours) {
+      paintAlert("is-warn", "数据已 " + Math.round(hours) + " 小时没更新（Actions 延迟），"
+        + "可能不是最新的。");
+      return;
+    }
+    // 告警不成立时才轮到站点通知（模板已把文案写在 data-notice 上）
+    var notice = alertBox.getAttribute("data-notice");
+    if (!notice) return;
+    paintAlert("is-notice", notice);
+    var url = alertBox.getAttribute("data-notice-url");
+    if (url) {
+      alertBox.appendChild(document.createTextNode(" "));
+      alertBox.appendChild(el("a", { href: url, target: "_blank", rel: "noopener", text: "查看" }));
+    }
+  }
+
+  renderAlert();
 })();

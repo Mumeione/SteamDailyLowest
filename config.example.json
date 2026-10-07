@@ -13,6 +13,8 @@
   "upcoming_expiry_hours": 48,
   "week_window_days": 14,
   "stale_banner_hours": 36,
+  "stale_warn_hours": 26,
+  "announcements_path": "content/announcements.json",
   "timezone": "Asia/Shanghai",
   "state_path": "data/state.json",
   "output_dir": "output",

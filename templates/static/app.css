@@ -45,12 +45,50 @@ html, body {
 .topbar h1 { font-size: 17px; margin: 0; }
 .generated { font-size: 12px; color: var(--muted); }
 
-.stale-banner {
-  background: #b91c1c;
-  color: #fff;
-  padding: 8px 12px;
-  text-align: center;
-  font-size: 13px;
+/* ---- S9-3 顶部消息区（refs.md §4 A-3 / B2）----
+   在顶栏下方，**最多两行**：① 季节特卖 / 活动条 ② 一条提示（数据陈旧告警或站点通知）。
+   没内容整块不显示（模板初始就 hidden；只有陈旧告警要等页面打开才知道，由 app.js 决定）。
+   季节主题色用**整块铺色 + 白字**表达，不靠文字颜色 —— 免得跟「折扣力度绿 / 新史低红」
+   这些有含义的颜色串味（refs.md C1 的顾虑）。 */
+.msgbar[hidden], .msg-alert[hidden] { display: none; }
+.msgbar .msg {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; line-height: 1.4;
+}
+/* 色带**通栏铺满**（横向 padding 交给里面的 .wrap），条本身比提示行厚一档 ——
+   用户原话「节日需要加宽条宽和放大字号」 */
+.msg-fest { color: #fff; padding: 13px 0; font-size: 14px; }
+.msg-fest.season-spring { background: linear-gradient(90deg, #15803d, #22a35a); }
+.msg-fest.season-summer { background: linear-gradient(90deg, #0369a1, #0ea5e9); }
+.msg-fest.season-autumn { background: linear-gradient(90deg, #b45309, #ea8a1f); }
+.msg-fest.season-winter { background: linear-gradient(90deg, #3730a3, #6366f1); }
+.msg-inner { display: flex; align-items: center; gap: 10px; }
+.msg-fest .msg-tag {
+  flex: 0 0 auto; font-size: 11px; font-weight: 700; padding: 2px 7px;
+  border-radius: 999px; background: rgba(255, 255, 255, .22);
+}
+/* 「使用其他字体」（A-3 原话）：页面要能**离线双击打开**、拉不了字体文件，
+   所以只能用系统字体栈做区分 —— 活动名走衬线体（Windows 宋体 / macOS Songti /
+   安卓 Noto Serif），其余文字仍是无衬线，一眼能分出「这是活动、不是数据」。 */
+.msg-fest .msg-name {
+  font-size: 17px; font-weight: 700; letter-spacing: .2px;
+  font-family: Georgia, "Songti SC", "SimSun", "Noto Serif CJK SC", "Noto Serif", serif;
+}
+.msg-fest .msg-note, .msg-fest .msg-until { font-size: 12px; opacity: .92; }
+.msg-fest .msg-until { margin-left: auto; white-space: nowrap; }
+.msg-fest .msg-link { color: #fff; font-size: 12px; }
+/* 第二行 —— 陈旧告警两档（黄 = Actions 延迟 / 红 = 今天压根没更新）+ 站点通知（红底白字） */
+.msg-alert { justify-content: center; text-align: center; padding: 9px 12px; }
+.msg-alert.is-warn { background: #f5b301; color: #3b2f00; }
+.msg-alert.is-stale, .msg-alert.is-notice { background: #b91c1c; color: #fff; }
+.msg-alert a { color: inherit; }
+@media (max-width: 768px) {
+  .msg-fest { padding: 10px 0; font-size: 13px; }
+  .msg-inner { flex-wrap: wrap; gap: 6px; }
+  .msg-fest .msg-name { font-size: 15px; }
+  /* 补充说明（例「一年四大特卖之一」）手机上省掉，别把色带顶成三行 */
+  .msg-fest .msg-note { display: none; }
+  .msg-fest .msg-until { margin-left: 0; flex: 1 1 100%; }
 }
 
 /* 批 F3：顶部概览 —— **手机两行、电脑一行**，各自写死，不靠 nth-child 猜。
@@ -296,7 +334,21 @@ html, body {
 }
 .pager button:disabled { opacity: .45; cursor: not-allowed; }
 
-.empty { text-align: center; color: var(--muted); padding: 32px 0; }
+/* ---- S9-3 空状态（refs.md B13：无内容 / 加载中 / 加载失败都要有插画）----
+   插画是 app.js 里的内联 SVG（常量字符串），配色只用站点现有色：
+   新史低红 #d92b2b / 力度绿 #0a7d33 / 主色蓝 #2563eb / 中性灰。 */
+.empty { text-align: center; color: var(--muted); padding: 30px 0 36px; }
+.empty-art { width: 104px; height: 104px; display: block; margin: 0 auto 10px; }
+/* 「加载中」那圈靠 CSS 转，不在 SVG 里写 SMIL —— 老安卓 WebView 对 SMIL 支持不稳 */
+.empty-art.is-spin { animation: sdl-spin 1.2s linear infinite; }
+@keyframes sdl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .empty-art.is-spin { animation: none; } }
+.empty-text { margin: 0; font-size: 13px; }
+.empty-retry {
+  margin-top: 12px; font: inherit; font-size: 13px; padding: 6px 16px;
+  border: 1px solid var(--line); background: var(--card); border-radius: 999px; cursor: pointer;
+}
+.empty-retry:hover { background: #eef1f5; }
 .footer { color: var(--muted); font-size: 12px; padding: 16px 12px 32px; }
 .footer p { margin: 4px 0; }
 

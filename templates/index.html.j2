@@ -35,8 +35,36 @@
   </div>
 </header>
 
-<div id="stale-banner" class="stale-banner" hidden>
-  数据已超过 {{ stale_banner_hours }} 小时未更新，可能抓取任务出了问题。
+{# S9-3：顶部消息区（refs.md §4 A-3 / B2）—— 放在顶栏下方，最多两行：
+   ① 季节特卖 / 活动条：通栏、季节主题色、字号更大，说明「现在是什么活动」
+   ② 提示条（一行）：数据陈旧告警（>26h 黄 / >36h 红）或站点通知（红底白字）
+
+   活动与通知**在渲染时**按北京时间筛好（src/announcements.py），筛不出东西那行就
+   不渲染；陈旧告警只能等页面打开时才知道，由 app.js 填（阈值从 payload 来）。
+   ⚠️ 整块初始 hidden 的判据里没有「陈旧告警」—— 本地预览数据本来就是旧的，
+   app.js 若发现告警成立会把整块显示出来。 #}
+<div class="msgbar" id="msgbar"{% if not msg_festival and not msg_notice %} hidden{% endif %}>
+  {% if msg_festival %}
+  <div class="msg msg-fest season-{{ msg_festival.season }}" id="msg-fest">
+    {# 内容套 .wrap：色带通栏铺满，但文字与顶栏/正文左右对齐
+       （不套容器的话，宽屏上活动名会贴在屏幕最左边，跟站点名对不齐） #}
+    <div class="wrap msg-inner">
+      <span class="msg-tag">{{ msg_festival.season_label }}</span>
+      <strong class="msg-name">{{ msg_festival.text }}</strong>
+      <span class="msg-text">进行中</span>
+      {% if msg_festival.note %}<span class="msg-note">{{ msg_festival.note }}</span>{% endif %}
+      <span class="msg-until">{{ msg_festival.range_text }} · {{ msg_festival.until_text }}</span>
+      {% if msg_festival.url %}
+      <a class="msg-link" href="{{ msg_festival.url }}" target="_blank" rel="noopener">详情</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {# 第二行：内容由 app.js 决定（陈旧告警优先，其次这里带的站点通知）——
+     文案用 data-notice 传，避免前端再存一份 #}
+  <div class="msg msg-alert" id="msg-alert" hidden{% if msg_notice %}
+       data-notice="{{ msg_notice.text }}"{% if msg_notice.url %}
+       data-notice-url="{{ msg_notice.url }}"{% endif %}{% endif %}></div>
 </div>
 
 {# S9-3：浮动按钮（refs.md C6「按钮做成跟着页面走的 box 按钮」+ C5「返回顶部」）
@@ -84,7 +112,9 @@
     <div id="lv-pager"></div>
   </section>
 
-  <p id="empty" class="empty" hidden>这里暂时没有符合条件的折扣。</p>
+  {# S9-3：空状态改由 app.js 填「自绘插画 + 文案」（refs.md B13：无内容/加载中/失败
+     三种状态都要有插画，配色沿用站点现有色）。 #}
+  <div id="empty" class="empty" hidden></div>
 </main>
 
 {# S9-2：底部抽屉式筛选（refs.md §6.7）—— 手机上从屏幕底部滑出，

@@ -803,3 +803,79 @@ class TopbarTest(unittest.TestCase):
         self.assertIn('class="brand-mark"', html)
         self.assertIn('class="brand-b">DailyLowest<', html)
         self.assertNotIn('id="nav-toggle"', html)
+
+
+class MessageBarTest(unittest.TestCase):
+    """S9-3 顶部消息区（refs.md §4 A-3 / B2）：节日条 + 一行提示，最多两行。
+
+    钉四件事：① 有正在进行的活动才渲染那一行、且带上季节主题色类名；
+    ② **没内容整块不显示**（用户口径：「没活动时：不显示」）；
+    ③ 站点通知走第二行的 `data-notice`，陈旧告警的优先级在 app.js 里判（这里只保证文案到位）；
+    ④ 陈旧告警的两档阈值**从配置来**，别在前端写死。
+    """
+
+    NOW = datetime(2026, 10, 6, 20, 0, tzinfo=classify.zone("Asia/Shanghai"))
+
+    def _content(self, payload: dict) -> Path:
+        import tempfile
+        path = Path(tempfile.mkdtemp(prefix="sdl-ann-")) / "announcements.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def _render_with(self, content, *, cfg_extra: dict | None = None) -> Path:
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        cfg = dict(CFG, output_dir=str(out), announcements_path=str(content))
+        cfg.update(cfg_extra or {})
+        report.render(cfg, [], _STATS, self.NOW)
+        return out
+
+    def test_festival_row_rendered_with_season_colour(self):
+        content = self._content({"festivals": [{
+            "name": "Steam 秋季特卖", "kind": "season",
+            "start": "2026-10-01 01:00", "end": "2026-10-08 01:00",
+            "note": "一年四大特卖之一"}]})
+        html = (self._render_with(content) / "index.html").read_text(encoding="utf-8")
+        self.assertIn('class="msg msg-fest season-autumn"', html)
+        self.assertIn("Steam 秋季特卖", html)
+        self.assertIn("一年四大特卖之一", html)
+        self.assertIn("还有 1 天", html)          # 10-08 01:00 收摊按 10-07 结束算
+        self.assertNotIn('id="msgbar" hidden', html)
+
+    def test_nothing_active_hides_the_whole_block(self):
+        content = self._content({"festivals": [], "notices": []})
+        html = (self._render_with(content) / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<div class="msgbar" id="msgbar" hidden>', html)
+        self.assertNotIn("msg-fest", html)
+
+    def test_missing_content_file_still_renders_and_hides(self):
+        """坏数据不能炸报表：路径不存在时照常出页面，只是没有顶部条。"""
+        out = self._render_with(Path("no/such/announcements.json"))
+        html = (out / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="msgbar"', html)
+        self.assertNotIn("msg-fest", html)
+        self.assertTrue((out / "about.html").exists())
+
+    def test_notice_text_handed_to_the_frontend(self):
+        content = self._content({"notices": [{
+            "text": "站点改版说明", "url": "https://example.com/note",
+            "start": "2026-10-01", "end": "2026-10-31"}]})
+        html = (self._render_with(content) / "index.html").read_text(encoding="utf-8")
+        self.assertIn('data-notice="站点改版说明"', html)
+        self.assertIn('data-notice-url="https://example.com/note"', html)
+        self.assertIn('id="msg-alert"', html)
+
+    def test_stale_thresholds_come_from_config(self):
+        payload = _load_payload(self._render_with(self._content({})))
+        self.assertEqual(payload["stale_warn_hours"], 26)     # 默认
+        self.assertEqual(payload["stale_banner_hours"], 36)
+        payload = _load_payload(self._render_with(
+            self._content({}), cfg_extra={"stale_warn_hours": 20, "stale_banner_hours": 30}))
+        self.assertEqual(payload["stale_warn_hours"], 20)
+        self.assertEqual(payload["stale_banner_hours"], 30)
+
+    def test_empty_state_element_is_a_container_for_the_art(self):
+        """空状态由 app.js 填「插画 + 文案」，模板里必须是容器而不是写死一句话
+        （refs.md B13：三种状态都要有插画）。"""
+        html = (self._render_with(self._content({})) / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<div id="empty" class="empty" hidden></div>', html)

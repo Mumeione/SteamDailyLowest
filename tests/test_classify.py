@@ -319,5 +319,41 @@ class SlimDealTest(unittest.TestCase):
         self.assertEqual(slim, {"game_id": "u", "price_int": 1, "expiry": "e"})
 
 
+class DaysUntilTest(unittest.TestCase):
+    """「还剩几个日历天」的唯一口径（S9-3 把卡片的「剩 X 天」与顶部活动条的
+    「还有 X 天」合并到这一份实现上，两边数字不会再打架）。"""
+
+    NOW = datetime(2026, 9, 21, 12, 0, tzinfo=TZ)
+
+    def test_calendar_day_diff(self):
+        self.assertEqual(classify.days_until(
+            datetime(2026, 9, 28, 10, 0, tzinfo=TZ), self.NOW), 7)
+
+    def test_early_morning_counts_as_previous_day(self):
+        """凌晨收摊宽容（阈值 3:00）：明早 01:00 结束 = 「今天结束」（0 天）。"""
+        for hour in (1, 2):
+            self.assertEqual(classify.days_until(
+                datetime(2026, 9, 22, hour, 0, tzinfo=TZ), self.NOW), 0, hour)
+        # 03:00 起不再宽容：明天 05:00 / 10:00 结束就是正经「剩 1 天」
+        for hour in (5, 10):
+            self.assertEqual(classify.days_until(
+                datetime(2026, 9, 22, hour, 0, tzinfo=TZ), self.NOW), 1, hour)
+
+    def test_never_negative(self):
+        self.assertEqual(classify.days_until(
+            datetime(2026, 9, 21, 1, 0, tzinfo=TZ), self.NOW), 0)
+
+    def test_naive_now_does_not_raise(self):
+        """naive 的 now 只出现在测试里；aware/naive 混比会直接抛 TypeError，
+        所以这条既是回归锁定、也是「测试路径别用 aware」的提醒。"""
+        self.assertEqual(classify.days_until(
+            datetime(2026, 9, 28, 10, 0, tzinfo=TZ), datetime(2026, 9, 21, 12, 0)), 7)
+
+    def test_same_zone_conversion(self):
+        """带别的时区的结束时刻先换算到 now 的时区再算日历天。"""
+        expiry = datetime(2026, 9, 27, 22, 0, tzinfo=classify.timezone.utc)  # = 09-28 06:00 CST
+        self.assertEqual(classify.days_until(expiry, self.NOW), 7)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1240,7 +1240,9 @@ SteamDailyLowest/
 | `expired_retention_days`      | `7`                    | 过期后保留天数                                                                                                                                  |
 | `upcoming_expiry_hours`       | `48`                   | 「即将过期」阈值                                                                                                                                 |
 | `week_window_days`            | `14`                   | 本周视图长度                                                                                                                                   |
-| `stale_banner_hours`          | `36`                   | 超过多久显示陈旧横幅                                                                                                                               |
+| `stale_banner_hours`          | `36`                   | 数据陈旧**红档**：超过它就显示「今天可能没抓到」（S9-3 起顶部消息区第二行）                                                                                              |
+| `stale_warn_hours`            | `26`                   | 数据陈旧**黄档**：超过它就提示「Actions 延迟，可能不是最新的」（refs.md B2 的 26h/36h 两档）                                                                          |
+| `announcements_path`          | `"content/announcements.json"` | 顶部消息区的内容文件（节日/活动 + 站点通知，手工维护）。**坏了只是不显示顶部条**，不影响出报表 —— 见 `src/announcements.py`                                     |
 | `timezone`                    | `"Asia/Shanghai"`      | 日期判定时区                                                                                                                                   |
 | `state_path`                  | `"data/state.json"`    | 状态文件（不可重建）；`cache.json`（可重建缓存，重构 S4）固定与其同目录同名，无独立配置键                                                                                     |
 | `expiring_snapshot_path`      | `"data/expiring.json"` | 「即将过期」快照导出（跨仓库数据契约，随 data 分支持久化，`.scratch/expiring-snapshot/spec.md`）                                                       |
@@ -1461,3 +1463,45 @@ SteamDailyLowest/
   把顺序复原成「新史低 → 即将到期 → 热门游戏 → 大额折扣」。
 - **`.deck-track` / `.listview .rows` 的断点仍是 1100px**，别跟着 `.sections` 一起挪。
 - 本地看非当天数据：`python tools/render_report.py --at 2026-10-06`（把「今天」固定成那天）。
+
+
+### S9-3 收尾：顶部消息区 + 空状态插画（2026-10-07，refs.md §4 A-3 / B2 / B13）
+
+**顶部消息区**（`#msgbar`，在吸顶顶栏下方）—— **最多两行**：
+
+| 行 | 内容 | 谁生成 |
+| --- | --- | --- |
+| ① 节日/活动条 | 通栏、四季主题色、字号更大：`「秋季」Steam 秋季特卖 进行中 · 10-08 01:00 结束 · 还有 1 天` | **服务端**（`src/announcements.py`，渲染时按北京时间筛） |
+| ② 提示条（一行） | 数据陈旧告警（>26h 黄 / >36h 红）**或** 站点通知（红底白字） | 告警 = `app.js` 算；通知 = 服务端写进 `data-notice` |
+
+- 内容源 **`content/announcements.json`**（仓库内、手工维护；`festivals` + `notices` 两个列表，
+  格式与维护口径写在该文件的 `_readme` 里）。**改内容不用动代码。**
+- 筛不出来的那行**不渲染**；两行都空则整块 `hidden`（用户口径：「没活动时：不显示」）。
+- 节日条**色带通栏铺满、内容套 `.wrap`**（与顶栏/正文左右对齐 —— 不套的话宽屏上活动名会
+  贴在屏幕最左边缘）；**条比提示行厚一档**、活动名字号更大且走**衬线字体栈**
+  （A-3 要求「换字体 + 加宽 + 放大字号」，而页面要能离线双击打开、拉不了字体文件，
+  只能用系统字体栈做区分）。
+- **陈旧告警优先于站点通知**（用户 2026-10-07 拍板：数据可不可信比公告更要紧）。
+  这条只能在浏览器里判 —— 渲染时刻 ≠ 访客打开时刻，所以两档阈值经 payload 下发。
+  副作用：数据一旦陈旧，站点通知就被压住不显示（要保持两行制就有这个代价，已与用户确认）。
+- ⚠️ 「还有 X 天」与卡片的「剩 X 天」**共用** `classify.days_until`
+  （含 `classify.EARLY_MORNING_EXPIRY_HOUR = 3` 的凌晨宽容）：10-08 01:00 收摊按 10-07 结束算。
+  起止区间（`range_text`）与「还有 X 天」（`until_text`）都由 `src/announcements.py` 拼好，
+  模板只负责摆放（别再一半服务端一半模板）。
+- 活动清单的「最少集合」口径（只维护四大季节特卖 + 尖叫节 / Next Fest）见
+  `.scratch/refactor-2026q4/festivals.md`（不入库）；每季度去 Steamworks 的
+  Upcoming Steam Events 核对一次。
+
+**空状态插画**（`#empty`，`app.js` 的 `EMPTY_ART` + `setEmpty()`）—— 三态都是**自绘内联 SVG**
+（不引图片文件，页面要能离线双击打开），配色只用站点现有色：
+
+| 状态 | 插画 | 触发点 |
+| --- | --- | --- |
+| `none` | 虚线卡片 + 向下探的箭头 + 底部红线 | 首页四板块为空 / 板块筛完为空 |
+| `loading` | 蓝色转圈（旋转交给 CSS `.is-spin`，不用 SVG 动画） | 点导航后 all.js 正在加载 |
+| `fail` | 红虚线圆 + 感叹号，**带「重试」按钮** | all.js 加载失败（点重试重进该板块） |
+
+- 模板里 `#empty` 改成**空容器**，插画与文案都由 `app.js` 填（旧版是一句写死的灰字）。
+- 冒烟测（`%TEMP%/smoke_s9.js`，无浏览器环境下的唯一手段）扩到 **74 项**，新增覆盖：
+  节日条季节类名与起止区间 / 内容与正文对齐 / 两档陈旧告警 / 通知与告警的优先级 /
+  空状态三态（含失败 → 重试）。
