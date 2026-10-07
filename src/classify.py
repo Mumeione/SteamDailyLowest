@@ -393,7 +393,7 @@ def is_expired(expiry: str | None, now: datetime) -> bool:
     return dt is not None and dt <= now
 
 
-#: 视图键（与 `report.VIEWS` 的 key 一一对应）
+#: 视图键（写入每张卡片的 ``views`` 成员标志，供前端 ``liveOk`` 与板块筛选使用）
 #: 批 F2：`expired` 已移出 —— 折扣过期后对买家没有意义，不再作为一个视图
 #: （`is_expired()` 保留：留存清理与判定仍要它）
 VIEW_KEYS = ("new_today", "week", "active", "upcoming")

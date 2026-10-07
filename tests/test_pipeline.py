@@ -162,8 +162,8 @@ class RenderPassTest(unittest.TestCase):
         self.assertEqual(payload["list"]["breakpoint"], 768)
 
     def test_upcoming_counted_but_not_inlined(self):
-        """「即将过期」：只下发按钮 count，**不再内联 view_groups**（2026-10-08，
-        大促尾期它 ≈ 全池，曾把 data.js 撑到 7.4MB、首屏几十秒）。
+        """「即将过期」：不再内联任何视图数据（2026-10-08 —— ``view_groups`` 与
+        ``views`` 按钮组都已删除；大促尾期前者 ≈ 全池，曾把 data.js 撑到 7.4MB）。
         完整列表走 all.js 的 expiring 板块；expiring.json 导出走
         ``upcoming_shown_items``（另一条测试锁定）。"""
         expiring = deal("g-expiring", 444, 90, "Expiring Game")
@@ -173,10 +173,8 @@ class RenderPassTest(unittest.TestCase):
 
         self.assertNotIn("view_groups", payload)
         self.assertNotIn("groups", payload)
+        self.assertNotIn("views", payload)
         self.assertEqual(info["upcoming_shown"], 1)
-        upcoming_view = next(v for v in payload["views"] if v["key"] == "upcoming")
-        self.assertTrue(upcoming_view["enabled"])
-        self.assertEqual(upcoming_view["count"], 1)
 
     def test_upcoming_shown_items_is_post_tier_deduped(self):
         """upcoming_shown_items：已合并详情、已按 appid 去重、且**已过**口碑分档（is_shown）——
@@ -198,14 +196,19 @@ class RenderPassTest(unittest.TestCase):
         self.assertIsInstance(info["upcoming_shown"], int)
         self.assertEqual(info["upcoming_shown"], 1)
 
-    def test_upcoming_view_absent_when_not_produced(self):
-        """不传 upcoming 时 views.upcoming count 为 0；payload 永远不带
-        view_groups（数据本体只在 all.js / expiring.json）。"""
-        _, payload = self._run()
+    def test_upcoming_absent_when_not_produced(self):
+        """不传 upcoming 时 info.upcoming_shown 为 0；payload 永远不带
+        view_groups / views（数据本体只在 all.js / expiring.json）。"""
+        info, payload = self._run()
         self.assertNotIn("view_groups", payload)
-        upcoming_view = next(v for v in payload["views"] if v["key"] == "upcoming")
-        self.assertTrue(upcoming_view["enabled"])
-        self.assertEqual(upcoming_view["count"], 0)
+        self.assertNotIn("views", payload)
+        self.assertEqual(info["upcoming_shown"], 0)
+
+    def test_payload_carries_assets_version(self):
+        """app.js 懒加载 all.js 时用 payload.assets_version 拼 ?v=（防 Pages 缓存）——
+        与模板给 data.js/app.js 的 ?v= 同源（= now 的 epoch 秒）。"""
+        _, payload = self._run()
+        self.assertEqual(payload["assets_version"], str(int(NOW.timestamp())))
 
     def test_overview_is_one_summary_line(self):
         """S9（2026-10-06，用户定案）：首页撤掉 6 个小框概览，只留一行摘要

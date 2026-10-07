@@ -371,17 +371,39 @@ class FeaturedSortTest(unittest.TestCase):
         ordered = sorted(cards, key=report.featured_sort_key)
         self.assertEqual([c["title"] for c in ordered], ["A", "B"])
 
+    def test_latest_json_shown_order_matches_sort_key(self):
+        """端到端锁定：latest.json 的 ``shown`` 顺序 == 按 featured_sort_key 排。
+        （原来的断言查的是已删的 featured 组；这里改为查真实产物。）"""
+        import tempfile
+        now = datetime(2026, 9, 21, 12, 0, tzinfo=classify.zone("Asia/Shanghai"))
+
+        def full_card(low_class, cut, count, title, appid):
+            return {"tier": classify.TIER_QUALITY, "tier_label": "好评达标",
+                    "cut": cut, "title": title, "title_zh": None, "appid": appid,
+                    "low_class": low_class,
+                    "low_label": "新史低" if low_class == "new" else "平史低",
+                    "price_text": "¥1",
+                    "reviews": {"score": 80, "count": count}}
+
+        cards = [full_card("tie", 90, 99999, "A", 1),   # 平史低（层 1）
+                 full_card("new", 10, 1, "B", 2),       # 新史低，折扣最小
+                 full_card("new", 50, 10, "C", 3)]      # 新史低，折扣居中
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        report.render(dict(CFG, output_dir=str(out)), cards, _STATS, now)
+        latest = json.loads((out / "latest.json").read_text(encoding="utf-8"))
+        self.assertEqual([s["title"] for s in latest["shown"]], ["C", "B", "A"])
+
     # build_featured_group 已随 2026-10-08 payload 瘦身删除（S9 前端不读分组键；
     # featured 组是死数据，见 report.render 的 docstring）。
     # 分层排序键本身由上面几条 featured_sort_key 单测锁定。
 
 
 class LazyViewsTest(unittest.TestCase):
-    """重构 S5：本周 / 折扣中 / 全部 走 all.js 懒加载。
+    """重构 S5：板块完整列表的数据源 = all.js（首次点导航时懒加载）。
 
-    - 未传 all_cards：三个视图按钮禁用（数据不可用时不给可点的空按钮）
-    - 传了 all_cards：按钮启用 + 带服务端预统计 count + lazy 标志；
-      all.js 落盘（分组形态与 data.js 同构，条目带 views 成员标志）
+    - 未传 all_cards：不写 all.js（懒加载视图没有数据源）
+    - 传了 all_cards：all.js 落盘（按 tier 分组，每条带 views / sections 标志）
+    ⚠️ 2026-10-08：视图按钮（payload["views"]）已整段删除，本类不再断言它。
     """
 
     now = datetime(2026, 9, 21, 12, 0, tzinfo=classify.zone("Asia/Shanghai"))
@@ -394,17 +416,13 @@ class LazyViewsTest(unittest.TestCase):
                 "expiry": expiry, "tier": classify.TIER_QUALITY,
                 "reviews": {"score": 80, "count": 500}}
 
-    def test_lazy_views_disabled_without_all_cards(self):
+    def test_all_json_absent_without_all_cards(self):
+        """不传 all_cards → 不写 all.js；payload 也不再带 views 键（2026-10-08 删）。"""
         out = _render([], self.now)
-        payload = _load_payload(out)
-        lazy = {v["key"]: v for v in payload["views"] if v["key"] in report.LAZY_VIEWS}
-        self.assertEqual(set(lazy), {"week", "active", "all"})
-        for view in lazy.values():
-            self.assertFalse(view["enabled"])
-            self.assertIsNone(view["count"])
-            self.assertFalse(view["lazy"])
+        self.assertFalse((out / "all.js").exists())
+        self.assertNotIn("views", _load_payload(out))
 
-    def test_lazy_views_enabled_with_counts_and_all_json(self):
+    def test_all_json_written_with_all_cards(self):
         import tempfile
         out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
         entries = [
@@ -420,19 +438,8 @@ class LazyViewsTest(unittest.TestCase):
             card["views"] = [key for key in classify.VIEW_KEYS
                              if classify.in_view(key, entry, self.now, CFG)]
             all_cards.append(card)
-        extra = {"week": sum(1 for c in all_cards if "week" in c["views"]),
-                 "active": sum(1 for c in all_cards if "active" in c["views"]),
-                 "all": len(all_cards)}
         cfg = dict(CFG, output_dir=str(out))
-        report.render(cfg, [], _STATS, self.now,
-                      all_cards=all_cards, extra_counts=extra)
-        payload = _load_payload(out)
-        by_key = {v["key"]: v for v in payload["views"]}
-        self.assertTrue(by_key["week"]["enabled"])
-        self.assertTrue(by_key["week"]["lazy"])
-        self.assertEqual(by_key["week"]["count"], 1)     # 只有 g-active 在本周窗口
-        self.assertEqual(by_key["active"]["count"], 1)   # 只有 g-active 未过期
-        self.assertEqual(by_key["all"]["count"], 2)
+        report.render(cfg, [], _STATS, self.now, all_cards=all_cards)
 
         # all.js 是 window.ALL_DATA = {...} 形态（非纯 JSON），解析时剥前缀
         all_payload = json.loads(
@@ -452,8 +459,7 @@ class LazyViewsTest(unittest.TestCase):
         card = report.build_card(entry, self.now)
         card["views"] = ["week", "active", "new_today", "upcoming"]
         cfg = dict(CFG, output_dir=str(out))
-        report.render(cfg, [], _STATS, self.now,
-                      all_cards=[card], extra_counts={"week": 1, "active": 1, "all": 1})
+        report.render(cfg, [], _STATS, self.now, all_cards=[card])
         all_payload = json.loads(
             (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
         self.assertEqual([g["key"] for g in all_payload["groups"]],

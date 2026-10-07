@@ -534,7 +534,8 @@ check("加载中 → 转圈插画 + 加载文案",
   loadingEmpty.textContent.trim());
 
 // ③ 加载失败：给那个动态 <script> 派发一次 error
-const loadScript = loadingDom.window.document.querySelector('script[src="all.js"]');
+// src 带 ?v=（2026-10-08 起，防 Pages 缓存），用前缀匹配
+const loadScript = loadingDom.window.document.querySelector('script[src^="all.js"]');
 check("点导航真的去加载 all.js", !!loadScript);
 if (loadScript) {
   loadScript.dispatchEvent(new loadingDom.window.Event("error"));

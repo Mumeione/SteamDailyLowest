@@ -33,30 +33,12 @@ GROUP_COLLAPSED = {
     classify.TIER_PENDING: True,
 }
 
-#: 视图开关（§7.2）。
-#: 批 F2：「已过期」已删除 —— 折扣过期后毫无价值（用户：过期折扣犹如砒霜），
-#: 不配占一个分类按钮的位置。相关数据仍照常入库，只是不上页面。
-#: 2026-09-27：「即将过期」上线（48h 窗口，``upcoming_expiry_hours``）。
-#: 重构 S5（2026-10-05）：开放「本周 / 折扣中」，新增「全部」入口 ——
-#: 这三个视图的数据量大（今日筛选链全量，约 5 千条、大促峰值 3 万），
-#: 拆到独立 ``all.js`` 首次点击时懒加载（spec §1 决策 9），
-#: 服务端只在 data.js 里预置按钮 count。
-#: ⚠️ 2026-10-08：「即将过期」的分组数据也移出 data.js（``view_groups`` 键删除，
-#: 大促尾期它 ≈ 全池，曾把 data.js 撑到 7.4MB）—— S9 前端本就不读它，
-#: 「即将到期」板块的完整列表一直走 all.js 的 ``expiring`` 板块。
-#: ``views`` 目前**没有前端消费者**（S9 不渲染这组按钮，app.js 也不读 payload.views），
-#: 只有测试在读 —— 是否删它属另一轮「payload 拆袋」，本轮不动。
-VIEWS = [
-    {"key": "new_today", "label": "当日新增", "enabled": True},
-    {"key": "week", "label": "本周(14天)", "enabled": True},
-    {"key": "active", "label": "折扣中", "enabled": True},
-    {"key": "upcoming", "label": "即将过期", "enabled": True},
-    {"key": "all", "label": "全部", "enabled": True},
-]
-
-#: 走 all.js 懒加载的视图（数据不在 data.js 里，前端首次点击时 fetch）。
-#: 「全部」本身也在其中 —— 它就是 all.js 的原始分组。
-LAZY_VIEWS = ("week", "active", "all")
+#: ⚠️ 2026-10-08：**视图按钮已整段退场** —— `VIEWS` / `LAZY_VIEWS` / `payload["views"]`
+#: 连同 `render(upcoming_items=…, extra_counts=…)` 一起删除。S9 首页四板块 + 导航栏
+#: 已取代视图切换，这组「按钮 count」没有任何前端消费者（app.js 读的是**卡片级**
+#: `card["views"]` 成员标志，见 run.py；与本组无关）。
+#: 沿革留档：批 F2 删「已过期」（过期折扣对买家无价值）；2026-09-27 上线「即将过期」；
+#: S5（2026-10-05）开放「本周 / 折扣中 / 全部」并把大数据拆到 ``all.js`` 懒加载。
 
 #: 「剩 X 天」的凌晨宽容阈值已挪到 `classify.EARLY_MORNING_EXPIRY_HOUR`
 #: （2026-10-07：卡片与顶部活动条共用 `classify.days_until`，不再各留一份常量）
@@ -928,25 +910,21 @@ def criteria_notes(cfg: dict) -> list[dict]:
 
 def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
            *, fx: dict | None = None, steam: dict | None = None,
-           upcoming_items: list[dict] | None = None,
            all_cards: list[dict] | None = None,
-           extra_counts: dict | None = None,
            run_log: list[dict] | None = None) -> dict:
     """写出一整套静态文件，返回产出路径。
 
-    ``upcoming_items``：「即将过期」视图的卡片数据。⚠️ 2026-10-08 起**只用于
-    views 按钮的 count 下发，不再内联进 payload**（``view_groups`` 键已删除）——
-    大促尾期「即将过期」≈ 全池（实测 7202 条内联卡片把 data.js 撑到 7.4MB，首屏几十秒）。
-    「即将到期」板块的完整列表改走 all.js 的 ``expiring`` 板块（懒加载），
-    expiring.json 快照导出仍由 run.py 的 ``upcoming_shown_items`` 负责。
-
-    ``items`` 为当日新增的原始卡片：计入 low_points 与 new_today 的按钮 count，
-    ``all_cards`` 缺席时兜底作首页板块池子（兼容直接调用 render 的测试与工具）。
+    ``items`` 为当日新增的原始卡片：计入 low_points，``all_cards`` 缺席时兜底作
+    首页板块池子（兼容直接调用 render 的测试与工具）。
 
     ``all_cards``：「全部」视图的数据 —— 今日筛选链通过的全量卡片，每张带
     ``views`` 列表（week/active/new_today/upcoming 成员标志，run.py 计算）；
-    传了就写出 ``all.js``（本周 / 折扣中 / 全部三个视图懒加载它），
-    并启用这三个视图按钮；``extra_counts`` 给出它们的按钮 count。
+    传了就写出 ``all.js``（懒加载视图的数据源）。
+
+    ⚠️ 2026-10-08：payload 不再下发 ``views`` / ``groups`` / ``view_groups``
+    （首屏瘦身）—— 视图按钮与「即将过期」卡片都无前端消费者；「即将到期」板块的
+    完整列表走 all.js 的 ``expiring`` 板块，expiring.json 快照导出由 run.py 的
+    ``upcoming_shown_items`` 负责。
     """
     output_dir = Path(cfg["output_dir"])
     if not output_dir.is_absolute():
@@ -958,24 +936,6 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         shutil.copyfile(STATIC_DIR / name, output_dir / "static" / name)
 
     version = str(int(now.timestamp()))
-    # 视图按钮的 count：new_today / upcoming 从本集合取；week / active / all
-    # 由调用方统计好经 ``extra_counts`` 传入（懒加载视图的数据不在本 payload 里）
-    view_counts = {
-        "new_today": len(items),
-        "upcoming": len(upcoming_items or []),
-        **(extra_counts or {}),
-    }
-    lazy_ready = all_cards is not None
-    views = []
-    for view in VIEWS:
-        item = dict(view)
-        enabled = view["enabled"] and (
-            view["key"] not in LAZY_VIEWS or lazy_ready
-        )
-        item["enabled"] = enabled
-        item["count"] = view_counts.get(view["key"]) if enabled else None
-        item["lazy"] = enabled and view["key"] in LAZY_VIEWS
-        views.append(item)
 
     # 批 E spec E4：概览的「史低构成」色点 —— 直接数 cards，
     # 保证色点之和 == 进列表条数（不可能出现对不上的情况）
@@ -993,6 +953,10 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     payload = {
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_text": now.strftime("%Y-%m-%d %H:%M"),
+        #: 资源版本（= now 的 epoch 秒）——模板给 data.js / app.js 的 ``?v=`` 用它，
+        #: app.js 懒加载 all.js 时也拼同一个值（2026-10-08：all.js 原先不带 ``?v=``，
+        #: 会吃 Pages 的 ~10 分钟缓存、可能短暂取到旧版）。
+        "assets_version": version,
         "stale_banner_hours": int(cfg.get("stale_banner_hours", 36)),
         #: S9-3 顶部消息区：>26h 黄（Actions 延迟）/>36h 红（今天没更新）。
         #: 阈值从配置来，前端不再写死第二份（review-s9-01 确立的约定）——
@@ -1002,10 +966,9 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "sweep": stats.get("sweep"),
         "overview": stats,
         "low_points": low_points,
-        "views": views,
-        #: ⚠️ payload 里**没有** ``groups`` / ``view_groups``（2026-10-08 删除）：
+        #: ⚠️ payload 里**没有** ``groups`` / ``view_groups`` / ``views``（2026-10-08 删除）：
         #: S9 首页板块走 sections、大卡走 picks、「即将到期」完整列表走 all.js 的
-        #: expiring —— 没有前端消费者。这两个键曾让 data.js 在大促尾期膨胀到
+        #: expiring —— 没有前端消费者。这组键曾让 data.js 在大促尾期膨胀到
         #: 7.4MB（首屏几十秒）——别加回来。
         #: S9 首页四板块（池子 = 「全部」视图那批卡片，见 build_sections 注释）
         "sections": sections,
@@ -1116,7 +1079,6 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     html = template.render(
         payload=payload,
         assets_version=version,
-        views=views,
         nav=nav,
         links=links,
         fx=payload["fx"],

@@ -8,6 +8,17 @@
 
 ---
 
+## 2026-10-08 · 修复首屏加载慢（data.js 瘦身）
+
+- 线上 `data.js` 被「即将过期」内联卡片撑到 **7.4MB**（大促统一到期 → 48h 窗口吞下整个活动池），
+  首屏要几十秒。改为：payload 不再写 `groups` / `view_groups`，分组卡片只在 `all.js`
+  （懒加载）；首页两个 `<script>` 加 `defer`。`data.js` 回落到 ~42KB。
+- 连带修复：`tools/check_payload.py` 改从 `all.js` 读分组卡片（原读 `data.js.groups` → 会误报/假绿）。
+- payload 瘦身顺带清掉无前端消费者的视图按钮组（`VIEWS` / `payload["views"]` /
+  `render(upcoming_items=…, extra_counts=…)`），`app.js` 懒加载 `all.js` 补上 `?v=`；
+  `latest.json` 的 `shown` 顺序加端到端测试；README / DEVELOPMENT 的旧视图描述同步。
+- 细节：本地 `.workbuddy/memory/2026-10-08.md`。
+
 ## 2026-10-08 · 文档整理
 
 - 建立本 CHANGELOG；`.scratch/` 全部移出版本库（`.gitignore` 忽略），旧跟踪文件 `git rm --cached`。

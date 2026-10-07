@@ -4,8 +4,9 @@
  *       → 点导航进「板块完整列表页」（数据来自 all.js 懒加载）
  *
  * 数据来源：
- *   window.REPORT_DATA（data.js）—— 当日新增、四板块预览（各 10 条）、
- *                                    顶部大卡候选 15 张、断点/分页配置
+ *   window.REPORT_DATA（data.js）—— 当日新增摘要（low_points）、四板块预览
+ *                                    （各 10 条）、顶部大卡候选、断点/分页配置
+ *                                    （⚠️ 2026-10-08 起不含分组卡片，见下）
  *   window.ALL_DATA（all.js，首次点导航时 <script> 懒加载）—— 全量卡片，
  *                                    每张带 views（视图成员）与 sections（板块归属）
  *
@@ -493,7 +494,9 @@
     if (allRequested) return;
     allRequested = true;
     var script = document.createElement("script");
-    script.src = "all.js";
+    // all.js 也带 ?v=（2026-10-08）：否则会吃 Pages 的 ~10 分钟缓存，刚发布的新数据
+    // 可能拿不到。版本从 payload 取，与 data.js/app.js 的 ?v= 同源（report.render 的 assets_version）。
+    script.src = "all.js?v=" + encodeURIComponent(data.assets_version || "");
     script.onload = function () {
       var cbs = allCallbacks.splice(0);
       allCache = window.ALL_DATA || null;

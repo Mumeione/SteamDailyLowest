@@ -766,11 +766,11 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     labels = report.tier_labels(cfg)
 
     # ---- 重构 S5：「全部」视图数据 = 今日筛选链全量（含当日新增），逐条打视图标志 ----
-    # 懒加载三视图（本周 / 折扣中 / 全部）的数据源；count 也从这里统计。
+    # 懒加载视图（板块完整列表）的数据源：all.js 用它。
+    # ⚠️ 2026-10-08 起不再统计视图按钮 count（那组 payload 已删）。
     # 比价数据只覆盖 enrich 过的当日新增 + 即将过期（全量补比价 = 上千次 Steam 请求，
     # 不做）—— 其余条目详情区由前端回落单栏。
     all_cards: list[dict] | None = None
-    extra_counts: dict | None = None
     if all_entries is not None:
         _, _, all_shown = build_view(all_entries)
         all_cards = []
@@ -783,19 +783,12 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
             # S9：首页四板块归属（前端按它筛板块的完整列表；同一游戏可跨板块）
             card["sections"] = report.section_keys(card, cfg)
             all_cards.append(card)
-        extra_counts = {
-            "week": sum(1 for c in all_cards if "week" in c["views"]),
-            "active": sum(1 for c in all_cards if "active" in c["views"]),
-            "all": len(all_cards),
-        }
         info["all_shown"] = len(all_shown)
 
     cards = [report.build_card(entry, now, labels, cfg) for entry in shown]
-    upcoming_cards = [report.build_card(entry, now, labels, cfg) for entry in upcoming_shown]
     info["paths"] = report.render(
         cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
-        upcoming_items=upcoming_cards if has_upcoming else None,
-        all_cards=all_cards, extra_counts=extra_counts,
+        all_cards=all_cards,
         run_log=state.run_log,   # S9：「关于网站」页的每日更新日志
     )
     return info
