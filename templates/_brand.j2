@@ -1,0 +1,23 @@
+{#- 站点标识的**唯一来源**（2026-10-07 第二轮定稿图形：下跌折线触底 + 基线）。
+    首页与 about 页各 import 一份 —— 改图标只改这个文件，
+    不再有「改一个就要改另一个」的手动同步（2026-10-07 review：Duplicated Code）。
+
+    两份输出共用同一枚图形：
+    · favicon 走内联 SVG data URI（2026-10-07 用户：「可以适当加 favicon」）——
+      页面要能离线双击打开，拉不了外部 .ico / .svg 文件，所以编码进 href；
+    · brand-mark 是描边图形（stroke 走 currentColor，CSS 里别给它加 fill，
+      否则折线会被填成色块）。 #}
+
+{% macro favicon_link() -%}
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%231d4ed8%22%20stroke-width%3D%222.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3.4%205.2%209%2010.8%2012.6%207.2%2018.4%2013%22%2F%3E%3Cpath%20d%3D%22M13.6%2013h4.8V8.2%22%2F%3E%3Crect%20x%3D%222.6%22%20y%3D%2218.5%22%20width%3D%2218.8%22%20height%3D%222.7%22%20rx%3D%221.35%22%20fill%3D%22%231d4ed8%22%20stroke%3D%22none%22%2F%3E%3C%2Fsvg%3E">
+{%- endmacro %}
+
+{% macro brand_mark() -%}
+<svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"
+     fill="none" stroke="currentColor" stroke-width="2.5"
+     stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3.4 5.2 9 10.8 12.6 7.2 18.4 13"/>
+  <path d="M13.6 13h4.8V8.2"/>
+  <rect x="2.6" y="18.5" width="18.8" height="2.7" rx="1.35" fill="currentColor" stroke="none"/>
+</svg>
+{%- endmacro %}

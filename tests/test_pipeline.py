@@ -209,14 +209,27 @@ class RenderPassTest(unittest.TestCase):
         self.assertEqual(upcoming_view["count"], 0)
 
     def test_overview_is_one_summary_line(self):
-        """S9（2026-10-06，用户定案）：首页撤掉 6 个小框概览，只留一行
-        「今日新增：新史低 X · 平史低 Y」；其余数字搬到「关于网站」（尚未做）。
-        批 F 那套 stat-box 随 S9 退场 —— 别再让它回来。"""
+        """S9（2026-10-06，用户定案）：首页撤掉 6 个小框概览，只留一行摘要
+        「今日新增 · 新史低 X · 平史低 Y」；其余数字搬到「关于网站」。
+        批 F 那套 stat-box 随 S9 退场 —— 别再让它回来。
+
+        2026-10-07 第二轮：摘要在 CSS 里改成 **S2 结构**（白卡胶囊 + 17px 数字）。
+        文案从「今日新增：新史低 X」拆成了标签 + 数字 + 单位，所以断言改成查**结构与两处标签**，
+        不再查一个整句。
+        ⚠️ 第三轮末尾用户又删掉了数字前的小色条（「中间不要留很粗的竖线，不好看」）——
+        所以这里断言**不许**再出现 `s-bar`。"""
         self._run()
         html = (self.out / "index.html").read_text(encoding="utf-8")
         self.assertIn('class="summary"', html)
-        self.assertIn("今日新增：新史低", html)
+        self.assertIn("今日新增", html)
+        self.assertIn('<span class="s-item s-new"><b>', html)
+        self.assertIn('<span class="s-item s-tie"><b>', html)
+        self.assertIn("新史低</span>", html)
+        self.assertIn("平史低</span>", html)
         self.assertNotIn("stat-box", html)
+        # 摘要里的小色条已删（用户 2026-10-07）；卡片色条仍是唯一图例
+        self.assertNotIn('class="s-bar"', html)
+        self.assertNotIn('class="hl', html)
 
     def test_pending_group_when_details_missing(self):
         """没抓到详情的条目要进「详情待补」，而不是被丢掉（§3.3）。"""

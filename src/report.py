@@ -112,36 +112,61 @@ def fx_display(cfg: dict, fx: dict | None) -> dict | None:
 
 #: 卡片的两个**分档配色**判据（S9-卡片，用户 2026-10-07）：
 #: 「60 好评和 90 好评一个颜色、剩 7 天和剩 2 天也是一个颜色」→ 都要分档。
-#: 阈值仍集中在配置（`good_positive_ratio` / `min_positive_ratio` / `upcoming_expiry_hours`
-#: / `home_new_low_days`），前端只挂类名，不再自己写一份。
+#: 阈值仍集中在配置（`good_positive_ratio` / `min_positive_ratio` / `bad_positive_ratio`
+#: / `upcoming_expiry_hours` / `home_new_low_days`），前端只挂类名，不再自己写一份。
 GOOD_POSITIVE_RATIO = 0.9
+#: 「差评」档的门槛（Steam 商店口径：40~69% 是「褒贬不一」、<40% 是「差评」）。
+#: ⚠️ 这两档**只可能由「高热度 · 口碑不一」组（评价数 ≥ notable，不看好评率）的卡产生**
+#: （「好评达标」组被 ≥70% 展示门槛挡住）；但那张卡**可以同时是**新史低 / 临期 / 大额折扣，
+#: 所以 mid / low **可能出现在任何板块** —— 配色的意义就是在任何位置都能认出来。
+#: （2026-10-07 review 纠正：旧注释写「只会出现在热门游戏板块」，那是**分组**口径不是
+#: **板块**口径 —— COD 类大作踩新史低时照样进「新史低」板块，好感分档不硬砍。）
+BAD_POSITIVE_RATIO = 0.4
 
 
 def rate_tier(reviews: dict | None, cfg: dict | None = None) -> str | None:
-    """好评率配色档：``high``（≥ good_positive_ratio，默认 90%）/ ``ok``（≥ 展示门槛）/
-    ``low``（低于门槛 —— 只有「高热度 · 口碑不一」那一档才会出现）；没有详情返回 ``None``。"""
+    """好评率配色档（Steam 商店口径，用户 2026-10-07 拍板）：
+
+    ``high`` ≥ `good_positive_ratio`（默认 90%）· ``ok`` ≥ `min_positive_ratio`（70%）
+    · ``mid`` ≥ `bad_positive_ratio`（40%，褒贬不一）· ``low`` < 40%（差评）；
+    没有详情返回 ``None``。
+
+    ⚠️ ``high`` 与 ``ok`` **同色**（都挂 `--steam-blue`），只靠**字重**分层 ——
+    用户明确不要「给 90% 再发明一个更深的蓝」（那会让蓝色变两个号）。
+    """
     if not reviews or reviews.get("score") is None:
         return None
     score = float(reviews["score"])
     good = float((cfg or {}).get("good_positive_ratio", GOOD_POSITIVE_RATIO)) * 100
     floor = float((cfg or {}).get("min_positive_ratio", 0.7)) * 100
+    bad = float((cfg or {}).get("bad_positive_ratio", BAD_POSITIVE_RATIO)) * 100
     if score >= good:
         return "high"
-    return "ok" if score >= floor else "low"
+    if score >= floor:
+        return "ok"
+    return "mid" if score >= bad else "low"
 
 
 def days_tier(days_left: int | None, cfg: dict | None = None) -> str | None:
-    """剩余天数配色档：``urgent``（≤ 即将过期窗口，默认 48h = 2 天）/ ``soon``（一周内）/
-    ``later``（还有一周以上）；不知道天数返回 ``None``。
+    """剩余天数配色档（2026-10-07 起分四档，「今天结束」单独拎出来）：
+
+    ``final`` 今天/已结束（0 天）· ``urgent`` ≤ 即将过期窗口（默认 48h = 2 天）
+    · ``soon`` 一周内 · ``later`` 还有一周以上；不知道天数返回 ``None``。
 
     边界都从配置推：``upcoming_expiry_hours`` 向上取整到天 = urgent，
-    ``home_new_low_days``（默认 7）= 「一周内」的分界。「今天结束」（0 天）归 urgent。
+    ``home_new_low_days``（默认 7）= 「一周内」的分界。
+
+    ⚠️ 「今天结束」原先和「剩 1~2 天」同档。用户 2026-10-07 要它最显眼（单独一档，
+    前端给它粉底徽章），但同时提醒「即将到期那一类会显示很多这个色块」——
+    所以**只有 0 天这一个字符串**进 final 档，1~2 天仍是普通文字。
     """
     if days_left is None:
         return None
     hours = int((cfg or {}).get("upcoming_expiry_hours", DEFAULT_UPCOMING_HOURS))
     urgent_max = max(0, (hours + 23) // 24)
     later_min = int((cfg or {}).get("home_new_low_days", DEFAULT_HOME_DAYS))
+    if days_left <= 0:
+        return "final"
     if days_left <= urgent_max:
         return "urgent"
     return "soon" if days_left < later_min else "later"
@@ -521,16 +546,22 @@ def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
     return [c for c in members if _is_fresh(c, days)]
 
 
-def _section_sort(key: str):
-    """每个板块用最合理的顺序（都带 title 收尾键，保证 deterministic）。"""
+def _section_sort(key: str, cfg: dict | None = None):
+    """每个板块「精选」的顺序（都带 title 收尾键，保证 deterministic）。
+
+    2026-10-07 用户：「精选用公式，refs 文档中有参考公式，根据这个推断修正精选的公式」——
+    **新史低 / 热门 / 大额折扣** 的「精选」改为按推荐公式打分
+    （:func:`featured_score`，refs §10.2 名气优先），不再是各板块自己的自然顺序
+    （原：大额折扣=折扣降序、热门=评价数降序、新史低=分层字典序）。
+
+    ⚠️ **「即将到期」保持「到期近 → 远」**：公式的「紧迫」项只有 5 分，压不过名气（40 分），
+    按公式排会把「剩 0 天的小游戏」排到「剩 2 天的大作」后面 —— 这个板块的全部意义
+    就是「快没了」，紧迫必须优先。
+    """
     if key == "expiring":
         return lambda c: (c.get("days_left") if c.get("days_left") is not None else 99,
                           -(c.get("cut") or 0), c.get("title") or "")
-    if key == "popular":
-        return lambda c: (-review_count(c), -(c.get("cut") or 0), c.get("title") or "")
-    if key == "big_cut":
-        return lambda c: (-(c.get("cut") or 0), -review_count(c), c.get("title") or "")
-    return featured_sort_key  # 新史低：沿用精选的分层字典序
+    return lambda c: (-featured_score(c, cfg), -review_count(c), c.get("title") or "")
 
 
 def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
@@ -540,7 +571,7 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
     out = []
     for spec in HOME_SECTIONS:
         members = _section_members(spec["key"], cards, cfg)
-        members.sort(key=_section_sort(spec["key"]))
+        members.sort(key=_section_sort(spec["key"], cfg))
         out.append({
             "key": spec["key"],
             "label": spec["label"],
@@ -553,22 +584,43 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
 #: 顶部大卡（轮播）的推荐权重 —— refs.md **§10.2 的 v2「轮播版」**（名气优先）。
 #: 每项先归一到 0~1 再乘权重，满分 100；改档位优先改 ``config.json`` 的
 #: ``recommend_weights``（只写要改的那几项即可），不必动代码。
-#: 间隔（gap）缺数据时**不计分、按剩余权重归一化**（refs.md §10.3 + Q-A：
-#: 用户裁决不扩抓「上次史低时间」，等数据自然累积）。
+#: 缺数据的项**不计分、按剩余权重归一化**（见 recommend_score 末尾）。
+#: ⚠️ **这里没有「史低类型」这一项，是故意的** —— refs §10.2 的轮播版当初就不给，
+#: 理由写在表里：「池子全是新史低，无区分度」。2026-10-07 池子放宽成「新史低 +
+#: 平史低」之后我一度补过一项 `low`，用户明确要求**改回来**（原话：「别改大卡的公式，
+#: 你怎么乱动公式，你测一下效果就行了」）—— 所以**别再往这里加 low**。
+#: 有「史低」那一项的是**订阅端版**（史低 10 分，见 refs §10.2 右列）。
 RECOMMEND_WEIGHTS = {
     "fame": 40,     # 名气：对数压缩，20 万评价封顶
     "cut": 30,      # 折扣：95% 满分
     "review": 20,   # 口碑：50% → 0 分，90% → 满分
-    # ⚠️ 间隔项在**轮播池里永远是空的**：池子是新史低，而 `last_low_days` 只有平史低才有值
-    # （新史低的「上次史低」就是本次，不是「间隔」）。refs §10.2 原给它 15 分，那 15 分
-    # 实际上从不参与打分（总分按剩余 85 分归一化）→ 等于把名气/折扣悄悄放大，
-    # 与文档写的权重对不上（用户 2026-10-07：「怎么感觉排出来结果有点不同」）。
-    # 现默认 0，那 15 分并进名气 / 折扣 / 口碑。要真用间隔分，得让平史低也进池子，
-    # 或者扩抓 storelow（用户 2026-10-06 裁决：不扩）。
+    # 间隔（距上次史低天数）：refs §10.2 原给轮播版 15 分，但实测它在**新史低为主的池子里
+    # 永远是空的**（新史低的「上次史低」就是本次），那 15 分实际上从不参与打分 ——
+    # 等于把名气/折扣悄悄放大，与文档写的权重对不上（用户 2026-10-07：「怎么感觉排出来
+    # 结果有点不同」）。故默认 0，那 15 分并进名气 / 折扣 / 口碑。要启用就改配置。
     "gap": 0,
     "urgent": 5,    # 紧迫：快到期
     "fresh": 5,     # 新鲜：折扣刚开始
 }
+#: 顶部大卡**候选池的分层顺序**（用户 2026-10-07：「优先新史低，没有才显示平史低」）
+#: —— `pick_top` 就按这个顺序逐层取。
+#: ⚠️ 这只是**取候选的先后**，与打分权重无关（权重表里没有史低类型这一项，别加）。
+#: ⚠️ 顺序别调换：反过来的话 90% off 的老 3A 平史低会把新史低全挤掉。
+PICK_LOW_CLASSES = (classify.STEAM_LOW_NEW, classify.STEAM_LOW_TIE)
+
+#: 大卡「一页几张」—— **口径唯一来源就在这里**，经 payload 的 ``pick_page`` 下发，
+#: 前端 app.js 的 `PICK_MAX_COLS`（一排最多几张）从 payload 读、不再自己写死 5
+#: （2026-10-07 review：双源靠注释提醒同步迟早漂移，改由 payload 下发）。
+HOME_PICKS_PAGE = 5
+#: 大卡张数的**默认上限** = 一页（5 张）。用户 2026-10-07 定的：
+#: 「平时凑不够 15 张内容，平时 5 张就行，能凑够再放，不要凑数」。
+#: 想放更多就改 `config.json` 的 `home_picks`（仍按整数页取：10 / 15；平史低只拿来
+#: **补末页的空格**，页数永远只由新史低决定 —— 见 :func:`pick_top` 的注释）。
+#: ⚠️ 别拿大促期间的数据来"验证"这条 —— 大促那几天新史低一天上千条（refs §6.2 实测
+#: 09-26→10-05 的每日新增：24/16/13/28/29/47/**1943**/4/2/4，1943 就是 10-02 那波大促），
+#: 上限当然天天填满；**平时一天只有个位数**，一页 5 张才是常态。
+#: 反过来说：大促期间候选多，但也没必要把首页顶成三页要翻的大卡。
+HOME_PICKS_DEFAULT = HOME_PICKS_PAGE
 #: 前置门槛（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
 RECOMMEND_MIN_RATE = 70
 RECOMMEND_MIN_COUNT = 100
@@ -590,6 +642,37 @@ def recommend_weights(cfg: dict | None) -> dict:
     return weights
 
 
+def _recommend_parts(card: dict, cfg: dict | None = None) -> dict:
+    """推荐公式的**各分项**（都已归一到 0~1）。算式与出处见 :func:`recommend_score`。"""
+    count = review_count(card)
+    rate = review_score(card)
+    days_left = card.get("days_left")          # ⚠️ 别写 `or 99`：0 天是合法值
+    left = days_left if days_left is not None else 99
+    start_ago = card.get("start_days_ago")
+    ago = start_ago if start_ago is not None else 99
+    parts = {
+        "fame": _clamp01(math.log10(count + 1) / math.log10(RECOMMEND_FAME_CAP + 1)),
+        "cut": _clamp01((card.get("cut") or 0) / 95.0),
+        "review": _clamp01(((rate or 50.0) - 50.0) / 40.0),
+        "urgent": 1.0 if left <= 1 else 0.6 if left <= 2 else 0.2 if left <= 7 else 0.0,
+        "fresh": 1.0 if ago <= 2 else 0.6 if ago <= 7 else 0.0,
+    }
+    gap = card.get("last_low_days")
+    if gap is not None and gap >= 0:
+        parts["gap"] = _clamp01(
+            math.log10(gap + 1) / math.log10(RECOMMEND_GAP_CAP_DAYS + 1))
+    return parts
+
+
+def _weighted_total(parts: dict, cfg: dict | None = None) -> float:
+    """按权重加权并**归一化到 0~100** —— 缺数据的项不计分、按「可用权重之和」折算。"""
+    weights = recommend_weights(cfg)
+    total = sum(weights[key] for key in parts)
+    if total <= 0:
+        return 0.0
+    return sum(weights[key] * parts[key] for key in parts) / total * 100.0
+
+
 def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
     """顶部大卡的推荐分（0~100）。**不满足前置门槛返回 ``None``** = 不进推荐位。
 
@@ -607,6 +690,8 @@ def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
 
     ⚠️ **缺数据的项不计分，并把总分按"可用权重之和"归一化回 100** ——
     这样「有数据的项」不会被平白稀释，也不会因为缺一项就系统性吃亏。
+    （分项与加权拆在 :func:`_recommend_parts` / :func:`_weighted_total`，
+    ``featured_score`` 复用同一套算式，保证两处口径永远一致。）
     """
     count = review_count(card)
     rate = review_score(card)
@@ -616,27 +701,18 @@ def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
         return None
     if count < min_count or rate < min_rate:
         return None
+    return _weighted_total(_recommend_parts(card, cfg), cfg)
 
-    weights = recommend_weights(cfg)
-    days_left = card.get("days_left")          # ⚠️ 别写 `or 99`：0 天是合法值
-    left = days_left if days_left is not None else 99
-    start_ago = card.get("start_days_ago")
-    ago = start_ago if start_ago is not None else 99
-    parts = {
-        "fame": _clamp01(math.log10(count + 1) / math.log10(RECOMMEND_FAME_CAP + 1)),
-        "cut": _clamp01((card.get("cut") or 0) / 95.0),
-        "review": _clamp01((float(rate) - 50.0) / 40.0),
-        "urgent": 1.0 if left <= 1 else 0.6 if left <= 2 else 0.2 if left <= 7 else 0.0,
-        "fresh": 1.0 if ago <= 2 else 0.6 if ago <= 7 else 0.0,
-    }
-    gap = card.get("last_low_days")
-    if gap is not None and gap >= 0:
-        parts["gap"] = _clamp01(
-            math.log10(gap + 1) / math.log10(RECOMMEND_GAP_CAP_DAYS + 1))
-    total = sum(weights[key] for key in parts)
-    if total <= 0:
-        return 0.0
-    return sum(weights[key] * parts[key] for key in parts) / total * 100.0
+
+def featured_score(card: dict, cfg: dict | None = None) -> float:
+    """「精选」排序的打分（0~100）—— **同一套 refs §10.2 公式，但不设前置门槛**。
+
+    2026-10-07 用户：「精选用公式，refs 文档中有参考公式，根据这个推断修正精选的公式」。
+    列表页里「详情待补 / 低口碑」的条目也要能排（不能像大卡那样直接不进），所以
+    复用 :func:`_recommend_parts` + :func:`_weighted_total`：缺数据的项照常计 0、
+    按剩余权重归一 —— 口径与大卡**永远一致**（改权重两处一起变）。
+    """
+    return _weighted_total(_recommend_parts(card, cfg), cfg)
 
 
 def recommend_sort_key(card: dict, cfg: dict | None = None) -> tuple:
@@ -657,24 +733,55 @@ def recommend_sort_key(card: dict, cfg: dict | None = None) -> tuple:
 def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     """首页顶部「今日最值」大卡横排的候选（前端每页 5 张、可左右翻页）。
 
-    池子 = 近 N 天（``home_new_low_days``）的新史低 ∩ 还在折扣期内，
-    再过一遍 **§10.2 权重公式 v2**（名气/折扣/口碑/间隔/紧迫/新鲜 + 前置门槛），
-    取前 ``home_picks`` 张。
+    池子 = 近 N 天（``home_new_low_days``）的 **新史低 + 平史低** ∩ 还在折扣期内，
+    **分层取**；打分走 §10.2 权重公式 v2（名气/折扣/口碑/紧迫/新鲜 + 前置门槛，
+    **不含「史低类型」** —— 见 RECOMMEND_WEIGHTS 的注释）。
+
+    ⚠️ **分层取**（用户 2026-10-07 定稿：「优先新史低，没有才显示平史低」）：
+    1. 先取近 N 天的**新史低**（过门槛 + 打分排序）；
+    2. 只有不够**一整页**时，**才**用同一套规则补**平史低**（把当前那页补满）。
+
+    张数 = 「新史低能凑满几页」× ``HOME_PICKS_PAGE``（5），上限 ``home_picks``；
+    **默认上限就是一页 5 张** —— 用户：「平时凑不够 15 张内容，平时 5 张就行，
+    能凑够再放，不要凑数」。（平时一天的新史低只有个位数，一页常有富余；
+    大促期间候选上千条，但也没必要把首页顶成三页要翻的大卡。）
+
+    refs §10.2 原文写的是「**轮播池 = 新史低 ∩ 有详情**」（原文权重表里「史低」那一格
+    给轮播版的就是「—（池子全是新史低，无区分度）」）—— 用户确认的口径是它的放宽版：
+    平史低**有机会**进，但新史低优先。实测**不分层**的话 15 张里 14 张是平史低
+    （90% off 的老 3A 名气分高、全被顶上来），底部色条几乎全灰。
 
     ⚠️ 门槛（好评率 ≥70% 且评价数 ≥100）把「详情待补」的条目也挡在外面 ——
-    推荐位不能推没数据的游戏。万一整池都没过门槛（详情大面积缺失的极端情况），
-    退回老的字典序，保证大卡这一块不会整块消失。
+    推荐位不能推没数据的游戏。每层若全都不过门槛（详情大面积缺失的极端情况），
+    该层退回老的字典序，保证大卡这一块不会整块消失。
     """
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
-    pool = [c for c in cards
-            if c.get("low_class") == classify.STEAM_LOW_NEW
-            and _is_fresh(c, days) and _is_live(c)]
-    scored = [c for c in pool if recommend_score(c, cfg) is not None]
-    if not scored:
-        pool.sort(key=featured_sort_key)
-        return pool[: int(cfg.get("home_picks", 15))]
-    scored.sort(key=lambda c: recommend_sort_key(c, cfg))
-    return scored[: int(cfg.get("home_picks", 15))]
+    # 展示张数 = 「新史低能凑满几页」× 每页张数，上限 home_picks：
+    #   上限 5（默认）→ 只放一排 · 上限 15 → 新史低 ≥15 放 15、10~14 放 10、其余放 5
+    #   末页不够时**只补满这一页**（否则一排会缺格子、右边空一块），绝不多补。
+    # 用户 2026-10-07：「平时凑不够 15 张内容，平时 5 张就行，能凑够再放，不要凑数」。
+    want = max(HOME_PICKS_PAGE, int(cfg.get("home_picks", HOME_PICKS_DEFAULT)))
+    pool = [c for c in cards if _is_fresh(c, days) and _is_live(c)]
+
+    def ranked(low_class: str) -> list[dict]:
+        """该史低类型里按推荐分排好的候选（门槛挡掉的一律不出现）。"""
+        same = [c for c in pool if c.get("low_class") == low_class]
+        scored = [c for c in same if recommend_score(c, cfg) is not None]
+        if not scored:
+            same.sort(key=featured_sort_key)
+            return same
+        scored.sort(key=lambda c: recommend_sort_key(c, cfg))
+        return scored
+
+    new_ok = ranked(classify.STEAM_LOW_NEW)
+    tie_ok = ranked(classify.STEAM_LOW_TIE)
+    pages = min(want // HOME_PICKS_PAGE,
+                max(1, (len(new_ok) + HOME_PICKS_PAGE - 1) // HOME_PICKS_PAGE))
+    take = pages * HOME_PICKS_PAGE
+    out = new_ok[:take]
+    if len(out) < take:
+        out += tie_ok[: take - len(out)]
+    return out
 
 
 #: 站点链接默认值（配置里可覆盖，`config.example.json` 有这两个键）
@@ -722,7 +829,11 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
     notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
-    cuts = sorted({50, 70, big, 90})
+    # 折扣区间：**没有 70%**（用户 2026-10-07「折扣区间去掉 70%」）——
+    # 50% 是「有点折扣」的直觉线，big_cut（默认 80%）是「大额折扣」板块的同一根线，
+    # 90% 是「几乎白送」。70% 夹在 50 与 80 之间、区分度最低，故去掉。
+    # ⚠️ 用 set 去重：若哪天把 big_cut_percent 调成 50 或 90，这里不会出现重复选项。
+    cuts = sorted({50, big, 90})
     counts = sorted({500, 5000, notable})
     # 置灰统计：只算「开始时间已知」的卡片 —— 前端 dateOk 对未知 start 一律返回 false，
     # 口径必须一致，否则会出现「选项没置灰但点进去是空的」
@@ -736,8 +847,36 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
             return not any(a <= int(spec_value[1:]) for a in agos)
         return int(spec_value) not in agos
 
+    # ---- 哪些选项在哪些板块里「选了也不会变」⇒ 前端置灰（用户 2026-10-07：
+    #   「新史低里面还能再选新史低选项，大额折扣里面还能选折扣降序，置灰」）----
+    # 依据都是**板块自己的口径**，不是手感：
+    #   · 新史低板块：`_in_section` 已要求 `low_class == new` ⇒「仅新史低」无效。
+    #   · 大额折扣板块：`_in_section` 已要求 `折扣 ≥ big_cut` ⇒ 折扣区间里 ≤ big_cut 的档位
+    #     筛不掉任何东西。
+    #   · 热门游戏板块：`_in_section` 已要求 `评价数 ≥ notable` ⇒ 好评数量里 ≤ notable 的档位无效。
+    # ⚠️ **「排序」不再进这张表**（2026-10-07 同日稍晚）—— 「精选」已改为按推荐公式打分
+    #    （`featured_score`，见 `_section_sort`），不再等于各板块的自然顺序，
+    #    「折扣降序」在哪个板块都与它不同 ⇒ 排序的四个选项在所有板块都有区分度。
+    # ⚠️ 这几条都跟着「板块口径」走 —— 改 `_in_section` 时必须回来看一眼；
+    #    `tests/test_report.py` 里有对应的断言。
+    sort_opts = list(FILTER_SORTS)
+    cut_opts = [{"value": "all", "label": "不限"}]
+    for v in cuts:
+        o = {"value": str(v), "label": f"≥ {v}%"}
+        if v <= big:                      # 与板块下限同档或更宽松 → 筛不掉东西
+            o["implied"] = ["big_cut"]
+            o["implied_note"] = f"本板块已要求 ≥ {big}%"
+        cut_opts.append(o)
+    rev_opts = [{"value": "all", "label": "不限"}]
+    for v in counts:
+        o = {"value": str(v), "label": f"≥ {v:,}"}
+        if v <= notable:
+            o["implied"] = ["popular"]
+            o["implied_note"] = f"本板块已要求 ≥ {notable:,}"
+        rev_opts.append(o)
+
     return [
-        {"key": "sort", "label": "排序", "options": [dict(o) for o in FILTER_SORTS]},
+        {"key": "sort", "label": "排序", "options": sort_opts},
         {"key": "date", "label": "日期", "options": [
             {"value": "0", "label": "今天", "disabled": dead("0")},
             {"value": "1", "label": "昨天", "disabled": dead("1")},
@@ -745,15 +884,12 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
             {"value": f"d{days}", "label": f"近 {days} 天", "disabled": dead(f"d{days}")},
             {"value": "all", "label": "全部", "disabled": False},
         ]},
-        {"key": "cut", "label": "折扣区间", "options":
-            [{"value": "all", "label": "不限"}]
-            + [{"value": str(v), "label": f"≥ {v}%"} for v in cuts]},
-        {"key": "reviews", "label": "好评数量", "options":
-            [{"value": "all", "label": "不限"}]
-            + [{"value": str(v), "label": f"≥ {v:,}"} for v in counts]},
+        {"key": "cut", "label": "折扣区间", "options": cut_opts},
+        {"key": "reviews", "label": "好评数量", "options": rev_opts},
         {"key": "only_new", "label": "史低类型", "options": [
             {"value": "all", "label": "不限"},
-            {"value": "new", "label": "仅新史低"},
+            {"value": "new", "label": "仅新史低", "implied": ["new_low"],
+             "implied_note": "本板块已全是新史低"},
         ]},
     ]
 
@@ -883,8 +1019,9 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "view_groups": {"upcoming": upcoming_groups} if upcoming_groups is not None else {},
         #: S9 首页四板块（池子 = 「全部」视图那批卡片，见 build_sections 注释）
         "sections": sections,
-        #: S9 顶部「今日最值」大卡横排候选（前端每页 5 张、可翻页）
+        #: S9 顶部「今日最值」大卡横排候选（每页张数 = pick_page，前端不再自抄一份）
         "picks": picks,
+        "pick_page": HOME_PICKS_PAGE,
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
         #: 底部抽屉筛选的分组/选项与默认值（refs.md §6.7）；前端 state.filters 用
@@ -935,7 +1072,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
             "section_order": {
                 spec["key"]: [card["appid"] for card in sorted(
                     _section_members(spec["key"], all_cards, cfg),
-                    key=_section_sort(spec["key"]))]
+                    key=_section_sort(spec["key"], cfg))]
                 for spec in HOME_SECTIONS
             },
         }
@@ -984,13 +1121,15 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     # 筛不出东西就是 None，模板里那一行整块不渲染（用户口径：没活动就不显示）。
     messages = announcements.current(now, cfg.get("announcements_path"))
     template = env.get_template("index.html.j2")
+    # ⚠️ `overview` 不再传：首页模板里最后一个消费者（页脚那行「生成时间 + 状态库最近一次运行」）
+    # 已被用户要求删掉，其余概览数字都在 about 页（那里仍然传）。payload["overview"] 保留 ——
+    # tools/check_payload.py 还在读它，删不删属于另一轮「payload 拆袋」的事。
     html = template.render(
         payload=payload,
         assets_version=version,
         views=views,
         nav=nav,
         links=links,
-        overview=stats,
         fx=payload["fx"],
         low_points=low_points,
         generated_at_text=payload["generated_at_text"],

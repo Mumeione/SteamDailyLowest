@@ -23,21 +23,33 @@
   --accent: #2563eb;
 
   /* ===== 颜色语义（一个颜色只干一件事）=====
-     S9-卡片（用户 2026-10-07 选「都用红，但三个色号」）：
-       新史低 #e05656 / 现价 #d92b2b / 比价贵 #b91c1c —— 三处红不再同一个号
-     绿 = 折扣力度（力度条 + 百分比）与「比价便宜」，两者都是「划算」方向。
+     2026-10-07 第二轮收敛（用户拍板）：
+       · **两个红合成一个号**：新史低色条与现价同为 #d92b2b。
+         原来的新史低红 #e05656 白底只有 3.73:1（比现价红 4.85 更弱），
+         而且肉眼与 #d92b2b 分不出来 → 红只表达「这是价格上的好消息」。
+       · **好评率整档换一个读得清的蓝** #0b6fa8（5.45:1）—— 旧的 #1f96d2 只有 3.31:1，
+         12px 小字偏弱。≥90% 用**字重**分层，不再发明第二个蓝号。
+       · **折扣力度绿压到 ~4:1**（#0d9247，白底 4.02:1 / 对轨道灰 3.49:1）——
+         用户要的就是这个档位；条与百分比数字**同色**。
      ⚠️ 别让「新史低」变绿 —— 会跟折扣力度串味（S9 犯过这个错）。 */
-  --new-low: #e05656;
+  --new-low: #d92b2b;
   --store-low: #6b7280;
-  --price: #0a7d33;
+  --price: #0d9247;
   --price-now: #d92b2b;
   --dear: #b91c1c;
-  /* Steam 的「好评」色（品牌蓝 #66c0f4 专为深底设计、白底 11px 只有 ~1.9:1 对比度，
-     按批 C2 的结论压深一档；用户 2026-10-07：「评价的百分比用 steam 的颜色」）。 */
-  --steam-blue: #1f96d2;
-  /* 警示但**不用红**：用户说「结束日期不要用红色，现在红色太多了」——
-     剩余天数紧迫、口碑偏低都用琥珀，把红留给「新史低 / 现价 / 比价贵」三件事。 */
+  /* Steam 的「好评」蓝 —— 压深到能读清的一档（白底 5.45:1）。 */
+  --steam-blue: #0b6fa8;
+  /* 警示（琥珀）：留给「口碑褒贬不一」这一档，不用红。 */
   --warn: #b45309;
+  /* 到期紧迫用的粉（用户 2026-10-07 指定 #FA8072 这个粉）——
+     用户第二轮的要求是「粉色底 + **白字**」，照做了。
+     ⚠️ 实测：**白字在 #FA8072 上只有 2.50:1**（白底正文要 4.5:1）——
+     这是全站唯一一处低于标准的文字，用户明确「先试试看」故保留。
+     嫌看不清就把它压深（白字随之达标）：
+       #D94A3E → 4.2:1 · #D1453A → 4.54:1 · #C94F3D → 4.50:1
+     只改这一个变量即可，别顺手改别的。 */
+  --pink-badge: #FA8072;
+  --pink-text: #c94f3d;
 
   --shadow-card: 0 1px 2px rgba(16, 24, 40, .05);
   --shadow-card-hover: 0 6px 16px rgba(16, 24, 40, .13);
@@ -63,13 +75,19 @@
   --sp-4: 16px;
   --sp-5: 24px;
 
-  /* 行内力度条的**最大长度** —— 它是页面上唯一能自由伸缩的元素，不设上限时
-     在宽行里会拉成几百 px 的长条（用户 2026-10-07：「平板的力度条太长了」）。
-     想让它长/短只改这一个数。 */
-  --cut-bar-max: 150px;
-
-  /* 大卡右下角「图标列」的宽度：两枚图标都在这条列里居中，中心点对齐 */
+  /* ===== 行卡片右半边的**固定列宽**（2026-10-07 第二轮）=====
+     用户：「把力度条与两个图标全部竖向对齐，保持界面统一性」。
+     一行结构里标题区吃掉所有弹性，右边这三块**宽度写死**，
+     于是「图标 x / 力度条 x / 百分比右缘 / 价格右缘」在各行都落在同一条竖线上。
+     ⚠️ 改这里的数要先想清楚：标签列 = 图标(46) + 间距6 + 力度条 + 间距4 + 百分比列。 */
   --icon-col: 20px;
+  --num-col: 38px;      /* 「-95%」那一列 */
+  --tags-col: 182px;    /* 图标 + 力度条 + 百分比 整块（含块内间距） */
+  --price-col: 84px;    /* 价格列（价格文字长短不再把左边那排推来推去） */
+
+  /* 力度条在**两行结构**（手机/窄行）里的兜底宽度 —— 一行结构里的宽度由
+     `--tags-col` 反推出来，不读这个值。 */
+  --cut-bar-max: 150px;
 }
 
 * { box-sizing: border-box; }
@@ -101,8 +119,11 @@ html, body {
   font-size: var(--fs-brand); font-weight: 800; letter-spacing: -.5px;
   text-decoration: none; color: var(--text);
 }
-.brand-mark { width: 22px; height: 22px; display: block; color: #1d4ed8; flex: 0 0 auto; }
-.brand-mark path, .brand-mark rect { fill: currentColor; }
+.brand-mark { width: 24px; height: 24px; display: block; color: #1d4ed8; flex: 0 0 auto; }
+/* ⚠️ 新的站点图标（2026-10-07 第二轮：下跌折线触底 + 底线，见模板里的 <svg class="brand-mark">）
+   是**描边图形**（stroke 走 currentColor），不是实心块 ——
+   别再写 `path, rect { fill: currentColor }`（那会把折线填成黑块）。
+   颜色统一靠 .brand-mark 的 color，改色只改这一处。 */
 .brand-text { display: inline-flex; align-items: baseline; }
 .brand-a { color: #1d4ed8; }
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
@@ -166,30 +187,110 @@ html, body {
 .msg-alert.is-stale, .msg-alert.is-notice { background: #b91c1c; color: #fff; }
 .msg-alert a { color: inherit; }
 
-/* ================= 筛选行 + 底部抽屉 ================= */
-.filterbar { display: flex; align-items: center; gap: 6px; margin: var(--sp-3) 0 var(--sp-1); }
+/* ================= 筛选行 + 抽屉/下拉面板 =================
+   一行三件事（左→右）：**筛选按钮**（B1/B3）· **已选条件小标签**（B3，手机不显示）·
+   **今日新增摘要**（S2，只在首页）。
+   ⚠️ `position: relative` 是给 ≥601px 的「按钮下方下拉面板」做定位锚点的（E1），
+   别为了别的用途把它改掉 —— 面板是 .filterbar 的子元素，靠它对齐按钮左边缘。 */
+.filterbar {
+  position: relative;
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  margin: var(--sp-3) 0 var(--sp-1);
+}
 .chip {
   font: inherit; font-size: var(--fs-sub); padding: 5px 12px; border-radius: 999px;
   border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer;
 }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.filterbar .summary { margin-left: auto; font-size: var(--fs-sub); color: var(--muted); }
-.filter-open { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---- 筛选按钮（B1 底子；B3 = 按钮 + 右边一排已选条件小标签）----
+   2026-10-07 第二轮：从 50×30px / 12px 的「次要按钮长相」改成**主操作**长相 ——
+   高度 36px（手机 40px）、字号 14px、字重 600、圆角 10px（与卡片同族，不再是全圆胶囊）、
+   加漏斗图标；**选了条件就整体变蓝**（描边 + 浅蓝底 + 蓝字 + 实心蓝计数），
+   这样「有没有筛过」不用去读那个 16px 小圆点。 */
+.filter-open {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  min-height: 36px; padding: 0 var(--sp-4); border-radius: 10px;
+  font-size: var(--fs-body); font-weight: 600;
+}
+.filter-open .f-ico { width: 15px; height: 15px; fill: currentColor; flex: 0 0 auto; }
+.filter-open .f-caret { font-size: var(--fs-aux); color: var(--faint); line-height: 1; }
+.filter-open.is-on { border-color: var(--accent); background: #eef4ff; color: #1d4ed8; }
+.filter-open.is-on .f-caret { color: #1d4ed8; }
 .f-badge {
-  min-width: 16px; height: 16px; padding: 0 var(--sp-1); border-radius: 8px;
-  background: var(--accent); color: #fff; font-size: var(--fs-aux); font-weight: 700;
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+  background: #e5eaf3; color: #475569; font-size: var(--fs-sub); font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
 }
+.filter-open.is-on .f-badge { background: var(--accent); color: #fff; }
+
+/* ---- 已选条件小标签（B3）：一眼知道筛了什么，每个都能单独 ✕ 掉 ----
+   ⚠️ 手机档隐藏（用户 2026-10-07：「手机端还是默认 B1」），见文件末尾的手机档。 */
+.active-chips { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.active-chips[hidden] { display: none; }
+.a-chip {
+  display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sub);
+  padding: 3px 4px 3px 10px; border-radius: 999px;
+  background: #eef4ff; color: #1d4ed8; border: 1px solid #c9d9f7; white-space: nowrap;
+}
+.a-chip button {
+  border: 0; background: none; color: inherit; font: inherit; font-size: var(--fs-sub);
+  line-height: 1; opacity: .6; cursor: pointer; padding: 0 5px; border-radius: 999px;
+}
+.a-chip button:hover { opacity: 1; background: rgba(37, 99, 235, .12); }
+.a-clear {
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: var(--fs-sub);
+  cursor: pointer; padding: 3px 6px; border-radius: 6px;
+}
+.a-clear:hover { background: #eef1f5; color: var(--text); }
+
+/* ---- 首页摘要（S2）：白卡胶囊 + 大号数字 ----
+   用户 2026-10-07：原来那句 12px 灰字「太小了、和背景混到一块儿了」。
+   ⚠️ 底色**必须用白卡 + 描边**，不能用浅灰（#eef2f7 之类）——
+   它贴在 `--bg #f5f6f8` 上，浅灰和白底几乎看不出差别，等于又「混到一块儿」了
+   （实测：本文件第一次就写成了 #eef2f7，在 390/1440 两个宽度上都量过、肉眼不可分）。
+   ⚠️ 数字前面那两枚小色条**已删**（用户 2026-10-07：「中间不要留很粗的竖线，不好看，
+   可以隔开一点」）—— 现在靠 `gap` 隔开 + 数字各自的语义色区分，别再往 `.s-item` 里
+   塞 `<i class="s-bar">`。
+   ⚠️ 「新史低 / 平史低」的字号（`--fs-sub` 12px）要**比「今日新增」（`--fs-aux` 11px）
+   大一档** —— 用户明确要求的那句话就是这个。 */
+.summary {
+  margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-4);
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-card);
+  border-radius: 999px; padding: 4px var(--sp-4);
+}
+.summary .s-cap { font-size: var(--fs-aux); color: var(--muted); }
+.summary .s-item { display: inline-flex; align-items: baseline; gap: 5px; }
+.summary .s-item b {
+  font-size: var(--fs-title); font-weight: 700; line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.summary .s-new b { color: var(--new-low); }
+.summary .s-tie b { color: #4b5563; }
+.summary .s-unit { font-size: var(--fs-sub); color: var(--muted); }
+
 .chip.opt.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 /* 没有数据的日期：置灰不可点（refs §11.5 Q2） */
 .chip.opt:disabled, .chip.opt.is-off { opacity: .4; cursor: not-allowed; text-decoration: line-through; }
+/* 「本板块已隐含」的选项（用户 2026-10-07：「新史低里面还能再选新史低选项，
+   大额折扣里面还能选折扣降序，置灰」）—— 同样不可点，但**不要画删除线**：
+   删除线的语义是「这条没数据」，而这里是「选了也不会变」，两码事。
+   悬停有 tooltip 说明原因（app.js 写 title）。 */
+.chip.opt.is-implied:disabled { text-decoration: none; opacity: .45; }
 .drawer-mask { position: fixed; inset: 0; background: rgba(16, 24, 40, .42); z-index: 40; }
 .drawer {
   position: fixed; z-index: 41; background: var(--card);
   display: flex; flex-direction: column; box-shadow: 0 -8px 24px rgba(16, 24, 40, .18);
 }
-/* ⚠️ .drawer 自带 display:flex，会盖掉 [hidden] 的 display:none —— 必须显式写回来 */
-.drawer[hidden], .drawer-mask[hidden], .f-badge[hidden] { display: none; }
+/* ⚠️ 凡是在别处写了 `display:` 的元素，作者样式都会盖掉 UA 的 `[hidden]{display:none}`
+   —— 必须在这里显式写回来。已踩过两次：
+     · .drawer 自带 display:flex（批 S9-2）；
+     · .filter-open 自带 display:inline-flex → **首页那颗「筛选」按钮藏不住、点了没反应**
+       （2026-10-07 用户报的 bug；jsdom 冒烟只断言 `hidden` 属性、不看层叠后的 display，
+        所以漏掉了 —— 冒烟里那条断言已升级为「属性 + 计算样式」双查）。
+   · .summary 自带 display:inline-flex —— 同类坑，一并写回（列表页要藏起来）。 */
+.drawer[hidden], .drawer-mask[hidden], .f-badge[hidden],
+.filter-open[hidden], .summary[hidden] { display: none; }
 .drawer-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: var(--sp-3) 14px; border-bottom: 1px solid var(--line);
@@ -216,6 +317,9 @@ html, body {
 .deck-title { font-size: var(--fs-title); font-weight: 600; margin: 0; }
 .deck-sub { font-size: var(--fs-sub); color: var(--muted); }
 .deck-nav { margin-left: auto; display: flex; gap: 6px; }
+/* ⚠️ 同「[hidden] 被作者样式盖掉」那个坑：.deck-nav 自带 display:flex，
+   单页时 JS 会把它 hidden 起来，这里必须显式写回。 */
+.deck-nav[hidden] { display: none; }
 .round {
   width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line);
   background: var(--card); color: var(--text); font-size: var(--fs-price); line-height: 1;
@@ -230,8 +334,15 @@ html, body {
   background: var(--card); border-radius: 8px; overflow: hidden; cursor: pointer;
   box-shadow: var(--shadow-card); position: relative;
   transition: transform .15s ease, box-shadow .15s ease;
+  /* 大卡**底部色条** = 史低类型（用户 2026-10-07：「大卡底部加色条就行了，
+     反正空的地方还多」）—— 与行卡片左侧那条同色同义，取代原来的「新史低」徽章。
+     默认透明，保证没有类型的卡片高度与别人一致、不会错位。 */
+  border-bottom: 6px solid transparent;
 }
 .pick:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+.pick.l-new { border-bottom-color: var(--new-low); }
+.pick.l-tie { border-bottom-color: var(--store-low); }
+.pick.l-unk { border-bottom: 6px dashed var(--store-low); }
 /* 封面比例三档统一 **3:4**（2026-10-07 收尾，用户拍板）：原来手机 1:1 / 平板·PC 3:4，
    断点处会跳。无封面时这个浅灰底就是占位块（尺寸由 aspect-ratio 保证与有封面一致）。 */
 .pick-art { position: relative; aspect-ratio: 3 / 4; background: #eceff3; }
@@ -242,15 +353,15 @@ html, body {
   font-size: var(--fs-sub); font-weight: 700;
   display: flex; align-items: center; justify-content: center; padding: 0 var(--sp-2);
 }
-/* 大卡信息区：三排（用户 2026-10-07 定稿）——
-   ① 标题　② 史低类型 + 折扣徽章 + 小黑盒　③ 原价（划线）+ 现价 + Steam。
-   不再有 `From:` 字样；力度条不在大卡里。两枚图标放同一条「图标列」居中（中心点对齐）。 */
+/* 大卡信息区：三排（2026-10-07 第二轮去掉「史低类型」徽章，改底部色条）——
+   ① 标题　② 折扣徽章 + 小黑盒　③ 原价（划线）+ 现价 + Steam。
+   力度条不在大卡里。两枚图标放同一条「图标列」居中（中心点对齐）。 */
 .pick-body { padding: 8px 9px 9px; }
 .pick-title {
   font-size: var(--fs-body); font-weight: 600; line-height: 1.35; min-height: 2.7em;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-/* 第 2 排：新史低/平史低 + 折扣（绿底徽章 = 折扣力度色） */
+/* 第 2 排：折扣徽章（绿字绿底 = 折扣力度色）+ 小黑盒 */
 .pick-low { display: flex; align-items: center; gap: 5px; margin-top: 6px; }
 .pick-low .links svg { fill: var(--faint); }
 .pick-low .links a:hover svg { fill: var(--accent); }
@@ -273,13 +384,11 @@ html, body {
 .pick-price-row .links svg { fill: var(--faint); }
 .pick-price-row .links a:hover svg { fill: var(--accent); }
 
-/* 史低标签：新史低红（与左侧色条同色）、平史低/待确认中性灰。
-   ⚠️ 别用绿 —— 绿专属「折扣力度」。 */
-.hl {
-  display: inline-block; background: #eef1f5; color: var(--store-low);
-  font-weight: 700; font-size: var(--fs-aux); padding: 1px 5px; border-radius: 3px;
-}
-.hl.hl-new { background: #fbdada; color: var(--new-low); }
+/* 史低类型徽章（`.hl` / `.hl-new`）已随 2026-10-07 第二轮删除 ——
+   行卡片靠**左侧 6px 色条**区分、大卡靠**底部 6px 色条**区分（见 .row.l-* / .pick.l-*），
+   「这俩颜色代表什么」由**首页摘要行**里那两枚同色小色条当图例（见 .summary）。
+   ⚠️ 别再把徽章加回来：一张卡上同时出现色条 + 徽章就是同一件事涂两遍，
+   这正是用户说「颜色太多」的根源。 */
 
 /* ================= 四板块 =================
    **手机单列、平板与 PC 两列**（用户 2026-10-07：「平板缩小一点可以放两列」）。
@@ -348,43 +457,97 @@ html, body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .row-sub { font-size: var(--fs-sub); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ---- 评价行里的三个数值列各留**固定宽度**（用户 2026-10-07：「有评价数目显示时，
+   图标和力度条还有折扣日期无法精准对齐，视觉上看有点乱，因为评价数位数不同，
+   这个要留一点余量，让图标+力度条尽量对齐，每个界面都是如此」）----
+   留宽的依据（12px 字号下量过）：
+     · 好评率 `2.5em` ≈ 30px —— 装得下「100%」
+     · 评价数 `4.4em` ≈ 53px —— 装得下「11,326 条」（6 位数的大作会略微超出，属"尽量"范围）
+     · 剩余天数 `3.8em` ≈ 46px —— 装得下「剩 12 天」；「今天结束」那个粉底徽章本身更宽，
+       所以不会被拉宽（它那一行的图标会偏一点，可以接受）
+   ⚠️ 这三个 `min-width` 是**对齐用的预留量**，不是手感间距 —— 删掉的话，「剩 X 天」
+      （以及精简模式里跟在它后面的图标/力度条）会随「评价数有几位」左右漂：
+      3 位数与 6 位数差 ≈ 26px，一眼就看出没对齐。**每个界面都靠它**（普通/精简、手机/PC）。
+   ⚠️ 别改成百分比 —— 百分比跟容器变，等于没留。 */
+.row-sub .rate { display: inline-block; min-width: 2.5em; }
+.row-sub .rc { display: inline-block; min-width: 4.4em; }
+.row-sub .days { display: inline-block; min-width: 3.8em; }
 
-/* 好评率 / 剩余天数分档（类名由服务端 rate_tier / days_tier 给，阈值在 report.py）
-   好评率用 **Steam 的那套色**（好评蓝 / 中性灰 / 警示琥珀），紧迫度用琥珀 —— 都不碰红。 */
-.rate-high { color: var(--steam-blue); font-weight: 600; }
-.rate-ok { color: var(--muted); }
-.rate-low { color: var(--warn); font-weight: 600; }
-.days-urgent { color: var(--warn); font-weight: 700; }
+/* 好评率分档（类名由服务端 rate_tier 给，阈值在 report.py）
+   **Steam 商店口径**（用户 2026-10-07）：high ≥90% 与 ok 70~89% **同色**、
+   只差字重（`不调更深、不发明第二个蓝号`）；mid 40~69% 褒贬不一 = 琥珀；
+   low <40% 差评 = 现价红。后两档只可能出现在「热门游戏」板块（那一档不看好评率）。 */
+.rate-high { color: var(--steam-blue); font-weight: 700; }
+.rate-ok { color: var(--steam-blue); font-weight: 500; }
+.rate-mid { color: var(--warn); font-weight: 600; }
+.rate-low { color: var(--price-now); font-weight: 700; }
+
+/* 剩余天数分档（days_tier）——
+   final =「今天结束」：全站**唯一**一处粉底徽章，粉底 + **白字**（用户 2026-10-07 指定），
+   **不加粗**（用户同一轮下半场又提了一次：「今天结束不要加粗」——
+   有背景色本身已经够醒目，再加粗反而糊）；
+   urgent = 剩 1~2 天：粉字（粉压深一档才读得清）；soon = 一周内；later = 一周以上。
+   ⚠️ 用户 2026-10-07 的观察：「即将到期那一类会显示很多这个色块」—— 所以
+   **只有 0 天**进 final 档，1~2 天仍是普通文字，不铺色块。
+   ⚠️ 白字在 #FA8072 上只有 2.50:1（低于 4.5）—— 用户明确要「先试试看」，
+   压深粉色的替换值见 `--pink-badge` 的注释。 */
+.days-final {
+  color: #fff; background: var(--pink-badge);
+  border-radius: 3px; padding: 1px 5px; font-weight: 400;
+}
+.days-urgent { color: var(--pink-text); font-weight: 700; }
 .days-soon { color: var(--text); }
 .days-later { color: var(--faint); }
 
-/* 标签行（两行结构）：用 **grid 明确定列宽**——标签 | 图标 | 力度条 | 百分比，
-   **左对齐连续排**，力度条列宽 = `min(可用, --cut-bar-max)`、下限 48px。
-   ⚠️ 这里不能用 `flex` + `flex-basis`：实测 Chromium 会把 `.cut-wrap`（flex-basis auto、
-   内容里是 flex-basis 150px 的力度条）算成 81px 宽，结果力度条被压到最小 48px
-   （`probe_bar.js` 实测：row 344 / tags 262 / wrap 81 / bar 48）。
-   grid 的列宽是确定的，不会再出现这种「谁把谁挤没了」。 */
+/* 标签行：**图标 | 力度条 | 百分比**（力度条与百分比不许再飘）。
+   ⚠️ 2026-10-07 第二轮修了一个真 bug：删掉「新史低」徽章之后，这里的
+   `grid-template-columns` 还是**四列**（徽章 | 图标 | 力度条 | 百分比），
+   而孩子只剩三个 —— 力度条被挤进一个 `auto` 列，`.cut-bar{min-width:0}`
+   让它塌成 **0 宽**（实测 390/768 下力度条宽 = 0，用户报「手机的力度条不见了」）。
+   现在改成三列，并且力度条那列用 `1fr` 吃掉整行剩余宽度。
+   ⚠️ 这里不能用 `flex` + `flex-basis`：实测 Chromium 会把 `.cut-wrap` 算成 81px 宽、
+   把力度条压到 48px（`probe_bar.js` 记录过）。grid 的列宽是确定的。 */
+/* 标签行（两行结构：手机/窄行）：**图标 | 力度条 | 百分比**，一行放完。
+   ⚠️ 2026-10-07 第二轮曾把它写成 **grid 四列**（徽章 | 图标 | 力度条 | 百分比）却没跟着
+   删徽章一起改列数 → 力度条被挤进 `auto` 列、`.cut-bar{min-width:0}` 让它塌成 **0 宽**
+   （用户报「手机的力度条不见了」）。**改这里的列数/元素个数必须成对改。**
+   ⚠️ 第三轮一度改成「力度条吃满 1fr」，结果手机上被拉成 237px —— 用户 2026-10-07：
+   「手机端普通模式力度条也缩短一点，现在的太长了」→ 现在**按 `--cut-bar-max`（150px）封顶**、
+   靠右对齐（百分比仍落在行右缘，与价格右对齐）。Flex + `flex: 0 1 <max>` 而不是固定列宽，
+   是为了窄屏（320px）还能缩到 40px 不溢出。 */
 .row-tags {
   grid-area: tags; min-width: 0;
-  display: grid; align-items: center; gap: 6px; justify-content: start;
-  grid-template-columns: auto auto minmax(48px, var(--cut-bar-max)) auto;
+  display: flex; align-items: center; gap: 6px;
 }
-.row-tags .cut-wrap { display: contents; }
-.row-tags .cut-bar { width: auto; min-width: 0; }
+.row-tags .cut-wrap { display: inline-flex; flex: 0 1 auto; align-items: center; gap: var(--sp-1); }
+.row-tags .cut-bar {
+  flex: 0 1 var(--cut-bar-max); width: var(--cut-bar-max);
+  min-width: 40px; max-width: var(--cut-bar-max);
+}
+/* 百分比列固定宽 + 右对齐 → 各行「-5%」「-95%」的右边缘落在同一条竖线上 */
+.row-tags .cut-num { flex: 0 0 auto; text-align: right; min-width: var(--num-col); }
+/* ⚠️ 标签行是**左贴**的：图标 → 力度条 → 折扣% 紧挨着排（用户 2026-10-07：
+   「手机的力度条也给我挪右边去了，你挪右边去干嘛，跟着图标走啊兄弟」），
+   余下的空档留在这一行的**右端**，不要再把「条 + 百分比」推到最右边。 */
 
-/* ---- 行宽够（≥480px）→ 一行结构 ---- */
+/* ---- 行宽够（≥480px）→ 一行结构 ----
+   2026-10-07 第二轮：把**弹性全部给标题区**，右半边（图标 + 力度条 + 百分比 + 价格）
+   改成**固定列宽** —— 用户：「把力度条与两个图标全部竖向对齐，保持界面统一性」。
+   改前实测每行的图标 x 在 448/453 飘、力度条 492/497 飘、百分比右缘 632/641 飘
+   （价格文字长短差 9px 就会把整排左推），列表看起来毛毛糙糙；现在这些 x 全部恒定。
+   ⚠️ 别再让 `.row-tags` 回到 `flex: 1 1 auto` —— 那正是「谁宽谁挤」的来源。 */
 @container row (min-width: 480px) {
   .row-main {
     display: flex; flex-wrap: nowrap; align-items: center;
     gap: var(--sp-3); padding: var(--sp-2) 10px;
   }
   .row-thumb { flex: 0 0 44px; width: 44px; height: 62px; min-height: 0; align-self: auto; }
-  .row-info { flex: 1 1 130px; }
-  .row-tags { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; }
-  .row-price { flex: 0 0 auto; }
-  /* 一行结构里反过来：让力度条吸收剩余宽度（标题与标签之间的空档由它填） */
+  .row-info { flex: 1 1 auto; min-width: 0; }
+  .row-tags { display: flex; align-items: center; gap: 6px; flex: 0 0 var(--tags-col); }
   .row-tags .cut-wrap { display: inline-flex; flex: 1 1 auto; justify-content: flex-end; }
-  .row-tags .cut-bar { flex: 1 1 96px; width: auto; min-width: 48px; max-width: var(--cut-bar-max); }
+  /* 力度条吃掉「固定标签列」里的剩余宽度 —— 列宽固定 ⇒ 条宽在各行也固定 */
+  .row-tags .cut-bar { flex: 1 1 auto; width: auto; min-width: 40px; max-width: none; }
+  .row-price { flex: 0 0 var(--price-col); }
 }
 .row-price .now { font-size: var(--fs-price); font-weight: 700; color: var(--price-now); }
 .row-price .was { font-size: var(--fs-aux); color: var(--muted); text-decoration: line-through; }
@@ -458,15 +621,95 @@ html, body {
 .btn-float:hover { background: #eef1f5; }
 .btn-float.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* 精简模式（用户：封面隐藏后中文名与原名同一行、卡片间距变小） */
+/* ================= 无图精简模式（2026-10-07 第七轮定稿）=================
+   沿革（三次被否，别再往回改）：
+     ① `flex-basis: auto` → 标题一长就把「原名」挤下去，行高有 2 种（PC 51/66、手机 78/93）；
+     ② 全宽度「一行 flex」→ 手机力度条只剩 44px；
+     ③ grid 两行（`"info price" / "info tags"`）→ 标签行落到了**价格下面**，
+        用户：「卡片的图标和力度条放在剩余天数右侧啊，卡片右边只显示价格。你怎么乱给我改」。
+   终态（**所有宽度一致**，两行）：
+     第一行：[标题][原名] ........................... [现价 + 划线原价]
+     第二行：[评价·剩余天数] [图标][力度条][折扣%]
+   ——「标签行」紧跟「评价·天数」之后（左贴），右边那一列**只有价格**。
+
+   实现：**flex 换行 + `display: contents`**，靠 `order` 分两行（详见下面各条注释）。
+   ⚠️ 别改回 grid：grid 两行共用列宽，第一行要 115px、第二行要 182px，列宽只能取 max，
+      左边标题区会被挤到 27px（实测过）。
+   ⚠️ 也别把标签行右贴（`justify-content: flex-end`）—— 用户要它「跟着图标走」。 */
 body.compact .row-thumb { display: none; }
 body.compact .row { margin-bottom: 3px; }
-body.compact .row-main { padding: 5px 10px; gap: 9px; }
-body.compact .row-info { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
-/* ⚠️ flex 子项默认 min-width:auto —— 带 nowrap 的两行不给 min-width:0 会撑破 .row-main */
-body.compact .row-title { flex: 0 1 auto; min-width: 0; }
-body.compact .row-en { flex: 1 1 auto; min-width: 0; min-height: 0; }
-body.compact .row-sub { flex: 1 1 100%; }
+/* 精简模式用 **4 列 grid** 把两行锁死，而且**原名紧跟中文名**（用户 2026-10-07：
+   「英文名是右对齐，应该跟在中文名后面，中文名显示不全可以悬停查看，英文名要保证大部分显示全」）：
+     行1：[中文名(c1)] [原名(c2)] [余量(c3)] [价格(c4)]
+     行2：[评价(c1)]   [图标+力度条+折扣%(跨 c2-c4)]
+   · c2 按内容定宽 ⇒ 原名紧贴在中文名后面，不再是「贴着价格右对齐」；
+     余量独立占 c3、在原名与价格之间 —— **别把余量并进 c1/c2**，那样原名又会被推远。
+   · ⚠️ **c1 封顶 36%**（不是 `auto`）：中文名按内容定宽时，长标题会把 c1 顶大 →
+     第二行的图标/力度条跟着右移（实测「Warhammer 40,000: Mechanicus」那行偏 60px，
+     正是用户说的「图标+力度条无法精准对齐」）。封顶后 c1 只在「评价列宽 ~ 36%」之间微动，
+     偏差 ≤14px。中文名放不下就省略号 —— `title` 属性本来就有，悬停可看全称，用户明确允许。
+     36% 是按「省掉并排原价后的价格列（≈50px）+ 英文名列（115）+ 间距」倒推出来的上界；
+     再往上（≥40%）遇到「¥198.00」这种宽价格会把整行顶爆、把价格挤出卡片。
+   ⚠️ 为什么不改成 `auto`：见上，对齐优先；也别把余量并进 c2（原名会被推远）。
+   ⚠️ 为什么不用 flex 换行：flex 的换行位置由「假设宽度」决定，实测「评价」会挤到第一行去
+      （它只有 70px，价格后面刚好塞得下）—— 锁不住两行结构。 */
+body.compact .row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 36%) minmax(0, auto) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title en    .     price"
+    "sub   tags  tags  tags";
+  align-items: center;
+  gap: 2px var(--sp-2);
+  padding: 5px 10px;
+}
+/* `display: contents` 把「标题 / 原名 / 评价」从 .row-info 里放出来，各自占一个网格区 ——
+   这样「评价」才能和「标签行」排进同一行（不改 DOM）。 */
+body.compact .row-info { display: contents; }
+body.compact .row-title { grid-area: title; min-width: 0; }
+body.compact .row-en { grid-area: en; min-width: 0; min-height: 0; }
+body.compact .row-sub { grid-area: sub; min-height: 0; }
+/* 右边**只有价格**：现价 + **划线原价竖排在下面**（用户 2026-10-07：「把精简模式的原价放在
+   折扣价的下面，这样就很完美了，还能再腾出一两个中文名字的位置」）——
+   竖排后价格列只占「现价」那一列宽（≈50px，并排时要 ≈85px），省下的 ~35px 给了中文名列
+   （c1 上限从 32% 提到 36%）。⚠️ 代价：价格变成两行（24+16≈40px）会把第一行撑高，
+   精简模式行高从 54 → ~70px（仍远低于普通模式的 93+）。 */
+body.compact .row-price {
+  grid-area: price; justify-self: end;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 0;
+  padding-left: 0;
+}
+/* 第二行：评价·剩余天数 → 紧接着 图标 → 力度条 → 折扣%（左贴，不推到最右） */
+body.compact .row-tags {
+  grid-area: tags; justify-self: start;
+  display: flex; align-items: center; gap: 6px;
+}
+body.compact .row-tags .cut-wrap { display: inline-flex; flex: 0 1 auto; align-items: center; gap: var(--sp-1); }
+/* 精简模式的条**定宽 96px**（与一行结构的标签列同宽）：标签行的宽度因此恒定。 */
+body.compact .row-tags .cut-bar {
+  flex: 0 1 96px; width: 96px; min-width: 40px; max-width: 96px;
+}
+/* 精简模式 · 窄行（手机单列 ≈333px 内容宽）：第一行的「评价·剩余天数」要占 c1、
+   第二行还塞着「图标 + 力度条 + 折扣%」—— 实测**带上评价条数**时 c1 要 143px，
+   c1+原名+价格 三块加起来超过整行宽（c2 被压成负数 → 整行挤爆）。
+   所以窄行把**评价条数**这一格连同它前面的分隔点隐掉（评价数是最不要紧的一格：
+   好评率与「剩 X 天」都还在），c1 从 143 掉到 70，两行都松快。
+   ⚠️ `.rc + .sp` 靠相邻兄弟选择器把分隔点一起藏，别只藏 `.rc`（会剩下「78% · · 剩 2 天」）。 */
+@container row (max-width: 460px) {
+  body.compact .row-sub .rc,
+  body.compact .row-sub .rc + .sp { display: none; }
+}
+/* 没有原名时（Steam 回退成英文名，或剥完只剩汉字）那个空 div 仍会白占宽度 ——
+   实测「MONSTER HUNTER RISE」这类中文名缺失的条目，标题被压到只剩 6 个字。
+   `:empty` 判得准：app.js 用的是 `textContent = enTitle(item)`，没有内容就是真的空节点。 */
+body.compact .row-en:empty { display: none; }
+/* 「今天结束」那个粉底块在精简列表里太占地方 —— 用户 2026-10-07：
+   「面积太大，缩小一点，也不要加粗，有背景的字体本来缩小一点也看不出来的」。
+   所以精简模式下：字号降一档（12 → 11px `--fs-aux`）、去掉字重、收掉内边距与行高。 */
+body.compact .days-final {
+  font-size: var(--fs-aux); font-weight: 400;
+  padding: 0 4px; line-height: 1.35;
+}
 
 /* ================= 空状态（无内容 / 加载中 / 加载失败）=================
    插画是 app.js 里的内联 SVG 常量（不能引图片文件：页面要能离线双击打开）。 */
@@ -483,8 +726,10 @@ body.compact .row-sub { flex: 1 1 100%; }
 }
 .empty-retry:hover { background: #eef1f5; }
 
-/* ================= 页脚 ================= */
-.footer { color: var(--muted); font-size: var(--fs-sub); padding: var(--sp-4) 12px 32px; }
+/* ================= 页脚 =================
+   2026-10-07 用户：「底部信息栏居中显示，精简内容，不要生成时间和最后运行时间，
+   这些记在 about 页就行了」→ 三行、居中、去掉时间那行（生成时间在顶栏与 about 页都有）。 */
+.footer { color: var(--muted); font-size: var(--fs-sub); padding: var(--sp-4) 12px 32px; text-align: center; }
 .footer p { margin: var(--sp-1) 0; }
 .foot-links a { color: var(--accent); text-decoration: none; }
 .foot-links a:hover { text-decoration: underline; }
@@ -492,13 +737,33 @@ body.compact .row-sub { flex: 1 1 100%; }
 
 /* ================= 「关于网站」页 ================= */
 .about { padding-top: 6px; }
-.about h1 { font-size: 22px; margin: var(--sp-3) 0 6px; }
+/* 页面标题收进字号阶梯的「区块标题」档（17px）——原先写死 22px，超出 6 档阶梯上限
+   （19px 只给站点名）。同档内靠**字重**拉开两级：h1 700 / 区块 h2 600。 */
+.about h1 { font-size: var(--fs-title); font-weight: 700; margin: var(--sp-3) 0 6px; }
 .about .lead { color: var(--muted); font-size: var(--fs-body); margin: 0; }
 .about .block {
   background: var(--card); border-radius: 8px; box-shadow: var(--shadow-card);
   padding: 14px 16px; margin-bottom: var(--sp-3);
 }
-.about .block h2 { font-size: var(--fs-title); margin: 0 0 10px; }
+.about .block h2 { font-size: var(--fs-title); font-weight: 600; margin: 0 0 10px; }
+/* ---- 块排布：**网格 + 行内等高**（2026-10-07 用户第三次说这块：
+   「你只是左右对齐没有上下框对齐，你可以错开排列，但是起码整体上下要一样长啊，
+   你量一下再算算怎么排，排不满就空一行嘛」）----
+   沿革：① 单列 → 空白太多；② `column-count` 多栏 → 列与列顺序填充、上下边界错开，被否；③
+   grid + `align-items: start` → 卡片各自高度，**两列总高差 170px**（实测 961 vs 791），被否。
+   终态：`align-items: **stretch**`（默认值，不再写 start）—— 同一行的两张卡**等高**，
+   于是每一行都是一条水平带、上下边框对齐，两列的总长天然相等 ✓。
+   代价是矮卡会被拉到与同行的最高卡一样高（多出一点内部留白），所以**配行要挑高度相近的**
+   （见下「块顺序」），把差控制在 ~40px 内。
+   · **2 列**（≥601）/ 手机 1 列。不上 3 列：八块里只有两块高的，3 列时首行必留 150~285px 空。
+   · 「每日更新日志」`grid-column: 1 / -1` 跨满整行、放最后。 */
+.about .blocks {
+  display: grid; grid-template-columns: 1fr;
+  gap: var(--sp-3); grid-auto-flow: dense;
+}
+@media (min-width: 601px) { .about .blocks { grid-template-columns: repeat(2, 1fr); } }
+.about .block { margin-bottom: 0; }
+.about .block.wide { grid-column: 1 / -1; }
 .about table.kv { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
 .about table.kv th,
 .about table.kv td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
@@ -524,7 +789,7 @@ body.compact .row-sub { flex: 1 1 100%; }
   /* 顶栏收成一行：站点名 | 生成时间 | 汉堡；导航改成绝对定位的竖排浮层 */
   .topbar-inner { position: relative; flex-wrap: nowrap; gap: var(--sp-2); align-items: center; }
   .brand { margin-right: auto; }
-  .brand-mark { width: 20px; height: 20px; }
+  .brand-mark { width: 22px; height: 22px; }
   .topbar .generated { font-size: var(--fs-aux); }
   .nav-toggle { display: inline-flex; }
   .nav {
@@ -535,14 +800,52 @@ body.compact .row-sub { flex: 1 1 100%; }
   }
   .nav.open { display: flex; }
   .nav-item { width: 100%; text-align: left; padding: 11px 12px; border-radius: 8px; }
+  /* 「关于网站」页的导航只有一个「回首页」链接，那一页既没有汉堡按钮、也没加载 app.js
+     —— 跟着上面的 display:none 一起藏掉 = **手机上无法从关于页返回首页**
+     （2026-10-07 实测：390px 视口下 .nav 渲染成 0×0）。用 .nav-static 明确豁免：
+     它本来就不需要折叠，永久横排显示。 */
+  .nav.nav-static {
+    position: static; display: flex; flex-direction: row; gap: 0;
+    padding: 0; margin: 0; background: none; border: 0; box-shadow: none;
+  }
+  .nav.nav-static .nav-item { width: auto; padding: 6px 10px; text-align: center; }
+  /* 关于页顶栏在手机上改成两行：① 站点名 + 回首页　② 生成时间右对齐
+     （一行塞不下：站点名 ≈150px + 链接 ≈90px + 生成时间 ≈105px > 390px 视口可用宽） */
+  .topbar-about { flex-wrap: wrap; row-gap: 2px; }
+  .topbar-about .generated { flex: 1 1 100%; text-align: right; font-size: var(--fs-aux); }
 
   /* 消息区：季节条换行（起止时间另起一行） */
   .msg-fest { padding: 10px 0; }
   .msg-inner { flex-wrap: wrap; gap: 6px; }
   .msg-fest .msg-until { margin-left: 0; flex: 1 1 100%; }
 
-  /* 抽屉改成从底部滑出（平板/PC 是右侧浮层） */
-  .drawer { left: 0; right: 0; bottom: 0; max-height: 78vh; border-radius: 14px 14px 0 0; }
+  /* 筛选面板的定位在文件末尾（现在所有宽度都是「按钮下方悬浮气泡窗」），
+     这里不再写第二份 —— 原先只写在本档，导致平板 601~1100 没有定位、面板跑出视口 */
+
+  /* 筛选行：**手机上「筛选」已经不是行内按钮了** —— app.js 把它搬进右下角的
+     `#floaters`，跟「精简 / 返回顶部」一样做成 42×42 的浮动方块（放在「精简」上方）。
+     用户 2026-10-07：「手机的筛选放到右边精简模式上方，也是点开就可以选，
+     这样才符合手机的操作逻辑」。方块里只放漏斗图标 + 角标（放不下「筛选」二字）。
+     ⚠️ 尺寸必须与 `.btn-float` 在本档的 42×42 一致，否则一列方块高矮不一。 */
+  .filter-open {
+    position: relative; width: 42px; height: 42px; min-height: 0; padding: 0;
+    justify-content: center; gap: 0; border-radius: 10px;
+    box-shadow: var(--shadow-card);
+  }
+  .filter-open .f-label, .filter-open .f-caret { display: none; }
+  .filter-open .f-ico { width: 18px; height: 18px; }
+  /* 角标挂到方块右上角（带一圈白描边，压在蓝底上也认得出） */
+  .filter-open .f-badge {
+    position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px;
+    border: 2px solid var(--card); border-radius: 9px;
+  }
+  /* 手机上面板从**浮层按钮的上沿**展开 —— 定位规则放在文件末尾（必须排在通用那条
+     `.drawer{position:absolute}` 之后，否则会被它盖掉）。 */
+  /* 已选条件小标签在手机上整条不显示（用户 2026-10-07：「手机端还是默认 B1」）——
+     面板里点开就能看/改，不用在行内再铺一遍。 */
+  .active-chips { display: none; }
+  /* 摘要（只在首页出现）：手机上一行放不下按钮 + 胶囊 → 允许换行、胶囊占满整行靠右 */
+  .summary { gap: var(--sp-2); padding: 3px 12px; }
 
   /* 大卡：列数/每页张数由 app.js 按宽度算（口径只在 app.js 的 picksPerPage，
      这里不写第二份数字）；封面比例三档统一 3:4（原手机档的 1:1 覆盖已删 —— 断点处会跳） */
@@ -572,15 +875,60 @@ body.compact .row-sub { flex: 1 1 100%; }
   .about table.logs { display: block; overflow-x: auto; }
 }
 
-/* ---- PC 档（≥1101）：抽屉改右侧浮层 ----
-       行卡片的一行结构改由 @container 按**行宽**判断（见上文 480px 那条）：
-       768 单列的行宽 707px 也走一行，PC 两列 532px 同样走一行。 */
-@media (min-width: 1101px) {
+/* ---- 筛选面板：**所有宽度都用同一套「按钮正下方的悬浮气泡窗」**（2026-10-07 第三轮）----
+   用户：「手机筛选我觉得应该放到和精选上方按钮一样的悬浮气泡窗」——
+   原来手机走底部抽屉、≥601 走下拉，两种动效；现在统一成一套，手机上也是从按钮下方展开。
+   · 面板是 `.filterbar` 的子元素，`.filterbar{position:relative}` 是锚点；
+   · 宽度 `min(400px, 100%)` + `left:0` → 左边缘与按钮对齐、右边缘不越出内容区。
+     **400px 是量出来的**（用户 2026-10-07：「筛选栏展开有点太宽了，缩小一点，
+     pc 和手机的都太宽了，留了大量空白」）：最宽的一组是「排序」（精选 / 折扣降序 /
+     价格升序 / 好评率降序 = 294px）+ 面板左右内边距 32px = 326px，
+     所以 400px 里五个分组**每组都能排成一行**、右边只剩 ~70px 余量，
+     既不像原来 560px 那样空一大块，也不会因为太窄而把 chip 折行折出一堆空白。
+     再缩到 340 以下「排序 / 好评数量」就会折行（折行后每行右边照样空）。
+   ⚠️ 改这个数要同时看手机上那条（≤600 是 336px，见文件末尾）。
+   · `max-height` 取 70vh 与 560px 的小者 + 面板内部滚动 —— 手机上按钮离顶不远，
+     这个高度基本都能落在视口里（量过 390×844：面板底 ≈ 817 < 844）。
+   ⚠️ **别再给手机加回底部抽屉**（那正是用户要消除的「两种动效」）；
+     也别把 `bottom/right` 写进这条规则 —— 那会把面板钉到屏幕角上。 */
+.drawer {
+  position: absolute; top: calc(100% + var(--sp-2)); left: 0; right: auto; bottom: auto;
+  width: min(400px, 100%); max-height: min(70vh, 560px);
+  border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(16, 24, 40, .18);
+}
+/* 透明遮罩：只负责接住「点面板以外 = 关闭」那一击，不压暗页面 ——
+   悬浮气泡窗不是模态弹窗，整屏压暗的语汇只属于底部抽屉/对话框。 */
+.drawer-mask { background: transparent; }
+.drawer-head { padding: var(--sp-3) var(--sp-4); }
+.drawer-body { padding: var(--sp-1) var(--sp-4) var(--sp-4); }
+.drawer-foot { padding: var(--sp-3) var(--sp-4); }
+.drawer-foot .chip { flex: 0 0 auto; padding: 7px 20px; }
+
+/* ---- 手机（≤600）：面板从**右下角浮层按钮的上沿**展开 ----
+   手机上「筛选」是浮层方块（app.js 把它搬进 #floaters、CSS 在上面那条手机档里改成 42×42），
+   按钮在屏幕右下角 → 面板只能往上长，所以这里从「按钮正下方」改成「按钮正上方」。
+   ⚠️ `bottom` 的准确值由 app.js 在打开那一刻量按钮位置后写进 inline style
+      （浮层堆叠高度会随「返回顶部」出现而变化，纯 CSS 算不出来）；
+      下面这个 64px 只是 JS 没跑时的兜底。
+   ⚠️ 这条**必须排在上面那条通用 `.drawer{position:absolute}` 之后**，
+      否则同优先级下会被它盖掉（文件末尾就是干这个用的）。 */
+@media (max-width: 600px) {
+  /* 手机上也是「窄版气泡窗」：靠右对齐（按钮在右下角）、宽 336px ——
+     用户 2026-10-07：「pc 和手机的都太宽了，留了大量空白」。
+     336px 同样保证五个分组每组一行（最宽的「排序」294px + 内边距 32px = 326px）。 */
   .drawer {
-    right: 0; top: 0; bottom: 0; left: auto; width: 380px;
-    max-height: none; border-radius: 0; border-left: 1px solid var(--line);
+    position: fixed; left: auto; right: 12px; top: auto; bottom: 64px;
+    width: min(336px, calc(100vw - 24px)); max-height: calc(100vh - 140px);
   }
 }
+
+/* ---- PC 档（≥1101）----
+   ⚠️ 原来的「抽屉从右侧滑出（width:380px）」已随 E1 作废 —— PC 与平板现在共用
+   ≥601 那条「按钮下方下拉」（用户 2026-10-07：位置按 E1，面板样式沿用老的）。
+   这里不再给 .drawer 任何定位，**别把右侧浮层加回来**：两处定位会互相打架。
+   行卡片的一行结构由 @container 按**行宽**判断（见上文 480px 那条）：
+   768 单列的行宽 707px 也走一行，PC 两列 532px 同样走一行。 */
 
 /* 减少动态效果时不位移，只保留阴影变化 */
 @media (prefers-reduced-motion: reduce) {

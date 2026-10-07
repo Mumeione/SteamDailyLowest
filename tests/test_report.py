@@ -545,16 +545,132 @@ class HomeSectionsTest(unittest.TestCase):
         self.assertEqual(len(got["new_low"]["items"]), 3)   # home_section_preview
         self.assertEqual(got["new_low"]["count"], 10)       # 完整条数照实报
 
+    def test_pick_page_sent_via_payload(self):
+        """大卡「一页几张」由服务端下发（payload `pick_page`），前端 app.js 只读
+        不抄 —— 双源口径（服务端整数页取数 ↔ 前端一排最多几张）经它对齐。"""
+        out = _render([], datetime(2026, 10, 6, 5, 14))
+        self.assertEqual(_load_payload(out)["pick_page"], report.HOME_PICKS_PAGE)
+
     def test_big_cut_sorted_by_discount_desc(self):
         got = self.sections([self.card("低", cut=85), self.card("高", cut=95)])
         self.assertEqual([i["title"] for i in got["big_cut"]["items"]], ["高", "低"])
 
-    def test_picks_only_live_new_lows(self):
-        # 推荐位有前置门槛（好评率 ≥70% 且 评价数 ≥100），所以这里要带上评价数
+    def test_picks_include_tie_but_not_expired_nor_unknown(self):
+        """推荐位池子 = **新史低 + 平史低**（用户 2026-10-07：「大卡不止新史低，
+        平史低也有机会进大卡」），但**必须还在折扣期内**、且史低类型已知。
+
+        前置门槛（好评率 ≥70% 且 评价数 ≥100）照旧 —— 所以这里带上评价数。
+        ⚠️ **史低类型不参与打分**（用户同一轮：「别改大卡的公式…你测一下效果就行了」），
+        所以这里只断言「谁在池子里」，不断言两类之间的先后顺序。
+        """
         picks = report.pick_top([self.card("A", count=1000),
                                  self.card("B", count=1000, live=False),
-                                 self.card("C", count=1000, low="tie")], self.CFG)
-        self.assertEqual([i["title"] for i in picks], ["A"])
+                                 self.card("C", count=1000, low="tie"),
+                                 self.card("D", count=1000, low="unknown")], self.CFG)
+        self.assertEqual(sorted(i["title"] for i in picks), ["A", "C"],
+                         "平史低进池子、过期与未知类型不进")
+
+    def test_picks_pool_low_classes(self):
+        """池子口径与**分层顺序**写成常量，改它要连着改测试 ——
+        顺序反了（先平后新）90% off 的老 3A 会把新史低全挤掉。"""
+        self.assertEqual(list(report.PICK_LOW_CLASSES), ["new", "tie"])
+
+    def test_filter_implied_flags(self):
+        """筛选菜单里「选了也不会变」的选项要标 `implied`（用户 2026-10-07：
+        「新史低里面还能再选新史低选项，大额折扣里面还能选折扣降序，置灰」）。
+
+        对照表（依据 = 各板块的口径 `_in_section` 与默认顺序 `_section_sort`）：
+          新史低：全是新史低 → 仅新史低无效；板块顺序在该板块内等价折扣降序 → 那个排序无效
+          大额折扣：已要求折扣 ≥ big_cut → 折扣区间 ≤ big_cut 的档位无效（含同级）
+          热门游戏：已要求评价数 ≥ notable → 好评数量 ≤ notable 的档位无效
+        """
+        groups = {g["key"]: g for g in report.filter_specs(self.CFG)}
+        val = lambda g: {o["value"]: o.get("implied") for o in groups[g]["options"]}
+
+        self.assertEqual(val("only_new")["new"], ["new_low"])
+        # ⚠️ 「排序」不在表里：精选已改为按推荐公式打分（featured_score），
+        #    不再等于各板块的自然顺序，「折扣降序」在哪个板块都有区分度。
+        self.assertIsNone(val("sort")["cut"])
+        self.assertEqual(val("cut")["50"], ["big_cut"])
+        self.assertEqual(val("cut")["80"], ["big_cut"])      # 与板块下限同档 = 筛不掉
+        self.assertEqual(val("cut")["90"], None)             # 比下限高 = 有区分度
+        self.assertEqual(val("reviews")["500"], ["popular"])
+        self.assertEqual(val("reviews")["5000"], ["popular"])
+        self.assertEqual(val("reviews")["10000"], ["popular"])
+        # 「全部 / 不限」是复位键，永远不会被隐含（排序组没有这一项，跳过）
+        for g in ("cut", "reviews", "only_new"):
+            self.assertIsNone(val(g)["all"], g)
+
+    def test_filter_implied_follows_config(self):
+        """implied 跟着配置走：把「大额折扣」的线降到 50 后，≥50 就成了同级（被隐含）、
+        而比新下限高的 ≥90 依旧有区分度（不被隐含）。"""
+        cfg = dict(self.CFG, big_cut_percent=50)
+        groups = {g["key"]: g for g in report.filter_specs(cfg)}
+        val = {o["value"]: o.get("implied") for o in groups["cut"]["options"]}
+        self.assertEqual(val["50"], ["big_cut"])
+        self.assertIsNone(val["90"])
+
+    def test_section_order_uses_featured_score(self):
+        """**行为断言**：新史低板块的「精选」顺序 = 推荐公式（featured_score）降序。
+
+        名气优先是大卡与列表共同的口径（refs §10.2）：高名气 50% 折扣的游戏
+        要排在低名气 90% 折扣的游戏前面（改 `_section_sort` 键序时这里会红）。"""
+        pool = [
+            {"title": "大作小折", "low_class": "new", "cut": 50, "price_int": 100,
+             "reviews": {"score": 90, "count": 200000}, "start_days_ago": 1, "days_left": 5},
+            {"title": "小作大折", "low_class": "new", "cut": 90, "price_int": 20,
+             "reviews": {"score": 90, "count": 150}, "start_days_ago": 1, "days_left": 5},
+        ]
+        ordered = sorted(pool, key=report._section_sort("new_low", self.CFG))
+        self.assertEqual([c["title"] for c in ordered], ["大作小折", "小作大折"])
+
+    def test_featured_score_same_formula_as_recommend(self):
+        """featured_score 与 recommend_score 用**同一套公式**（只是不打门槛）——
+        满足门槛的卡片两者必须完全相等，保证列表精选与大卡口径永远一致。"""
+        card = {"title": "G", "cut": 80, "days_left": 2, "start_days_ago": 1,
+                "reviews": {"score": 88, "count": 12000}}
+        self.assertAlmostEqual(report.featured_score(card, self.CFG),
+                               report.recommend_score(card, self.CFG), places=9)
+
+    def test_featured_score_has_no_gate(self):
+        """featured_score **不打门槛**：详情待补（无评价数）的条目也有分
+        （只剩「折扣」一项计分、按剩余权重归一），不能像大卡那样返回 None。"""
+        card = {"title": "无详情", "cut": 90, "reviews": None, "days_left": 5}
+        self.assertIsNotNone(report.featured_score(card, self.CFG))
+        self.assertIsNone(report.recommend_score(card, self.CFG))
+
+    def test_picks_prefer_new_over_higher_scoring_tie(self):
+        """**优先新史低**：哪怕平史低的分高得多，也要排在新史低后面
+        （用户 2026-10-07：「优先新史低，没有才显示平史低」）。"""
+        picks = report.pick_top([self.card("新", count=200),
+                                 self.card("平", count=500000, low="tie")], self.CFG)
+        self.assertEqual(picks[0]["title"], "新", "分再高也排在后面")
+        self.assertEqual([i["title"] for i in picks], ["新", "平"])
+
+    def test_picks_count_defaults_to_one_page(self):
+        """默认只放**一页（5 张）**（用户 2026-10-07：「平时 5 张就行，能凑够再放，
+        不要凑数」）—— 而且不够一页时只用平史低补满这一页，不多放。"""
+        cfg = {k: v for k, v in self.CFG.items() if k != "home_picks"}
+        cards = [self.card(f"新{i}", count=200) for i in range(9)]
+        picks = report.pick_top(cards, cfg)
+        self.assertEqual(len(picks), report.HOME_PICKS_PAGE)
+
+    def test_picks_count_rounds_to_whole_pages_when_cap_raised(self):
+        """把上限调大（15）时按**整数页**取：新史低 7 张 → 2 页（10 张），
+        余下的用平史低补满，而不是硬凑 15。"""
+        cfg = dict(self.CFG, home_picks=15)
+        cards = ([self.card(f"新{i}", count=200) for i in range(7)]
+                 + [self.card(f"平{i}", count=200, low="tie") for i in range(9)])
+        picks = report.pick_top(cards, cfg)
+        self.assertEqual(len(picks), 10)
+        self.assertEqual([i["title"] for i in picks], [f"新{i}" for i in range(7)]
+                         + ["平0", "平1", "平2"])
+
+    def test_recommend_weights_have_no_low_item(self):
+        """权重表里**没有**「史低类型」这一项 —— 用户 2026-10-07 明确要求把它删掉
+        （「别改大卡的公式，你怎么乱动公式」，有史低项的是 refs §10.2 的**订阅端版**）。"""
+        self.assertNotIn("low", report.RECOMMEND_WEIGHTS)
+        self.assertFalse(hasattr(report, "RECOMMEND_LOW_PARTS"))
 
 
 class RecommendScoreTest(unittest.TestCase):
@@ -725,11 +841,22 @@ class FilterSpecsTest(unittest.TestCase):
         cfg = dict(self.CFG, big_cut_percent=75, notable_review_count=50000,
                    home_new_low_days=3)
         groups = {g["key"]: g for g in report.filter_specs(cfg)}
-        self.assertIn({"value": "75", "label": "≥ 75%"}, groups["cut"]["options"])
-        self.assertIn({"value": "50000", "label": "≥ 50,000"},
-                      groups["reviews"]["options"])
+        # ⚠️ 用键值断言而不是整个 dict：选项上还挂着 `implied` / `implied_note`
+        #    （见 test_implied_flags），逐键比对才不会被新增字段打破。
+        cut75 = next(o for o in groups["cut"]["options"] if o["value"] == "75")
+        self.assertEqual(cut75["label"], "≥ 75%")
+        rev = next(o for o in groups["reviews"]["options"] if o["value"] == "50000")
+        self.assertEqual(rev["label"], "≥ 50,000")
         self.assertIn({"value": "d3", "label": "近 3 天", "disabled": False},
                       groups["date"]["options"])
+
+    def test_cut_options_have_no_70(self):
+        """折扣区间**没有 ≥70%**（用户 2026-10-07：「折扣区间去掉 70%」）——
+        它夹在 50 与 80 之间、区分度最低。留下的三档是 50 / big_cut（80）/ 90。"""
+        values = [o["value"] for o in
+                  {g["key"]: g for g in report.filter_specs(self.CFG)}["cut"]["options"]]
+        self.assertEqual(values, ["all", "50", "80", "90"])
+        self.assertNotIn("70", values)
 
     def test_defaults_follow_config(self):
         self.assertEqual(report.filter_defaults(self.CFG)["date"], "d7")
@@ -830,8 +957,10 @@ class CardTierColourTest(unittest.TestCase):
         entry.update(kw)
         return report.build_card(entry, self.NOW, report.tier_labels(CFG), cfg or CFG)
 
-    def test_rate_tier_three_levels(self):
-        for score, expect in ((95, "high"), (90, "high"), (89, "ok"), (70, "ok"), (69, "low")):
+    def test_rate_tier_four_levels(self):
+        """Steam 商店口径（用户 2026-10-07）：≥90 high · 70~89 ok · 40~69 mid · <40 low。"""
+        for score, expect in ((95, "high"), (90, "high"), (89, "ok"), (70, "ok"),
+                              (69, "mid"), (40, "mid"), (39, "low"), (0, "low")):
             card = self._card(reviews={"score": score, "count": 500})
             self.assertEqual(card["rate_tier"], expect, f"好评率 {score}%")
 
@@ -843,16 +972,25 @@ class CardTierColourTest(unittest.TestCase):
         cfg = dict(CFG, good_positive_ratio=0.8, min_positive_ratio=0.6)
         self.assertEqual(self._card(cfg, reviews={"score": 85, "count": 500})["rate_tier"], "high")
         self.assertEqual(self._card(cfg, reviews={"score": 65, "count": 500})["rate_tier"], "ok")
-        self.assertEqual(self._card(cfg, reviews={"score": 55, "count": 500})["rate_tier"], "low")
+        self.assertEqual(self._card(cfg, reviews={"score": 55, "count": 500})["rate_tier"], "mid")
+        self.assertEqual(self._card(cfg, reviews={"score": 30, "count": 500})["rate_tier"], "low")
 
-    def test_days_tier_three_levels(self):
-        for days, expect in ((0, "urgent"), (2, "urgent"), (3, "soon"), (6, "soon"),
-                             (7, "later"), (30, "later")):
+    def test_rate_tier_bad_line_follows_config(self):
+        """「差评」线也可配（默认 40%）：调到 50% 后 45% 就从 mid 掉进 low。"""
+        cfg = dict(CFG, bad_positive_ratio=0.5)
+        self.assertEqual(self._card(cfg, reviews={"score": 45, "count": 500})["rate_tier"], "low")
+        self.assertEqual(self._card(cfg, reviews={"score": 55, "count": 500})["rate_tier"], "mid")
+
+    def test_days_tier_four_levels(self):
+        """2026-10-07 起「今天结束」（0 天）单独一档：0 final · ≤2 urgent · ≤6 soon · ≥7 later。"""
+        for days, expect in ((0, "final"), (-1, "final"), (1, "urgent"), (2, "urgent"),
+                             (3, "soon"), (6, "soon"), (7, "later"), (30, "later")):
             self.assertEqual(report.days_tier(days, CFG), expect, f"剩 {days} 天")
 
     def test_days_tier_bounds_come_from_config(self):
         """urgent 边界 = 即将过期窗口（48h → 2 天）；later 边界 = 三板块时间窗（7 天）。"""
         cfg = {"upcoming_expiry_hours": 72, "home_new_low_days": 14}
+        self.assertEqual(report.days_tier(0, cfg), "final")      # 「今天结束」永远单独一档
         self.assertEqual(report.days_tier(3, cfg), "urgent")     # 72h 窗口 → 3 天内都算急
         self.assertEqual(report.days_tier(4, cfg), "soon")
         self.assertEqual(report.days_tier(13, cfg), "soon")     # 窗口放宽到 14 天
@@ -867,6 +1005,26 @@ class CardTierColourTest(unittest.TestCase):
         self.assertEqual(card["days_tier"], "urgent")   # 10-08 01:00 收摊按 10-07 结束 → 1 天
         # 服务端的 `reviews_text` 已删：前端要给「93%」单独上色，字符串在两边各拼一份会分叉
         self.assertNotIn("reviews_text", card)
+
+    def test_mid_tier_notable_card_enters_other_sections(self):
+        """「褒贬不一 / 差评」并非只出现在热门板块（2026-10-07 review 纠正的口径）：
+
+        mid/low 只可能由「高热度 · 口碑不一」组（评 ≥ notable，不看好评率）的卡产生，
+        但那张卡同时是新史低时**照进「新史低」板块**（好感分档不硬砍，COD 类大作
+        踩新史低必须上榜）—— 配色档跟着卡走，在任何板块都要能认出来。
+        这条钉死「不硬砍」：谁把低口碑卡从非热门板块里剔掉，这里就红。
+        """
+        card = self._card(reviews={"score": 55, "count": 20000},
+                          tier=classify.TIER_NOTABLE,
+                          flag="N", store_low_int=80,
+                          start="2026-10-05T20:00:00+08:00")
+        self.assertEqual(card["rate_tier"], "mid")
+        self.assertEqual(card["low_class"], classify.STEAM_LOW_NEW)
+        by_key = {s["key"]: s for s in report.build_sections([card], CFG)}
+        self.assertGreater(by_key["new_low"]["count"], 0)
+        self.assertEqual(by_key["new_low"]["items"][0]["rate_tier"], "mid")
+        # 「热门游戏」板块不看好评率，同一张卡也该在（评 ≥10000）
+        self.assertGreater(by_key["popular"]["count"], 0)
 
 
 class MessageBarTest(unittest.TestCase):

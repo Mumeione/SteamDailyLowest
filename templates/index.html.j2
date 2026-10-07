@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Steam 史低 · 每日折扣</title>
+{# favicon 与顶栏站点图标都来自 _brand.j2（唯一来源，改图标只改那一个文件）——
+   favicon 用**内联 SVG data URI**（2026-10-07 用户：「可以适当加 favicon」），
+   页面要能离线双击打开，所以不引 .ico / .svg 文件。 #}
+{% from "_brand.j2" import favicon_link, brand_mark %}
+{{ favicon_link() }}
 <link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
 </head>
 <body>
@@ -12,12 +17,12 @@
   <div class="wrap topbar-inner">
     {# S9：点站点名回首页（导航栏里不放「首页」）。
        S9-2：站点名做成标识（小图标 + 双色分段），纯 CSS，**不引外部字体** ——
-       页面要能离线双击打开，拉不了字体文件。 #}
+       页面要能离线双击打开，拉不了字体文件。
+       图标 2026-10-07 第二轮换新：**一路下跌的折线 + 触底的那条基线** = 「价格跌到历史最低」，
+       与旧版（↓ + 底线）区分开。图形与 favicon 是同一枚（macro 见 _brand.j2）。
+       ⚠️ 这是描边图形（stroke 走 currentColor），别在 CSS 里给它加 fill。 #}
     <a class="brand" href="#" id="brand" aria-label="SteamDailyLowest 首页">
-      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 16.4L6.6 11L9.7 11L9.7 4.6L14.3 4.6L14.3 11L17.4 11Z"/>
-        <rect x="4.4" y="18.2" width="15.2" height="2.6" rx="1.3"/>
-      </svg>
+      {{ brand_mark() }}
       <span class="brand-text"><span class="brand-a">Steam</span><span class="brand-b">DailyLowest</span></span>
     </a>
     <nav class="nav" id="nav">
@@ -79,14 +84,75 @@
 
 <main class="wrap">
 
+  {# 筛选行（2026-10-07 第二轮重做）：
+     ① **筛选按钮** —— B1 长相（漏斗 + 计数 + 折角），PC/平板额外挂一排
+        「已选条件小标签」（B3，见下）。
+        ⚠️ **手机上这个节点会被 app.js 搬进右下角的浮层（#floaters）**，
+        放在「精简」上方做成一个浮动方块（用户 2026-10-07：「手机的筛选放到右边
+        精简模式上方，这样才符合手机的操作逻辑」）—— 所以 `.f-label`（「筛选」二字）
+        与折角在手机档是隐藏的，只留漏斗图标 + 角标。
+        搬动的是**同一个节点**，不做两份 markup：文案与角标只有一份实现。
+     ② **已选条件小标签**（#active-chips）—— 由 app.js 按 state.filters 渲染，
+        每个都能单独 ✕ 掉、末尾一个「清空」。⚠️ 手机档 `.active-chips{display:none}`。
+     ③ **今日新增摘要**（S2）—— 白卡胶囊 + 大号数字，**只在首页**（refs §10.7）。
+        数字各自用语义色（新史低＝红、平史低＝中性深灰），「新史低 / 平史低」两个字的
+        字号**比「今日新增」大一档** —— 用户 2026-10-07：「新史低和史低字号比今日新增
+        大一点就行了」。
+        ⚠️ 数字前面**不要再放小色条**（用户：「中间不要留很粗的竖线，不好看，可以隔开
+        一点」）—— 靠间距 + 数字本身的颜色区分就够了。
+        切到分类列表页由 app.js 隐藏。
+     ⚠️ `#drawer` 必须留在 .filterbar **里面**：≥601px 的面板是 `position:absolute`
+        挂在 .filterbar 上的（E1「按钮正下方展开」），挪出去就会定位到别处。 #}
   <div class="filterbar" id="filterbar">
-    {# S9-2：筛选收进一个按钮（refs.md B4「这几个按钮全都不要，界面要保持简洁」 +
-       §6.7 的推荐方案）。角标显示"已选几项"。 #}
     <button type="button" class="chip filter-open" id="filter-open"
             aria-expanded="false" aria-controls="drawer">
-      筛选<span class="f-badge" id="filter-badge" hidden>0</span>
+      <svg class="f-ico" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 5h16l-6.2 7.4V19l-3.6-2.2v-4.4z"/>
+      </svg>
+      <span class="f-label">筛选</span>
+      <span class="f-badge" id="filter-badge" hidden>0</span>
+      <span class="f-caret" aria-hidden="true">▾</span>
     </button>
-    <span class="summary" id="summary">今日新增：新史低 {{ low_points["new"] }} · 平史低 {{ low_points["tie"] }}</span>
+    <span class="active-chips" id="active-chips"></span>
+    <span class="summary" id="summary">
+      <span class="s-cap">今日新增</span>
+      <span class="s-item s-new"><b>{{ low_points["new"] }}</b><span class="s-unit">新史低</span></span>
+      <span class="s-item s-tie"><b>{{ low_points["tie"] }}</b><span class="s-unit">平史低</span></span>
+    </span>
+
+  {# S9-2 / E1：筛选面板 —— 手机上从屏幕底部滑出，平板与 PC 从**按钮正下方**展开
+     （同一个面板、同一个 DOM，定位由 app.css 的 ≤600 / ≥601 两条 @media 切换）。
+     选项由 report.filter_specs(cfg) 生成。 #}
+  <div class="drawer-mask" id="drawer-mask" hidden></div>
+  <aside class="drawer" id="drawer" hidden aria-label="筛选">
+    <div class="drawer-head">
+      <strong>筛选</strong>
+      <button type="button" class="drawer-close" id="drawer-close" aria-label="关闭筛选">✕</button>
+    </div>
+    <div class="drawer-body">
+      {% for group in filter_groups %}
+      <div class="fgroup" data-group="{{ group.key }}">
+        <div class="fgroup-title">{{ group.label }}</div>
+        <div class="fgroup-items">
+          {% for opt in group.options %}
+          {# `data-implied` = 在哪些板块里这个选项「选了也不会变」（板块口径已隐含）——
+             app.js 进板块时据此置灰 + 写 tooltip 说明原因。见 report.filter_specs 的注释。 #}
+          <button type="button" class="chip opt{% if opt.disabled %} is-off{% endif %}"
+                  data-group="{{ group.key }}" data-value="{{ opt.value }}"
+                  {% if opt.implied %}data-implied="{{ opt.implied | join(',') }}"
+                  data-implied-note="{{ opt.implied_note }}"{% endif %}
+                  {% if opt.disabled %}disabled title="这一天没有数据"{% endif %}>{{ opt.label }}</button>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {# 只留「重置」—— 选项是**点一下就生效**的，再来一个「完成」纯属重复
+       （review-s9-01 补充审查 Spec (b)）。关闭靠 ✕ / 点遮罩 / 按 Esc。 #}
+    <div class="drawer-foot">
+      <button type="button" class="chip" id="filter-reset">重置</button>
+    </div>
+  </aside>
   </div>
 
   <section class="home" id="home">
@@ -118,36 +184,16 @@
   <div id="empty" class="empty" hidden></div>
 </main>
 
-{# S9-2：底部抽屉式筛选（refs.md §6.7）—— 手机上从屏幕底部滑出，
-   电脑上同一个面板改成右侧浮层。选项由 report.filter_specs(cfg) 生成。 #}
-<div class="drawer-mask" id="drawer-mask" hidden></div>
-<aside class="drawer" id="drawer" hidden aria-label="筛选">
-  <div class="drawer-head">
-    <strong>筛选</strong>
-    <button type="button" class="drawer-close" id="drawer-close" aria-label="关闭筛选">✕</button>
-  </div>
-  <div class="drawer-body">
-    {% for group in filter_groups %}
-    <div class="fgroup" data-group="{{ group.key }}">
-      <div class="fgroup-title">{{ group.label }}</div>
-      <div class="fgroup-items">
-        {% for opt in group.options %}
-        <button type="button" class="chip opt{% if opt.disabled %} is-off{% endif %}"
-                data-group="{{ group.key }}" data-value="{{ opt.value }}"
-                {% if opt.disabled %}disabled title="这一天没有数据"{% endif %}>{{ opt.label }}</button>
-        {% endfor %}
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {# 只留「重置」—— 选项是**点一下就生效**的，再来一个「完成」纯属重复
-     （review-s9-01 补充审查 Spec (b)）。关闭靠 ✕ / 点遮罩 / 按 Esc。 #}
-  <div class="drawer-foot">
-    <button type="button" class="chip" id="filter-reset">重置</button>
-  </div>
-</aside>
+{# S9-2 / E1：筛选面板已挪进上面 .filterbar 里（≥601px 要靠它做绝对定位锚点），
+   这里不再重复一份。 #}
 <script>window.FILTER_DEFAULTS = {{ filter_defaults | tojson }};</script>
 
+{# 页脚（2026-10-07 用户定）：**居中、只留三行** ——
+   ① 站内链接（关于网站 / 源码仓库 / Actions 运行记录，最后一条是用来判断今天有没有正常跑的）
+   ② 一句话说明　③ 免责
+   ⚠️ 原来还有第 4 行「生成时间 + 状态库最近一次运行」，用户要求删掉：
+   「不要生成时间和最后运行时间，这些记在 about 页就行了」——
+   生成时间在**顶栏**和 about 页都有，别再加回页脚。 #}
 <footer class="wrap footer">
   <p class="foot-links">
     <a href="about.html">关于网站</a>
@@ -157,9 +203,7 @@
     <a href="{{ links.actions }}" target="_blank" rel="noopener">Actions 运行记录</a>
   </p>
   <p>每日抓取 Steam 折扣，筛出「当日新增史低」与史低游戏，生成静态页面。</p>
-  <p>数据来源：IsThereAnyDeal / Steam · 生成时间 {{ generated_at_text }} ·
-     状态库最近一次运行：{{ overview.last_run_at or '—' }}</p>
-  <p>价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准，且不代表可购买。</p>
+  <p>价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准。</p>
 </footer>
 
 <script src="data.js?v={{ assets_version }}"></script>

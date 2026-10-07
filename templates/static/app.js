@@ -127,21 +127,22 @@
     if (d === null || d === undefined) return "";
     return d <= 0 ? "今天结束" : "剩 " + d + " 天";
   }
+  /** 史低类型 —— 2026-10-07 第二轮起**不再渲染徽章**（原来的 lowBadge 已删），
+   *  只给卡片挂一个类名：
+   *  行卡片 → `.row.l-new / .l-tie / .l-unk` 的**左侧 6px 色条**；
+   *  大卡   → `.pick.l-new / …` 的**底部 6px 色条**。
+   *  用户原话：「删掉新史低标签，靠色条区分，精简元素」+「大卡底部加色条就行了」。
+   *  「这俩颜色代表什么」由**首页摘要行**那两枚同色小色条当图例（见 index.html.j2）。
+   *  ⚠️ 别在卡片里再把徽章加回来：一卡同时有色条 + 徽章 = 同一件事涂两遍，
+   *    那正是用户说的「一张卡最多同时出现 6 种颜色」的根源。
+   *  ⚠️ 这里必须**显式写出三个取值**（含 "unknown"）：check_payload 会核对 app.js 里
+   *    出现过的 low_class 字面量是否与 classify 常量集一致 ——
+   *    漏一个就是「Python 改了名、前端静默失配」，不会报错，只是色条全错。 */
   function lowClassOf(item) {
-    // ⚠️ 这里必须**显式写出三个取值**（含 "unknown"）：check_payload 会核对
-    // app.js 里出现过的 low_class 字面量是否与 classify 常量集一致 ——
-    // 漏一个就是「Python 改了名、前端静默失配」，不会报错，只是标签和色条全错。
     var lc = item.low_class || "unknown";
     if (lc === "new") return "l-new";
     if (lc === "tie") return "l-tie";
     return "l-unk";                 // unknown：storeLow 缺失 → 灰虚线色条
-  }
-
-  /** 史低徽章（「新史低/平史低」hl 标签）—— 行卡与大卡共用这一个实现。
-      别在卡片构造函数里内联回去：改徽章口径（如加新史低类型）只该改这一处。 */
-  function lowBadge(item) {
-    return el("span", { class: "hl" + (item.low_class === "new" ? " hl-new" : ""),
-                        text: item.low_label || "史低" });
   }
 
   /** 子信息行：好评率 · 评价数 · 剩余天数。
@@ -158,7 +159,11 @@
     if (rv && rv.count) {
       parts.push(el("span", { class: "rate" + (item.rate_tier ? " rate-" + item.rate_tier : ""),
                               text: (rv.score === null || rv.score === undefined ? "—" : rv.score + "%") }));
-      parts.push(el("span", { text: rv.count.toLocaleString("en-US") + " 条" }));
+      // ⚠️ 评价数这一格带 `.rc`：精简模式在**窄行**（≤460 容器）会把它连同后面那个
+      //    分隔点一起隐藏 —— 那一行要同时塞下「评价·剩余天数 + 图标 + 力度条 + 折扣%」，
+      //    实测 390px 宽放不下（143+8+182=333 刚好顶满，窄一点就折行成三行）。
+      //    评价数是最不要紧的一格（好评率与「剩 X 天」都在），让位给它。
+      parts.push(el("span", { class: "rc", text: rv.count.toLocaleString("en-US") + " 条" }));
     } else {
       parts.push(el("span", { text: "详情待补" }));
     }
@@ -168,7 +173,8 @@
                               text: dl }));
     }
     parts.forEach(function (node, i) {
-      if (i) box.appendChild(document.createTextNode(" · "));
+      // 分隔点包成 .sp 元素（原来是裸文本节点）—— 这样 `.rc + .sp` 能跟着 .rc 一起隐藏
+      if (i) box.appendChild(el("span", { class: "sp", text: " · " }));
       box.appendChild(node);
     });
     return box;
@@ -234,9 +240,8 @@
       iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
     ]);
     var tags = el("div", { class: "row-tags" }, [
-      lowBadge(item),
       links,
-      cutBar(item.cut)     // 老口径顺序：史低标签 → 图标 → 力度条（力度条自适应铺满）
+      cutBar(item.cut)     // 史低类型已改由 .row 的**左侧色条**表达，标签行不再放徽章
     ]);
 
     var thumb = item.banner
@@ -258,13 +263,14 @@
       ])
     ]);
 
-    // 详情（点行展开）：左「距上次史低 / 折扣开始 / 折扣结束」，右「跨区比价」。
+    // 详情（点行展开）：左「距上次史低 / 折扣结束」，右「跨区比价」。
     // S9-卡片（2026-10-07）：恒定两栏 —— 之前无比价数据时回落单栏，右半边空着，
     // 用户反馈「展开的布局也没修改好」；现在右栏没有数据就写一行说明，结构对称。
-    // 「折扣开始」是批 G 从卡片搬去组头的，S9 之后组头没了，加回详情里（payload 一直有）。
+    // ⚠️ 「折扣开始」这一行**已删**（用户 2026-10-07：「删除详情展开里折扣开始的时间这一行，
+    //    以后加第三个外区再加回来」）—— 它的位置留给将来的第 3 个比价区，别顺手加回来。
+    //    数据本身还在 payload 里（`start_text`），要用随时能取。
     var left = el("div", { class: "detail-col" }, [
       lastLowRow(item.last_low_text, item.last_low_date),
-      detailRow("折扣开始", item.start_text),
       detailRow("折扣结束", item.expiry_text)
     ]);
     var rightRows = (item.compare || []).map(function (row) {
@@ -309,7 +315,9 @@
   // 顶部大卡横排（左右翻页）
   // ------------------------------------------------------------------
   // 目标（refs §11.2 + 用户 2026-10-07 的三条纠正）：
-  //   · 一排**最多 5 张**（PC 与平板都是 5）—— 之前 auto-fill 让 1100px 变成 6 张，太多；
+  //   · 一排**最多几张 = payload 的 pick_page**（服务端 HOME_PICKS_PAGE，与「取数按
+  //     整数页」同一份口径；这里带 5 兜底，payload 缺字段时行为不变）——
+  //     之前 auto-fill 让 1100px 变成 6 张，太多；
   //   · 手机 2 列只出一排（张数随列数，**口径只在 picksPerPage 一份**），
   //     且单张不能太宽 —— 之前 768px 走手机档排成 2 列，单张 347px 大得离谱；
   //   · 列数由**这里算出来并写进 inline style**，CSS 不再自己排 ——
@@ -317,7 +325,7 @@
   // ⚠️ PICK_MIN 要跟 app.css 里 .pick 的观感一致（约 150px 起才放得下封面+价+力度条）。
   var PICK_MIN = 150;
   var PICK_GAP = 12;
-  var PICK_MAX_COLS = 5;
+  var PICK_MAX_COLS = (data && data.pick_page) || 5;
 
   function pickColumns() {
     var width = picksTrack ? picksTrack.clientWidth : 0;
@@ -349,6 +357,7 @@
   var picksSub = document.getElementById("picks-sub");
   var picksPrev = document.getElementById("picks-prev");
   var picksNext = document.getElementById("picks-next");
+  var picksNav = document.querySelector("#picks .deck-nav");
 
   function pickCard(item, rank) {
     var art = el("div", { class: "pick-art" }, [
@@ -356,17 +365,15 @@
                                 decoding: "async" }) : null,
       el("span", { class: "pick-rank", text: "#" + rank })
     ]);
-    // 信息区照 **gg.deals** 的结构（用户 2026-10-07 给的参照图）：
-    //   封面 → 标题（最多两行）→「From: 价格 + 折扣徽章」→「划线原价 + 史低徽章 + 商店图标」
+    // 信息区照 **gg.deals** 的结构（用户 2026-10-07 给的参照图）。
     // 用户明确要的：
     //   · 不再用力度条（窄卡里太短，原话：「大卡的力度条太短了」）；
     //   · 两枚商店图标都保留，分别贴折扣行与价格行的右端 → 竖着对齐成一列。
-    // 三排（用户 2026-10-07 定稿；2026-10-07 末统一图标顺序为 Steam 在前）：
-    // ① 标题　② 史低类型 + 折扣 + **Steam**　③ 原价 + 现价 + **小黑盒**。
+    // 三排（2026-10-07 第二轮定稿）：
+    // ① 标题　② 折扣徽章 + **Steam**　③ 原价 + 现价 + **小黑盒**。
+    // 「史低类型」徽章已删 —— 改用**卡片底部 6px 色条**（`.pick.l-*`，见 app.css），
     // 顺序与行卡片一致（行卡片也是 Steam→小黑盒）。
     var lowRow = el("div", { class: "pick-low" }, [
-      // 我们的「新史低 / 平史低」= gg.deals 里那个 HL 徽章（实现共用 lowBadge）
-      lowBadge(item),
       el("span", { class: "pick-cut", text: "-" + (item.cut || 0) + "%" }),
       el("span", { class: "links" }, [
         iconLink(item.steam_url, "Steam 商店页", ICONS.steam)
@@ -384,7 +391,8 @@
       lowRow,
       priceRow
     ]);
-    var card = el("article", { class: "pick" }, [art, body]);
+    // 底部色条走 lowClassOf（与行卡片同一个函数，改口径只改那一处）
+    var card = el("article", { class: "pick " + lowClassOf(item) }, [art, body]);
     card.addEventListener("click", function () { openSection("new_low"); });
     return card;
   }
@@ -406,10 +414,13 @@
     slice.forEach(function (item, i) {
       picksTrack.appendChild(pickCard(item, pickPage * per + i + 1));
     });
-    picksSub.textContent = "本次折扣里最值得买的 " + list.length + " 款（第 "
-      + (pickPage + 1) + "/" + total + " 页）";
+    picksSub.textContent = "本次折扣里最值得买的 " + list.length + " 款"
+      + (total <= 1 ? "" : "（第 " + (pickPage + 1) + "/" + total + " 页）");
     picksPrev.disabled = pickPage <= 0;
     picksNext.disabled = pickPage >= total - 1;
+    // 只有一页时翻页按钮没有任何意义 → 整块收起（2026-10-07 起大卡默认只放一页，
+    // 平时就是这么个状态；手机一页 2~3 张时按钮照旧显示）。
+    picksNav.hidden = total <= 1;
     lastPickCols = cols;
   }
 
@@ -419,6 +430,11 @@
   window.addEventListener("resize", function () {
     if (!picksTrack || !picksTrack.children.length) return;
     if (pickColumns() !== lastPickCols) renderPicks();
+  }, { passive: true });
+  // 面板开着时窗口尺寸变了（手机横竖屏、PC 拉窗口）要重算它贴按钮的位置 ——
+  // 手机端那个 bottom 是 JS 量的，不重算就会飘。
+  window.addEventListener("resize", function () {
+    if (drawer && !drawer.hidden) placeDrawer();
   }, { passive: true });
   picksPrev.addEventListener("click", function () { pickPage--; renderPicks(); });
   picksNext.addEventListener("click", function () { pickPage++; renderPicks(); });
@@ -655,6 +671,14 @@
     if (!dateTouched) {
       state.filters.date = (key === "__all__") ? "all" : FILTER_DEFAULTS.date;
     }
+    // 进板块先复位「在当前板块里没有意义」的已选条件 ——
+    // 不然角标会挂着一个筛不掉任何东西的条件（例：带着「仅新史低」进新史低板块）。
+    resetImpliedFilters();
+    // ⚠️ 这里必须手动刷一次筛选 UI（含「本板块已隐含」选项的置灰）——
+    // openSection 自己不调 applyFilters（它在 loadAll 回调里直接 renderList），
+    // 漏了这步的话，切板块后筛选项的可点状态会停在**上一个板块**的状态
+    // （2026-10-07 冒烟抓到：从新史低切到大额折扣，「折扣降序」还是灰的）。
+    syncFilterUI();
     var buttons = document.querySelectorAll("#nav .nav-item");
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].classList.toggle("active",
@@ -750,7 +774,51 @@
   var drawerMask = document.getElementById("drawer-mask");
   var filterOpenBtn = document.getElementById("filter-open");
   var filterBadge = document.getElementById("filter-badge");
+  var summaryEl = document.getElementById("summary");
+  var chipsBox = document.getElementById("active-chips");
   var filterOpts = document.querySelectorAll("#drawer .chip.opt");
+  // 选项的**初始**可点状态先记下来：那是「数据驱动」的（哪天没数据，服务端渲染时已写进
+  // disabled 属性）；后面 syncOptionAvailability 把它和「板块隐含」（随板块变）两部分合并。
+  for (var f0 = 0; f0 < filterOpts.length; f0++) {
+    filterOpts[f0].dataset.baseOff = filterOpts[f0].disabled ? "1" : "0";
+  }
+
+  /** 按当前板块刷新每个筛选项的可点状态（用户 2026-10-07：
+   *  「新史低里面还能再选新史低选项，大额折扣里面还能选折扣降序，置灰」）。
+   *  一个选项在某个板块里「选了也不会变」（板块口径已经隐含了它）就置灰 + 悬停说明原因 ——
+   *  否则用户会以为筛选坏了。原因文本由服务端 `filter_specs` 的 `implied_note` 下发。 */
+  function syncOptionAvailability() {
+    var sec = state.section || "";
+    for (var i = 0; i < filterOpts.length; i++) {
+      var opt = filterOpts[i];
+      var implied = (opt.dataset.implied || "").split(",");
+      var hit = !!sec && implied.indexOf(sec) >= 0;
+      opt.disabled = opt.dataset.baseOff === "1" || hit;
+      opt.classList.toggle("is-implied", hit);
+      if (hit) {
+        opt.title = opt.dataset.impliedNote || "本板块已按此条件筛选";
+      } else if (opt.dataset.baseOff === "1") {
+        opt.title = "这一天没有数据";
+      } else {
+        opt.removeAttribute("title");
+      }
+    }
+  }
+
+  /** 进板块时，把「在当前板块里没有意义」的已选条件复位 ——
+   *  不然角标会挂着一个**筛选不到任何东西**的条件，用户还以为板块里没货。 */
+  function resetImpliedFilters() {
+    var sec = state.section || "";
+    for (var i = 0; i < filterOpts.length; i++) {
+      var opt = filterOpts[i];
+      if ((opt.dataset.implied || "").split(",").indexOf(sec) < 0) continue;
+      var g = opt.getAttribute("data-group");
+      if (state.filters[g] === opt.getAttribute("data-value")) {
+        state.filters[g] = FILTER_DEFAULTS[g];
+      }
+    }
+  }
+
 
   /** 「已选 N 项」：**排序不计入** —— 排序不是筛选，改个排序就点亮角标是名不副实
       （review-s9-01 补充审查 #6）。 */
@@ -769,22 +837,123 @@
       opt.classList.toggle("active",
         state.filters[opt.getAttribute("data-group")] === opt.getAttribute("data-value"));
     }
+    syncOptionAvailability();      // 「本板块已隐含」的选项置灰（随板块变）
     var n = activeFilterCount();
     filterBadge.hidden = n === 0;
     filterBadge.textContent = n;
+    // 按钮整体变蓝（「有没有筛过」不靠那个 20px 小圆点表达）+ 刷新已选条件小标签
+    filterOpenBtn.classList.toggle("is-on", n > 0);
+    renderActiveChips();
+  }
+
+  /** 把所有筛选恢复成服务端给的默认值（抽屉的「重置」与标签行的「清空」共用一份）。 */
+  function resetFilters() {
+    Object.keys(FILTER_DEFAULTS).forEach(function (k) { state.filters[k] = FILTER_DEFAULTS[k]; });
+    clearDateTouched();        // 重置后「全部折扣」页重新自动放开日期
+    applyFilters();
+  }
+
+  /** 从抽屉里那颗**同名选项**上读它的展示文案（「≥ 80%」「近 7 天」「仅新史低」…）。
+   *  ⚠️ 不在前端另存一份 label 映射 —— 服务端 report.filter_specs 渲染的那份就是
+   *  唯一来源（阈值改了、选项文案跟着变），这边自动跟着走，不会出现两边说法不一致。 */
+  function optLabel(group, value) {
+    var node = drawer.querySelector(
+      '.chip.opt[data-group="' + group + '"][data-value="' + value + '"]');
+    return node ? node.textContent.trim() : value;
+  }
+
+  /** 已选条件小标签（B3）：PC/平板显示在筛选按钮右边，每个能单独 ✕ 掉，末尾一个「清空」。
+   *  ⚠️ 手机档由 CSS（`.active-chips{display:none}`）整条隐藏 —— 用户 2026-10-07：
+   *  「我选 B3，但是手机端还是默认 B1」。所以这里**不判断点**，隐藏只归 CSS 管。 */
+  function renderActiveChips() {
+    if (!chipsBox) return;
+    chipsBox.textContent = "";
+    var picked = [];
+    Object.keys(FILTER_DEFAULTS).forEach(function (k) {
+      if (k === "sort") return;                       // 排序不算筛选（与角标同一口径）
+      if (state.filters[k] === FILTER_DEFAULTS[k]) return;
+      picked.push(k);
+    });
+    if (!picked.length) return;
+    picked.forEach(function (k) {
+      var value = state.filters[k];
+      chipsBox.appendChild(el("span", { class: "a-chip" }, [
+        el("span", { text: optLabel(k, value) }),
+        el("button", {
+          type: "button", text: "✕", title: "去掉这个条件",
+          "aria-label": "去掉条件 " + optLabel(k, value),
+          onclick: function (e) {
+            e.stopPropagation();
+            state.filters[k] = FILTER_DEFAULTS[k];
+            if (k === "date") clearDateTouched();
+            applyFilters();
+          }
+        })
+      ]));
+    });
+    chipsBox.appendChild(el("button", {
+      type: "button", class: "a-clear", text: "清空", onclick: resetFilters
+    }));
   }
 
   function setDrawer(open) {
     drawer.hidden = !open;
     drawerMask.hidden = !open;
     filterOpenBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) placeDrawer();          // 手机端要按按钮当前位置算 bottom，见 placeDrawer
   }
 
-  /** 筛选只作用于**板块完整列表页** —— 首页四板块是服务端算好的预览，
-      不经过筛选项。所以首页要把「筛选」按钮藏起来，不能"看得见、点了没反应"
-      （review-s9-01 补充审查 Spec (c)）。 */
+  // ------------------------------------------------------------------
+  // 手机端：「筛选」按钮搬进右下角浮层 + 面板贴着它上沿展开
+  // 用户 2026-10-07：「手机的筛选放到右边精简模式上方，也是点开就可以选，
+  // 这样才符合手机的操作逻辑」
+  // ------------------------------------------------------------------
+
+  /** 是否手机档 —— 与 app.css 的 `@media (max-width: mobile_breakpoint_px)` 同一条断点
+      （数值从 payload 来，见本文件开头的 `mq`；别在这里另写一个像素数）。 */
+  function isMobileView() { return !!mq.matches; }
+
+  /** 把**同一个** `#filter-open` 节点在「筛选行」与「右下角浮层」之间搬一次。
+      为什么搬节点而不是写两份 markup：文案、角标、已选态都只有一份实现，
+      两份按钮迟早会出现「角标数对不上」这种漂移。
+      插到浮层最前面 → 顺序是 [筛选, 精简, 返回顶部]，「筛选」正好在「精简」上方 ✓。 */
+  function placeFilterButton() {
+    if (!filterOpenBtn) return;
+    var floaters = document.getElementById("floaters");
+    var bar = document.getElementById("filterbar");
+    if (!floaters || !bar) return;
+    if (isMobileView()) {
+      if (filterOpenBtn.parentNode !== floaters) {
+        floaters.insertBefore(filterOpenBtn, floaters.firstChild);
+      }
+    } else if (filterOpenBtn.parentNode !== bar) {
+      bar.insertBefore(filterOpenBtn, bar.firstChild);
+    }
+  }
+
+  /** 手机端面板贴着浮层按钮的**上沿**展开 —— `bottom` 只能等打开那一刻量：
+      浮动按钮的堆叠高度会随「返回顶部」是否出现而变化（±50px），纯 CSS 算不出来。
+      桌面端面板是 `position:absolute` 挂在 `.filterbar` 上，这里什么都不用做
+      （顺手清掉手机端写过的 inline 值，免得残留）。 */
+  function placeDrawer() {
+    if (!drawer || !filterOpenBtn) return;
+    if (!isMobileView()) { drawer.style.bottom = ""; return; }
+    var r = filterOpenBtn.getBoundingClientRect();
+    drawer.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 8)) + "px";
+  }
+
+  /** 顶栏以下那两件「只属于首页 / 只属于列表页」的东西一起切：
+   *  · 「筛选」按钮 —— 只作用于**板块完整列表页**；首页四板块是服务端算好的预览，
+   *    不经过筛选项。所以首页要把按钮藏起来，不能"看得见、点了没反应"
+   *    （review-s9-01 补充审查 Spec (c)）。
+   *  · 「今日新增：新史低 X · 平史低 Y」摘要 —— refs.md §10.7 用户定的是
+   *    **只放首页**，五类标签页不放（列表页有自己的条数 lv-count）。
+   *    原先这个函数只管按钮，摘要就跟着留在列表页上了（用户 2026-10-07 报的违规）。
+   */
   function syncFilterVisibility() {
     if (filterOpenBtn) filterOpenBtn.hidden = !state.section;
+    if (chipsBox) chipsBox.hidden = !state.section;   // 已选条件同理，只属于列表页
+    if (summaryEl) summaryEl.hidden = !!state.section;
     if (!state.section) setDrawer(false);
   }
 
@@ -797,11 +966,7 @@
     filterOpenBtn.addEventListener("click", function () { setDrawer(true); });
     document.getElementById("drawer-close").addEventListener("click", function () { setDrawer(false); });
     drawerMask.addEventListener("click", function () { setDrawer(false); });
-    document.getElementById("filter-reset").addEventListener("click", function () {
-      Object.keys(FILTER_DEFAULTS).forEach(function (k) { state.filters[k] = FILTER_DEFAULTS[k]; });
-      clearDateTouched();        // 重置后「全部折扣」页重新自动放开日期
-      applyFilters();
-    });
+    document.getElementById("filter-reset").addEventListener("click", resetFilters);
     for (var f = 0; f < filterOpts.length; f++) {
       (function (opt) {
         opt.addEventListener("click", function () {
@@ -817,6 +982,7 @@
     });
     syncFilterUI();
     syncFilterVisibility();
+    placeFilterButton();          // 手机档要把按钮搬进右下角浮层（见 placeFilterButton）
   }
 
   // ------------------------------------------------------------------
@@ -863,6 +1029,8 @@
   // 效果已经能表达可点，气泡多此一举）—— refs.md §6.7 B11 的招 3 整条作废。
 
   function onBreakpointChange() {
+    placeFilterButton();               // 跨 600px 时「筛选」要在浮层与筛选行之间搬
+    setDrawer(false);                  // 搬完按钮面板位置就变了，直接收起更省事
     renderPicks();                     // 每页张数随断点变（口径只在 picksPerPage）
     if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }
   }

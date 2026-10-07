@@ -4,21 +4,27 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>关于本站 · SteamDailyLowest</title>
+{# favicon 与顶栏站点图标都来自 _brand.j2（唯一来源，与首页共用，改图标只改那一个文件）
+   —— 内联 SVG data URI，页面要能离线双击打开，不引 .ico / .svg 文件。 #}
+{% from "_brand.j2" import favicon_link, brand_mark %}
+{{ favicon_link() }}
 <link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
 </head>
 <body>
 
 <header class="topbar">
-  <div class="wrap topbar-inner">
-    {# 与首页同一套站点名标识（纯 CSS，不引外部字体） #}
+  {# topbar-about：手机上这一行塞不下（站点名 + 回首页 + 生成时间），CSS 里让它换行；
+     nav-static：本页没有汉堡按钮也没加载 app.js，导航必须豁免手机端的折叠规则，
+     否则「← 回首页」在手机上会被 display:none 藏掉。 #}
+  <div class="wrap topbar-inner topbar-about">
+    {# 与首页同一套站点名标识（纯 CSS，不引外部字体）；图标 2026-10-07 第二轮换成
+       「下跌折线触底 + 基线」，与 favicon 同一枚（macro 见 _brand.j2）。
+       ⚠️ 描边图形，别加 fill。 #}
     <a class="brand" href="index.html">
-      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 16.4L6.6 11L9.7 11L9.7 4.6L14.3 4.6L14.3 11L17.4 11Z"/>
-        <rect x="4.4" y="18.2" width="15.2" height="2.6" rx="1.3"/>
-      </svg>
+      {{ brand_mark() }}
       <span class="brand-text"><span class="brand-a">Steam</span><span class="brand-b">DailyLowest</span></span>
     </a>
-    <nav class="nav">
+    <nav class="nav nav-static">
       <a class="nav-item" href="index.html">← 回首页</a>
     </nav>
     <div class="generated">生成时间 {{ generated_at_text }}</div>
@@ -26,7 +32,12 @@
 </header>
 
 {# S9（2026-10-06）：从首页搬过来的那一堆数字与说明都在这儿。
-   筛选口径由 report.criteria_notes(cfg) 生成 —— 改阈值这里自动跟着变，别写死。 #}
+   筛选口径由 report.criteria_notes(cfg) 生成 —— 改阈值这里自动跟着变，别写死。
+
+   2026-10-07 用户：「关于网站排版优化一下，空白处太多，几个板块可以放一排显示」
+   → 所有 .block 套进 `.blocks`，由 CSS 多栏排布（手机 1 栏 / ≥601 两栏；
+   CSS 侧明确不上 3 栏 —— app.css `.about .blocks` 只这两条）。
+   ⚠️ 加块、挪块都在这个容器里改；「每日更新日志」那张宽表带 `.wide`（通栏）。 #}
 <main class="wrap about">
 
   <h1>关于本站</h1>
@@ -34,6 +45,8 @@
     每天自动抓取 Steam 折扣，筛出「当日新增的史低」和正在进行的史低，
     生成静态页面。第一次上线是 2026-09-21。
   </p>
+
+  <div class="blocks">
 
   <section class="block">
     <h2>本轮抓取概览</h2>
@@ -50,15 +63,6 @@
       <tr><th>比价批次</th><td class="num">{{ overview.compare_batches }}</td></tr>
       <tr><th>价格对不上</th><td class="num">{{ overview.price_mismatch | length }} 条</td></tr>
       <tr><th>最近一次运行</th><td>{{ overview.last_run_at or '—' }}</td></tr>
-    </table>
-  </section>
-
-  <section class="block">
-    <h2>史低构成（本轮进列表）</h2>
-    <table class="kv">
-      <tr><th>新史低</th><td class="num">{{ low_points["new"] }} 条</td></tr>
-      <tr><th>平史低</th><td class="num">{{ low_points["tie"] }} 条</td></tr>
-      <tr><th>史低待确认</th><td class="num">{{ low_points["unknown"] }} 条</td></tr>
     </table>
   </section>
 
@@ -95,6 +99,39 @@
   {% endif %}
 
   <section class="block">
+    <h2>史低构成（本轮进列表）</h2>
+    <table class="kv">
+      <tr><th>新史低</th><td class="num">{{ low_points["new"] }} 条</td></tr>
+      <tr><th>平史低</th><td class="num">{{ low_points["tie"] }} 条</td></tr>
+      <tr><th>史低待确认</th><td class="num">{{ low_points["unknown"] }} 条</td></tr>
+    </table>
+  </section>
+
+  {# ⚠️ 块顺序 = 网格的「配行」（`.about .blocks` 是两列，同一行的两张卡会被拉成等高）：
+     把高度相近的两块排在一起，行内留白才小。实测各块高度（1440 视口）：
+       本轮抓取概览 471 · 筛选口径 432 · 数据来源 229 · 汇率 186 ·
+       史低构成 165 · 免责 106 · 仓库与运行状态 103
+     → 配行：(471,432) 差 39 · (229,186) 差 43 · (165,106) 差 59 · (103, 空)
+     所以顺序是：概览 → 筛选口径 → 数据来源 → 汇率 → 史低构成 → 免责 → 仓库 →（日志跨满整行）。
+     ⚠️ 改块内容（尤其筛选口径的文案长度）会改变这些高度，配行会漂；挪块前后各量一次。 #}
+  <section class="block">
+    <h2>免责</h2>
+    <p class="lead">
+      价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准，且不代表可购买。
+      本站与 Valve、IsThereAnyDeal 无隶属关系。
+    </p>
+  </section>
+
+  <section class="block">
+    <h2>仓库与运行状态</h2>
+    <p class="foot-links">
+      <a href="{{ links.repo }}" target="_blank" rel="noopener">源码仓库</a>
+      <span class="sep">·</span>
+      <a href="{{ links.actions }}" target="_blank" rel="noopener">Actions 运行记录（判断今天有没有正常跑）</a>
+    </p>
+  </section>
+
+  <section class="block wide">
     <h2>每日更新日志</h2>
     {% if run_log %}
     <table class="logs">
@@ -115,23 +152,7 @@
     {% endif %}
   </section>
 
-  <section class="block">
-    <h2>免责</h2>
-    <p class="lead">
-      价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准，且不代表可购买。
-      本站与 Valve、IsThereAnyDeal 无隶属关系。
-    </p>
-  </section>
-
-  <section class="block">
-    <h2>仓库与运行状态</h2>
-    <p class="foot-links">
-      <a href="{{ links.repo }}" target="_blank" rel="noopener">源码仓库</a>
-      <span class="sep">·</span>
-      <a href="{{ links.actions }}" target="_blank" rel="noopener">Actions 运行记录（判断今天有没有正常跑）</a>
-    </p>
-  </section>
-
+  </div>
 </main>
 
 <footer class="wrap footer">
