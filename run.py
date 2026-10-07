@@ -795,7 +795,7 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     info["paths"] = report.render(
         cfg, cards, stats, now, fx=fx, steam=info.get("steam"),
         upcoming_items=upcoming_cards if has_upcoming else None,
-        featured=True, all_cards=all_cards, extra_counts=extra_counts,
+        all_cards=all_cards, extra_counts=extra_counts,
         run_log=state.run_log,   # S9：「关于网站」页的每日更新日志
     )
     return info

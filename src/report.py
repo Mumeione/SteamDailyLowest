@@ -41,6 +41,11 @@ GROUP_COLLAPSED = {
 #: 这三个视图的数据量大（今日筛选链全量，约 5 千条、大促峰值 3 万），
 #: 拆到独立 ``all.js`` 首次点击时懒加载（spec §1 决策 9），
 #: 服务端只在 data.js 里预置按钮 count。
+#: ⚠️ 2026-10-08：「即将过期」的分组数据也移出 data.js（``view_groups`` 键删除，
+#: 大促尾期它 ≈ 全池，曾把 data.js 撑到 7.4MB）—— S9 前端本就不读它，
+#: 「即将到期」板块的完整列表一直走 all.js 的 ``expiring`` 板块。
+#: ``views`` 目前**没有前端消费者**（S9 不渲染这组按钮，app.js 也不读 payload.views），
+#: 只有测试在读 —— 是否删它属另一轮「payload 拆袋」，本轮不动。
 VIEWS = [
     {"key": "new_today", "label": "当日新增", "enabled": True},
     {"key": "week", "label": "本周(14天)", "enabled": True},
@@ -403,7 +408,13 @@ FEATURED_LAYERS = {
 
 
 def featured_sort_key(card: dict) -> tuple:
-    """「当日新增 · 精选」扁平列表的排序键（验收 §6：单测锁定）。"""
+    """分层字典序排序键：新史低 → 折扣力度 → 评价数（验收 §6：单测锁定）。
+
+    ⚠️ 2026-10-08：名字里的「featured」是历史遗留 —— 原「当日新增 · 精选」扁平组
+    （``build_featured_group``）已随 data.js 首屏瘦身删除。本键保留，现服务两处：
+    ``pick_top`` 的兜底排序（推荐分全部缺席时）与 ``latest.json`` 的 ``shown`` 顺序。
+    板块排序用的是另一套（``featured_score``，见 ``_section_sort``），不是本键。
+    """
     reviews_count = review_count(card)
     return (
         FEATURED_LAYERS.get(card.get("low_class") or classify.STEAM_LOW_UNKNOWN, 2),
@@ -422,24 +433,6 @@ def _majority_start(items: list[dict]) -> str | None:
     starts = [item["start_text"] for item in items if item.get("start_text")]
     counts = Counter(starts)
     return max(counts, key=lambda text: (counts[text], text)) if counts else None
-
-
-def build_featured_group(cards: list[dict]) -> dict:
-    """「当日新增」视图改为**扁平精选列表**（重构 S5，用户裁决 2026-10-05）。
-
-    不再按口碑分档分组 —— 分层字典序要跨组扁排，与 tier 分组互斥；
-    「好评达标 / 高热度」降级为卡片标签（前端在 featured 组内渲染 tier 标签）。
-    """
-    ordered = sorted(cards, key=featured_sort_key)
-    return {
-        "key": "featured",
-        "label": "精选",
-        "criteria": "新史低 → 折扣力度 → 评价数",
-        "collapsed": False,
-        "count": len(ordered),
-        "start_text": _majority_start(ordered),
-        "items": ordered,
-    }
 
 
 def build_groups(items: list[dict], cfg: dict) -> list[dict]:
@@ -936,19 +929,19 @@ def criteria_notes(cfg: dict) -> list[dict]:
 def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
            *, fx: dict | None = None, steam: dict | None = None,
            upcoming_items: list[dict] | None = None,
-           featured: bool = False,
            all_cards: list[dict] | None = None,
            extra_counts: dict | None = None,
            run_log: list[dict] | None = None) -> dict:
     """写出一整套静态文件，返回产出路径。
 
-    ``upcoming_items``：「即将过期」视图已进列表的卡片数据（调用方先跑完同一条
-    分档管线再传进来）；``None`` 表示本轮不产出该视图（payload 不带 ``view_groups``，
-    前端按钮点了也是空态）。
+    ``upcoming_items``：「即将过期」视图的卡片数据。⚠️ 2026-10-08 起**只用于
+    views 按钮的 count 下发，不再内联进 payload**（``view_groups`` 键已删除）——
+    大促尾期「即将过期」≈ 全池（实测 7202 条内联卡片把 data.js 撑到 7.4MB，首屏几十秒）。
+    「即将到期」板块的完整列表改走 all.js 的 ``expiring`` 板块（懒加载），
+    expiring.json 快照导出仍由 run.py 的 ``upcoming_shown_items`` 负责。
 
-    ``featured``（重构 S5）：「当日新增」走扁平精选列表（``build_featured_group``），
-    ``items`` 为当日新增的原始卡片即可，排序在组内现做；
-    ``False``（默认）维持旧的口碑分档分组（兼容直接调用 render 的测试与工具）。
+    ``items`` 为当日新增的原始卡片：计入 low_points 与 new_today 的按钮 count，
+    ``all_cards`` 缺席时兜底作首页板块池子（兼容直接调用 render 的测试与工具）。
 
     ``all_cards``：「全部」视图的数据 —— 今日筛选链通过的全量卡片，每张带
     ``views`` 列表（week/active/new_today/upcoming 成员标志，run.py 计算）；
@@ -965,10 +958,6 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         shutil.copyfile(STATIC_DIR / name, output_dir / "static" / name)
 
     version = str(int(now.timestamp()))
-    groups = [build_featured_group(items)] if featured else build_groups(items, cfg)
-    upcoming_groups = (
-        build_groups(upcoming_items, cfg) if upcoming_items is not None else None
-    )
     # 视图按钮的 count：new_today / upcoming 从本集合取；week / active / all
     # 由调用方统计好经 ``extra_counts`` 传入（懒加载视图的数据不在本 payload 里）
     view_counts = {
@@ -1014,9 +1003,10 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "overview": stats,
         "low_points": low_points,
         "views": views,
-        "groups": groups,
-        #: 即将过期等辅助视图的分组数据（key 与 VIEWS 对应；当日新增走顶层 groups）
-        "view_groups": {"upcoming": upcoming_groups} if upcoming_groups is not None else {},
+        #: ⚠️ payload 里**没有** ``groups`` / ``view_groups``（2026-10-08 删除）：
+        #: S9 首页板块走 sections、大卡走 picks、「即将到期」完整列表走 all.js 的
+        #: expiring —— 没有前端消费者。这两个键曾让 data.js 在大促尾期膨胀到
+        #: 7.4MB（首屏几十秒）——别加回来。
         #: S9 首页四板块（池子 = 「全部」视图那批卡片，见 build_sections 注释）
         "sections": sections,
         #: S9 顶部「今日最值」大卡横排候选（每页张数 = pick_page，前端不再自抄一份）
@@ -1097,8 +1087,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
                 "price_text": item["price_text"],
                 "tier": item["tier"],
             }
-            for group in groups
-            for item in group["items"]
+            for item in sorted(items, key=featured_sort_key)  # 原 featured 组的顺序（组已删，排序键保留）
         ],
     }
     (output_dir / "latest.json").write_text(

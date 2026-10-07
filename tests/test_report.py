@@ -371,17 +371,9 @@ class FeaturedSortTest(unittest.TestCase):
         ordered = sorted(cards, key=report.featured_sort_key)
         self.assertEqual([c["title"] for c in ordered], ["A", "B"])
 
-    def test_build_featured_group_shape(self):
-        cards = [self.card("tie", 90, 5000, "B"),
-                 self.card("new", 20, 100, "A")]
-        cards[0]["start_text"] = "2026-10-05 01:20"
-        cards[1]["start_text"] = "2026-10-05 01:20"
-        group = report.build_featured_group(cards)
-        self.assertEqual(group["key"], "featured")
-        self.assertEqual(group["criteria"], "新史低 → 折扣力度 → 评价数")
-        self.assertFalse(group["collapsed"])
-        self.assertEqual([c["low_class"] for c in group["items"]], ["new", "tie"])
-        self.assertEqual(group["start_text"], "2026-10-05 01:20")
+    # build_featured_group 已随 2026-10-08 payload 瘦身删除（S9 前端不读分组键；
+    # featured 组是死数据，见 report.render 的 docstring）。
+    # 分层排序键本身由上面几条 featured_sort_key 单测锁定。
 
 
 class LazyViewsTest(unittest.TestCase):
@@ -432,7 +424,7 @@ class LazyViewsTest(unittest.TestCase):
                  "active": sum(1 for c in all_cards if "active" in c["views"]),
                  "all": len(all_cards)}
         cfg = dict(CFG, output_dir=str(out))
-        report.render(cfg, [], _STATS, self.now, featured=True,
+        report.render(cfg, [], _STATS, self.now,
                       all_cards=all_cards, extra_counts=extra)
         payload = _load_payload(out)
         by_key = {v["key"]: v for v in payload["views"]}
@@ -460,7 +452,7 @@ class LazyViewsTest(unittest.TestCase):
         card = report.build_card(entry, self.now)
         card["views"] = ["week", "active", "new_today", "upcoming"]
         cfg = dict(CFG, output_dir=str(out))
-        report.render(cfg, [], _STATS, self.now, featured=True,
+        report.render(cfg, [], _STATS, self.now,
                       all_cards=[card], extra_counts={"week": 1, "active": 1, "all": 1})
         all_payload = json.loads(
             (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
@@ -469,22 +461,8 @@ class LazyViewsTest(unittest.TestCase):
         self.assertEqual(all_payload["groups"][0]["criteria"],
                          "好评率 ≥ 70% 且 评价数 ≥ 100")
 
-    def test_featured_flag_switches_group_shape(self):
-        """featured=True：当日新增变单一精选组；False：维持口碑分档分组（兼容旧调用）。"""
-        import tempfile
-        card = {"tier": classify.TIER_QUALITY, "cut": 50, "title": "A",
-                "title_zh": None, "appid": 1, "low_class": "new",
-                "low_label": "新史低", "price_text": "¥1", "start_text": None}
-        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
-        cfg = dict(CFG, output_dir=str(out))
-        report.render(cfg, [card], _STATS, self.now, featured=True)
-        payload = _load_payload(out)
-        self.assertEqual([g["key"] for g in payload["groups"]], ["featured"])
-
-        out2 = Path(tempfile.mkdtemp(prefix="sdl-test-"))
-        report.render(dict(CFG, output_dir=str(out2)), [card], _STATS, self.now)
-        payload2 = _load_payload(out2)
-        self.assertEqual([g["key"] for g in payload2["groups"]], [classify.TIER_QUALITY])
+    # featured 开关与旧的 groups 分组已随 2026-10-08 payload 瘦身删除 ——
+    # data.js 不再带 groups/view_groups（S9 前端不读分组键）。
 
 
 if __name__ == "__main__":

@@ -206,7 +206,9 @@
   <p>价格与好评率仅供参考；区域价格仅供比价，以 Steam 实际结算为准。</p>
 </footer>
 
-<script src="data.js?v={{ assets_version }}"></script>
-<script src="static/app.js?v={{ assets_version }}"></script>
+<!-- defer（2026-10-08）：即使 data.js 意外膨胀也不阻塞首屏解析；
+     defer 下执行顺序仍保证 data.js 先于 app.js。 -->
+<script src="data.js?v={{ assets_version }}" defer></script>
+<script src="static/app.js?v={{ assets_version }}" defer></script>
 </body>
 </html>

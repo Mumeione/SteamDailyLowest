@@ -105,23 +105,25 @@ class RenderPassTest(unittest.TestCase):
         )
         return info, payload
 
-    def test_featured_single_group_with_card_labels(self):
-        """重构 S5：当日新增 = 扁平精选列表（单一 featured 组）；
-        档位信息降级为卡片 tier_label，不得丢失或漂移。"""
+    def test_section_cards_carry_tier_labels(self):
+        """原「featured 单一组」已随 2026-10-08 payload 瘦身删除（S9 只读
+        sections/picks）；档位信息降级为卡片 tier_label，在板块预览卡片上
+        不得丢失或漂移。"""
         _, payload = self._run()
-        self.assertEqual([g["key"] for g in payload["groups"]], ["featured"])
         card_labels = {i["tier"]: i["tier_label"]
-                       for g in payload["groups"] for i in g["items"]}
+                       for s in payload["sections"] for i in s["items"]}
         self.assertEqual(card_labels.get(classify.TIER_QUALITY), "好评达标")
         self.assertEqual(card_labels.get(classify.TIER_NOTABLE), "高热度 · 口碑不一")
 
-    def test_featured_order_is_layered_dict_order(self):
-        """精选列表顺序 = 分层字典序：新史低在前、平史低在后（验收 §6）。"""
-        _, payload = self._run()
-        items = payload["groups"][0]["items"]
-        layers = [report.FEATURED_LAYERS[i["low_class"]] for i in items]
-        self.assertEqual(layers, sorted(layers),
-                         "新史低必须整体排在平史低 / 待确认之前")
+    def test_featured_sort_key_layers_new_first(self):
+        """精选排序键 = 分层字典序：新史低在前、平史低在后（验收 §6）。
+        （featured 组已删；排序键现由 latest.json 与 pick_top 兜底复用，
+        板块排序用的是另一套 report.featured_score，见 _section_sort。）"""
+        new_card = {"low_class": "new", "cut": 50, "title": "A"}
+        tie_card = {"low_class": "tie", "cut": 90, "title": "B"}
+        self.assertLess(report.featured_sort_key(new_card),
+                        report.featured_sort_key(tie_card),
+                        "新史低必须整体排在平史低 / 待确认之前")
 
     def test_no_evaluative_wording_anywhere(self):
         self._run()
@@ -129,12 +131,8 @@ class RenderPassTest(unittest.TestCase):
         self.assertNotIn("优质", text)
         self.assertNotIn("热门 · 褒贬不一", text)
 
-    def test_featured_group_carries_criteria(self):
-        _, payload = self._run()
-        for group in payload["groups"]:
-            self.assertTrue(group["criteria"], group["label"])
-        self.assertEqual(payload["groups"][0]["criteria"],
-                         "新史低 → 折扣力度 → 评价数")
+    # test_featured_group_carries_criteria 已随 featured 组删除（板块口径文案
+    # 的唯一来源是「关于网站」页的 criteria_notes，见 HOME_SECTIONS 注释）。
 
     def test_cold_game_is_not_shown(self):
         info, _ = self._run()
@@ -150,7 +148,7 @@ class RenderPassTest(unittest.TestCase):
         把已经有中文名的游戏退化成英文名。
         """
         info, payload = self._run()
-        items = [i for g in payload["groups"] for i in g["items"]]
+        items = [i for s in payload["sections"] for i in s["items"]]
         good = next(i for i in items if i["game_id"] == "g-good")
         self.assertEqual(good["title_zh"], "好游戏")
 
@@ -163,22 +161,22 @@ class RenderPassTest(unittest.TestCase):
         self.assertNotIn("criteria-box", html)
         self.assertEqual(payload["list"]["breakpoint"], 768)
 
-    def test_upcoming_view_renders_separately(self):
-        """「即将过期」视图：独立进 view_groups，按钮 count 对应，暂不带比价。"""
+    def test_upcoming_counted_but_not_inlined(self):
+        """「即将过期」：只下发按钮 count，**不再内联 view_groups**（2026-10-08，
+        大促尾期它 ≈ 全池，曾把 data.js 撑到 7.4MB、首屏几十秒）。
+        完整列表走 all.js 的 expiring 板块；expiring.json 导出走
+        ``upcoming_shown_items``（另一条测试锁定）。"""
         expiring = deal("g-expiring", 444, 90, "Expiring Game")
         expiring["expiry"] = "2026-09-23T10:00:00+08:00"  # NOW + 18h → 48h 窗口内
         self.state.set_meta("g-expiring", 444, {"score": 85, "count": 5000}, NOW)
         info, payload = self._run(upcoming=[expiring])
 
-        groups = payload["view_groups"]["upcoming"]
-        items = [i for g in groups for i in g["items"]]
-        self.assertEqual([i["game_id"] for i in items], ["g-expiring"])
+        self.assertNotIn("view_groups", payload)
+        self.assertNotIn("groups", payload)
         self.assertEqual(info["upcoming_shown"], 1)
         upcoming_view = next(v for v in payload["views"] if v["key"] == "upcoming")
         self.assertTrue(upcoming_view["enabled"])
         self.assertEqual(upcoming_view["count"], 1)
-        # 比价数据由 enrich 阶段填（本测试不跑 enrich）→ 详情区由前端回落单栏
-        self.assertEqual(items[0]["compare"], [])
 
     def test_upcoming_shown_items_is_post_tier_deduped(self):
         """upcoming_shown_items：已合并详情、已按 appid 去重、且**已过**口碑分档（is_shown）——
@@ -201,9 +199,10 @@ class RenderPassTest(unittest.TestCase):
         self.assertEqual(info["upcoming_shown"], 1)
 
     def test_upcoming_view_absent_when_not_produced(self):
-        """不传 upcoming 时 payload 不带 view_groups（旧产物兼容口径）。"""
+        """不传 upcoming 时 views.upcoming count 为 0；payload 永远不带
+        view_groups（数据本体只在 all.js / expiring.json）。"""
         _, payload = self._run()
-        self.assertEqual(payload["view_groups"], {})
+        self.assertNotIn("view_groups", payload)
         upcoming_view = next(v for v in payload["views"] if v["key"] == "upcoming")
         self.assertTrue(upcoming_view["enabled"])
         self.assertEqual(upcoming_view["count"], 0)
@@ -252,13 +251,11 @@ class RenderPassTest(unittest.TestCase):
         payload = json.loads(
             (self.out / "data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
         )
-        # 重构 S5：扁平精选列表里「详情待补」不丢 —— 卡片仍在（tier 标签标注），
-        # 排在评价数维度之后（无 reviews），但不被吞掉
-        self.assertEqual([g["key"] for g in payload["groups"]], ["featured"])
-        items = payload["groups"][0]["items"]
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["tier"], classify.TIER_PENDING)
-        self.assertEqual(items[0]["tier_label"], "详情待补")
+        # 「详情待补」不丢 —— 卡片仍进板块预览（tier 标签标注），不被吞掉
+        new_low = next(s for s in payload["sections"] if s["key"] == "new_low")
+        self.assertEqual(len(new_low["items"]), 1)
+        self.assertEqual(new_low["items"][0]["tier"], classify.TIER_PENDING)
+        self.assertEqual(new_low["items"][0]["tier_label"], "详情待补")
 
 
 if __name__ == "__main__":

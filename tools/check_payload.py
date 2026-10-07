@@ -5,6 +5,11 @@
 分组标题与卡片标签是否一致、中文名有没有用上、跨区比价算得对不对、
 判定口径字段有没有彻底从 payload 里清掉（批 F 后口径只在 README）。
 
+⚠️ 2026-10-08：data.js 首屏瘦身、不再写 ``groups`` / ``view_groups``，
+分组卡片改从 ``all.js``（``window.ALL_DATA.groups``，「全部」视图的全量分组）读取 ——
+所以卡片级覆盖统计（中文名 / 比价 / 分类 / 剩 X 天）是**全部池**口径，不再只数当日新增；
+「概览色点」仍与 data.js 的当日新增口径对齐（见下）。
+
 用法：`python tools/check_payload.py` → 结果落 data/probe/report_check.txt
 """
 
@@ -32,6 +37,13 @@ def main() -> int:
         return 1
     payload = json.loads(data_js.read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
 
+    all_js = ROOT / "output" / "all.js"
+    if not all_js.exists():
+        print(f"没找到 {all_js} —— 分组卡片现在只由 all.js 承载"
+              f"（data.js 已停写 groups），先跑一次 run.py")
+        return 1
+    all_payload = json.loads(all_js.read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
+
     lines: list[str] = []
     lines.append("=" * 72)
     lines.append("报表内容自检（output/data.js）")
@@ -40,13 +52,13 @@ def main() -> int:
     lines.append("fx      : " + json.dumps(payload.get("fx"), ensure_ascii=False))
     lines.append("steam   : " + json.dumps(payload.get("steam"), ensure_ascii=False))
 
-    groups = payload.get("groups") or []
+    groups = all_payload.get("groups") or []
     items = [i for g in groups for i in g["items"]]
     lines.append("")
-    lines.append("--- 分组（标题 + 入组条件）---")
+    lines.append("--- 分组（标题 + 入组条件，来自 all.js「全部」视图）---")
     for g in groups:
         lines.append(f"  {g['label']} | {g['criteria']} | {g['count']} 条 | 默认收起={g['collapsed']}")
-    lines.append(f"  合计进列表 {len(items)} 条")
+    lines.append(f"  合计卡片 {len(items)} 条")
 
     lines.append("")
     lines.append("--- 分组标签 vs 卡片标签（必须一致）---")
@@ -129,12 +141,15 @@ def main() -> int:
                  + ("是 ✓" if not strange else f"否 ✗ 多出 {strange}"))
 
     lines.append("")
-    lines.append("--- 概览色点 vs 分组明细（必须自洽）---")
+    lines.append("--- 概览色点 vs 当日新增进列表（必须自洽）---")
     points = payload.get("low_points") or {}
     lines.append("  low_points: " + json.dumps(points, ensure_ascii=False))
     points_sum = sum(int(v) for v in points.values())
-    lines.append(f"  色点合计 {points_sum} / 进列表 {len(items)}"
-                 f" -> {'一致' if points_sum == len(items) else '★不一致★'}")
+    # low_points 的池子是「当日新增」（data.js），不是 all.js 的「全部」池 ——
+    # 当日新增进列表条数由 overview.new_today_shown 给出（= 传进 render 的 items 条数）
+    new_today_shown = (payload.get("overview") or {}).get("new_today_shown")
+    lines.append(f"  色点合计 {points_sum} / 当日新增进列表 {new_today_shown}"
+                 f" -> {'一致' if points_sum == new_today_shown else '★不一致★'}")
 
     lines.append("")
     lines.append("--- 「剩 X 天」---")
@@ -167,7 +182,7 @@ def main() -> int:
     left = [f for f in removed if any(f in i for i in items)]
     lines.append("  已删字段无残留：" + ("是 ✓" if not left else f"否 ✗ {left}"))
     ok = (ok and not left and not bad_class and not bad_pair
-          and points_sum == len(items) and not leaks
+          and points_sum == new_today_shown and not leaks
           and not not_in_js and not strange)
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"结果已写入 {OUT}")
