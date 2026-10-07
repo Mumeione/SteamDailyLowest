@@ -887,7 +887,7 @@ N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结
 > **「已过期」（`expiry <= now`）已从视图里删除**（批 F2）：折扣过期后对买家毫无浏览价值
 > （用户原话「过期折扣犹如砒霜」）。`classify.is_expired()` 与
 > `expired_retention_days`（过期后留 7 天再清理）**都保留** —— 留存清理仍要用；
-> 但 `VIEW_KEYS` / `report.VIEWS` 里不再有它，`in_view("expired", …)` 会抛 `ValueError`。
+> 但 `classify.VIEW_KEYS` 里不再有它，`in_view("expired", …)` 会抛 `ValueError`。
 
 窗口一律按**折扣开始时间** `timestamp` 分组；状态一律按 `expiry` 判定。
 **所有视图都先过「史低」这道门**——非史低的普通折扣不进报表。

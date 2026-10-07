@@ -720,8 +720,8 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     :func:`classify.in_view` 筛好）；``None`` = 本轮不产出该视图。
 
     ``all_entries``（重构 S5）：今日筛选链通过的**全量**史低（hist_low），
-    用于「全部」视图的 all.js 与「本周 / 折扣中」的按钮 count；
-    ``None`` = 不产出（三个懒加载视图按钮自动禁用）。
+    用于「全部」视图的 all.js（懒加载数据源）；
+    ``None`` = 不产出 all.js。
     """
     def build_view(entries: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
         merged = merge_details(state, entries, cfg)
