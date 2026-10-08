@@ -119,6 +119,40 @@
   function reviewCount(item) { return ((item.reviews || {}).count) || 0; }
   function reviewScore(item) { return ((item.reviews || {}).score) || 0; }
 
+  // 评价数紧凑写法（2026-10-08 用户定案：千位以上用「千 / 万」，真实数字放 title 悬停看）。
+  // 起因：`.row-sub` 是单行 nowrap+overflow:hidden，6~7 位数（「228,750 条」≈63px）会把
+  // 行尾的「剩余天数」挤出可视区（PC/平板一行结构行窄时尤其明显）。紧凑后最长「22.9万」
+  // ≈35px，落在 `.rc` 的预留宽（3.4em，见 app.css）内，天数不再被裁。
+  function compactCount(n) {
+    n = n || 0;
+    if (n >= 10000) {
+      var w = n / 10000;
+      return (w >= 100 ? Math.round(w) : Math.round(w * 10) / 10) + "万";
+    }
+    if (n >= 1000) {
+      var k = Math.round(n / 100) / 10;
+      return k >= 10 ? "1万" : k + "千";   // 9999 四舍五入到 10 千会别扭，归到「1万」
+    }
+    return String(n);
+  }
+
+  // 商店 / 小黑盒链接（2026-10-08，问题1）：all.js 不再下发这两个 URL —— 由 appid 现拼，
+  // 口径与 src/report.py 原先拼的一致。data.js 的卡片仍带现成值，这里统一走现拼。
+  function steamUrl(item) { return item.appid ? "https://store.steampowered.com/app/" + item.appid + "/" : null; }
+  function xhhUrl(item) { return item.appid ? "https://www.xiaoheihe.cn/games/detail/" + item.appid : null; }
+
+  // 封面 URL（2026-10-08，问题1）：all.js 不再下发 banner，改下发紧凑的 `art` 扩展名码
+  // （见 src/report.py 的 boxart_code）—— 由 game_id（= ITAD 资产 uuid）现拼。
+  //   · data.js 卡片仍带 item.banner（现成 URL）→ 直接用；
+  //   · all.js 卡片：art 为 "jpg"/"png" → 拼 assets.isthereanydeal.com/<game_id>/boxart.<ext>；
+  //     art 为 null（无封面，约 9%）→ null，渲染灰块占位（buildRow / pickCard）。
+  function bannerUrl(item) {
+    if (item.banner) return item.banner;
+    if (item.art === undefined) return null;      // 既无 banner 也无 art = 真的没有封面
+    if (!item.art || !item.game_id) return null;
+    return "https://assets.isthereanydeal.com/" + item.game_id + "/boxart." + item.art;
+  }
+
   function displayTitle(item) { return item.title_zh || item.title || "(无标题)"; }
   function enTitle(item) {
     return (item.title_zh && item.title && item.title_zh !== item.title) ? item.title : "";
@@ -164,7 +198,8 @@
       //    分隔点一起隐藏 —— 那一行要同时塞下「评价·剩余天数 + 图标 + 力度条 + 折扣%」，
       //    实测 390px 宽放不下（143+8+182=333 刚好顶满，窄一点就折行成三行）。
       //    评价数是最不要紧的一格（好评率与「剩 X 天」都在），让位给它。
-      parts.push(el("span", { class: "rc", text: rv.count.toLocaleString("en-US") + " 条" }));
+      parts.push(el("span", { class: "rc", text: compactCount(rv.count),
+                              title: rv.count.toLocaleString("en-US") + " 条" }));
     } else {
       parts.push(el("span", { text: "详情待补" }));
     }
@@ -237,16 +272,17 @@
 
   function buildRow(item) {
     var links = el("span", { class: "links" }, [
-      iconLink(item.steam_url, "Steam 商店页", ICONS.steam),
-      iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
+      iconLink(steamUrl(item), "Steam 商店页", ICONS.steam),
+      iconLink(xhhUrl(item), "小黑盒", ICONS.heihe)
     ]);
     var tags = el("div", { class: "row-tags" }, [
       links,
       cutBar(item.cut)     // 史低类型已改由 .row 的**左侧色条**表达，标签行不再放徽章
     ]);
 
-    var thumb = item.banner
-      ? el("img", { class: "row-thumb", src: item.banner, alt: "",
+    var thumbSrc = bannerUrl(item);
+    var thumb = thumbSrc
+      ? el("img", { class: "row-thumb", src: thumbSrc, alt: "",
                     loading: "lazy", decoding: "async", width: "44", height: "62" })
       : el("div", { class: "row-thumb" });
 
@@ -361,9 +397,10 @@
   var picksNav = document.querySelector("#picks .deck-nav");
 
   function pickCard(item, rank) {
+    var pickSrc = bannerUrl(item);
     var art = el("div", { class: "pick-art" }, [
-      item.banner ? el("img", { src: item.banner, alt: "", loading: "lazy",
-                                decoding: "async" }) : null,
+      pickSrc ? el("img", { src: pickSrc, alt: "", loading: "lazy",
+                            decoding: "async" }) : null,
       el("span", { class: "pick-rank", text: "#" + rank })
     ]);
     // 信息区照 **gg.deals** 的结构（用户 2026-10-07 给的参照图）。
@@ -377,14 +414,14 @@
     var lowRow = el("div", { class: "pick-low" }, [
       el("span", { class: "pick-cut", text: "-" + (item.cut || 0) + "%" }),
       el("span", { class: "links" }, [
-        iconLink(item.steam_url, "Steam 商店页", ICONS.steam)
+        iconLink(steamUrl(item), "Steam 商店页", ICONS.steam)
       ])
     ]);
     var priceRow = el("div", { class: "pick-price-row" }, [
       el("span", { class: "pick-was", text: item.regular_text }),
       el("span", { class: "pick-price", text: item.price_text }),
       el("span", { class: "links" }, [
-        iconLink(item.xiaoheihe_url, "小黑盒", ICONS.heihe)
+        iconLink(xhhUrl(item), "小黑盒", ICONS.heihe)
       ])
     ]);
     var body = el("div", { class: "pick-body" }, [

@@ -181,3 +181,46 @@ def assemble_rows(raw_rows: list[dict], entry: dict, fx: dict | None) -> list[di
             "diff_pct": diff,
         })
     return rows
+
+
+def estimate_compare(state, entry: dict, countries: list[str], fx: dict | None,
+                     appid: int | None = None) -> list[dict]:
+    """用**区域原价永久缓存** × 国区折扣比例，估算该条目的跨区比价行。
+
+    口径（2026-10-08 用户定案，此前只在本地预览里有、生产漏了）：
+    **原价永久缓存就是拿来估算现价的**。每轮现查只覆盖「当日新增 + 即将到期」
+    两个板块 —— 每日抓取的意义是防打折**中途降价**，这两板块的比价必须真实；
+    其余板块（热门/大额折扣等历史条目）的比价行用估算：
+
+        外区现价 = 外区原价缓存 × (国区现价 / 国区原价)
+
+    refs 实测：15/20 与真查完全一致、5/20 差 1~2 个百分点（各区四舍五入反算）。
+    差价百分比与 ¥ 换算按当天汇率现算（:func:`assemble_rows`），不进缓存。
+
+    条目缺 appid / 国区现价 / 国区原价，或该游戏没有任何区域的原价缓存时
+    返回 ``[]`` —— 前端回落「本轮未取到数据」。真查覆盖的条目**不该走到这里**
+    （调用方先查真查结果，命中就别调本函数）。
+
+    ``appid``：`seen_deal` 批次的条目没有 appid（它在 game_meta 里），由调用方
+    用 ``state.meta(...)`` 解析后传入（同 graft_compare_from_cache 的教训）。
+    """
+    appid = appid or entry.get("appid")
+    base, regular = entry.get("price_int"), entry.get("regular_int")
+    if not appid or not base or not regular:
+        return []
+    ratio = base / regular
+    raw_rows = []
+    for cc in countries:
+        initial = state.compare_original(appid, cc)
+        if initial is None:
+            continue
+        currency = (state.compare_cache.get(state.compare_key(appid, cc)) or {}).get("currency")
+        raw_rows.append({
+            "cc": cc,
+            "label": COMPARE_LABELS.get(cc, cc),
+            "currency": currency,
+            "final": int(round(initial * ratio)),
+        })
+    if not raw_rows:
+        return []
+    return assemble_rows(raw_rows, entry, fx)

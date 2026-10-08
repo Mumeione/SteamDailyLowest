@@ -765,16 +765,42 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     stats = stats_of(info)
     labels = report.tier_labels(cfg)
 
+    # ---- 比价结果回灌 + 估算补齐（S9 回归修复 + 2026-10-08 估算定案）----
+    # enrich 就地写的是 `shown` / `upcoming_shown` 这批 dict；而首页四板块、大卡、
+    # all.js 的列表都走下面 `build_view(all_entries)` **另建**的 all_cards ——
+    # merge_details 里 `item = dict(entry)` 是拷贝，两批 dict 不共享，
+    # 不回灌的话 compare 永远传不到页面（S9 把首页池子从 items 换成 all_cards 后
+    # 才暴露：`graft_compare_from_cache` 只在本地预览里补，掩盖了线上）。
+    # 现查与估算的分工（2026-10-08 用户定案）：**真查只保证「当日新增 + 即将到期」
+    # 两个板块的真实性**（每日抓取的意义是防打折中途降价）；其余板块的历史条目
+    # 用「外区原价永久缓存 × 国区折扣比例」估算（原价缓存就是为此备料，见
+    # enrich.estimate_compare）—— 零额外 Steam 请求。
+    countries = [c for c in (cfg.get("compare_countries") or []) if c]
+    compare_by_appid: dict[int, list[dict]] = {}
+    for entry in shown + upcoming_shown:
+        appid = entry.get("appid")
+        if appid and entry.get("compare"):
+            compare_by_appid[appid] = entry["compare"]
+
     # ---- 重构 S5：「全部」视图数据 = 今日筛选链全量（含当日新增），逐条打视图标志 ----
     # 懒加载视图（板块完整列表）的数据源：all.js 用它。
     # ⚠️ 2026-10-08 起不再统计视图按钮 count（那组 payload 已删）。
-    # 比价数据只覆盖 enrich 过的当日新增 + 即将过期（全量补比价 = 上千次 Steam 请求，
-    # 不做）—— 其余条目详情区由前端回落单栏。
+    # 比价数据：真查覆盖条目回灌（当日新增 + 即将到期）；其余历史条目按
+    # 「原价缓存 × 国区折扣比例」估算（2026-10-08 定案，见 enrich.estimate_compare）
+    # —— 仍然零额外 Steam 请求，缓存里没有原价的（极少数）才回落前端说明行。
     all_cards: list[dict] | None = None
     if all_entries is not None:
         _, _, all_shown = build_view(all_entries)
         all_cards = []
         for entry in all_shown:
+            cmp_rows = compare_by_appid.get(entry.get("appid"))
+            if cmp_rows:
+                entry["compare"] = cmp_rows   # build_card 从 entry["compare"] 取值
+            else:
+                # 估算行（真查没覆盖的历史条目；缺 appid/价格/缓存时函数自己返回 []）
+                est = enrich.estimate_compare(state, entry, countries, fx)
+                if est:
+                    entry["compare"] = est
             card = report.build_card(entry, now, labels, cfg)
             card["views"] = [
                 key for key in classify.VIEW_KEYS

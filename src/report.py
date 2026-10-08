@@ -357,9 +357,9 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
         # 前端拿 reviews.score / count 自己拼（服务端再拼一遍字符串就是第二份口径来源）
         "tier": tier,
         "tier_label": label_map.get(tier, tier),
-        "steam_url": f"https://store.steampowered.com/app/{appid}/" if appid else None,
-        "xiaoheihe_url": f"https://www.xiaoheihe.cn/games/detail/{appid}" if appid else None,
-        # R2：itad_url 已删（302 直跳 Steam，信息冗余），卡片与 payload 均不再输出
+        # R2：itad_url 已删（302 直跳 Steam，信息冗余），卡片与 payload 均不再输出。
+        # 2026-10-08 问题1：steam_url / xiaoheihe_url 也已删 —— 前端由 appid 现拼
+        # （app.js 的 steamUrl / xhhUrl），下发常量前缀纯属浪费（all.js 里两项合计 ~900KB）。
     }
 
 
@@ -436,6 +436,49 @@ def build_groups(items: list[dict], cfg: dict) -> list[dict]:
             }
         )
     return groups
+
+
+#: all.js 卡片瘦身（2026-10-08，问题1：分类页懒加载的 all.js 达 6.3MB）——
+#: 这些字段**前端要么不读、要么能由已有字段现拼**，只从 all.js 剥离；
+#: data.js 的 sections/picks 只有 ~42KB，保持原样（`check_payload` 旧口径与单测照旧读它）：
+#:   · ``tier_label`` / ``low_label`` / ``last_low_days``：app.js 从不读
+#:     （tier_label / low_label 只被 ``tools/check_payload.py`` 当诊断用，见那边的派生改法）；
+#:   · ``banner`` → ``art``（见 :func:`boxart_code`）。
+#: （``steam_url`` / ``xiaoheihe_url`` 不在这里 —— 已在 :func:`build_card` 源头删除，
+#:  前端一律由 ``appid`` 现拼，data.js 里也不该留死数据。）
+#: ⚠️ ``game_id`` **必须保留** —— 它是 ``art`` 现拼封面的依据（boxart 资产 uuid == game_id）。
+_ALL_JS_DROP = ("tier_label", "low_label", "last_low_days", "banner")
+
+
+def boxart_code(url: str | None) -> str | None:
+    """封面 URL → 紧凑「扩展名」码（all.js 专用，2026-10-08）。
+
+    ITAD 的封面 URL 里只有**扩展名**不可由 `game_id` 现拼 —— 前缀固定
+    ``https://assets.isthereanydeal.com/<game_id>/boxart``，``?t=<epoch>`` 缓存参数
+    实测去掉后响应完全一致（200 / 同 content-length）。所以下发扩展名即可：
+      · ``None`` —— 该条没有封面（ITAD 无资产，实测约 9%）→ 前端显示灰块占位；
+      · ``"jpg"`` / ``"png"`` —— 前端拼 ``.../boxart.<ext>``。
+    ⚠️ 两种扩展名都真实存在（实测 6573 jpg / 123 png），**不能一律 jpg** ——
+    `.png` 资产在 `.jpg` 上是 403（2026-10-08 实测）。
+    """
+    if not url:
+        return None
+    path = url.split("?", 1)[0]
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else None
+    # ⚠️ 未知后缀回落 **None**（code-review 2026-10-08）：ITAD 实测只有 jpg/png，
+    #    真出现 webp 之类说明资产形态变了 —— 猜 jpg 会 403 出破图，不如 None 走
+    #    前端灰块占位（诚实且视觉一致）。
+    return ext if ext in ("jpg", "png") else None
+
+
+def slim_for_all_js(cards: list[dict]) -> list[dict]:
+    """给 all.js 的分组卡片瘦身：剔除 :data:`_ALL_JS_DROP`，并把 ``banner`` 换成紧凑的 ``art``。"""
+    out = []
+    for card in cards:
+        slim = {k: v for k, v in card.items() if k not in _ALL_JS_DROP}
+        slim["art"] = boxart_code(card.get("banner"))
+        out.append(slim)
+    return out
 
 
 #: 首页四板块（S9 定案 2026-10-06）。顺序由用户拍板：新史低 → 即将到期 → 热门游戏 → 大额折扣。
@@ -524,18 +567,31 @@ def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
 def _section_sort(key: str, cfg: dict | None = None):
     """每个板块「精选」的顺序（都带 title 收尾键，保证 deterministic）。
 
-    2026-10-07 用户：「精选用公式，refs 文档中有参考公式，根据这个推断修正精选的公式」——
-    **新史低 / 热门 / 大额折扣** 的「精选」改为按推荐公式打分
-    （:func:`featured_score`，refs §10.2 名气优先），不再是各板块自己的自然顺序
-    （原：大额折扣=折扣降序、热门=评价数降序、新史低=分层字典序）。
+    ⚠️ **2026-10-08 用户重定：各板块需求不同 ⇒ 排序维度跟着板块语义走**，不再
+    「三个板块共用一套推荐公式」—— 大促时名气头部游戏全是 ≥80% 折扣，「热门」与
+    「大额折扣」按同一公式（名气 40 分主导）排出的头 10 张**逐项相同**（实测），
+    两个板块等于一个板块。现在的口径：
 
-    ⚠️ **「即将到期」保持「到期近 → 远」**：公式的「紧迫」项只有 5 分，压不过名气（40 分），
-    按公式排会把「剩 0 天的小游戏」排到「剩 2 天的大作」后面 —— 这个板块的全部意义
-    就是「快没了」，紧迫必须优先。
+    · **新史低** = 推荐公式（:func:`featured_score`，refs §10.2 名气优先）——
+      与大卡同口径，这里保留公式（大卡池子就是从新史低分层取的，语义一致）。
+    · **即将到期** = 「到期近 → 远」：公式的「紧迫」项只有 5 分，压不过名气（40 分），
+      按公式排会把「剩 0 天的小游戏」排到「剩 2 天的大作」后面 —— 这个板块的全部
+      意义就是「快没了」，紧迫必须优先。
+    · **热门游戏** = **评价数降序**（板块语义就是「名气榜」，refs A-4：热门=10000+）；
+      平手比好评率 → title。
+    · **大额折扣** = **折扣降序**（板块语义就是「力度榜」，refs A-4：高折扣=80%+）；
+      平手比评价数 → title。恢复自然顺序后，板块内「折扣降序」排序选项重新被隐含
+      （见 :func:`filter_specs` 的 implied 表）。
     """
     if key == "expiring":
         return lambda c: (c.get("days_left") if c.get("days_left") is not None else 99,
                           -(c.get("cut") or 0), c.get("title") or "")
+    if key == "popular":
+        return lambda c: (-review_count(c),
+                          -((c.get("reviews") or {}).get("score") or 0),
+                          c.get("title") or "")
+    if key == "big_cut":
+        return lambda c: (-(c.get("cut") or 0), -review_count(c), c.get("title") or "")
     return lambda c: (-featured_score(c, cfg), -review_count(c), c.get("title") or "")
 
 
@@ -829,12 +885,16 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
     #   · 大额折扣板块：`_in_section` 已要求 `折扣 ≥ big_cut` ⇒ 折扣区间里 ≤ big_cut 的档位
     #     筛不掉任何东西。
     #   · 热门游戏板块：`_in_section` 已要求 `评价数 ≥ notable` ⇒ 好评数量里 ≤ notable 的档位无效。
-    # ⚠️ **「排序」不再进这张表**（2026-10-07 同日稍晚）—— 「精选」已改为按推荐公式打分
-    #    （`featured_score`，见 `_section_sort`），不再等于各板块的自然顺序，
-    #    「折扣降序」在哪个板块都与它不同 ⇒ 排序的四个选项在所有板块都有区分度。
-    # ⚠️ 这几条都跟着「板块口径」走 —— 改 `_in_section` 时必须回来看一眼；
+    # ⚠️ **「折扣降序」重新进这张表**（2026-10-08）：板块排序已改回各板块自己的维度
+    #    （大额折扣 = 折扣降序，见 `_section_sort`），板块内「精选」与「折扣降序」等价 ⇒
+    #    在大额折扣板块里选「折扣降序」不会改变顺序，置灰。其余排序选项仍有区分度。
+    # ⚠️ 这几条都跟着「板块口径」走 —— 改 `_in_section` / `_section_sort` 时必须回来看一眼；
     #    `tests/test_report.py` 里有对应的断言。
-    sort_opts = list(FILTER_SORTS)
+    sort_opts = []
+    for o in FILTER_SORTS:
+        if o["value"] == "cut":
+            o = dict(o, implied=["big_cut"], implied_note="本板块已按折扣降序排列")
+        sort_opts.append(o)
     cut_opts = [{"value": "all", "label": "不限"}]
     for v in cuts:
         o = {"value": str(v), "label": f"≥ {v}%"}
@@ -1021,7 +1081,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         all_payload = {
             "generated_at": payload["generated_at"],
             "generated_at_text": payload["generated_at_text"],
-            "groups": build_groups(all_cards, cfg),
+            "groups": build_groups(slim_for_all_js(all_cards), cfg),
             "section_order": {
                 spec["key"]: [card["appid"] for card in sorted(
                     _section_members(spec["key"], all_cards, cfg),

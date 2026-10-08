@@ -258,8 +258,8 @@ class CardTest(unittest.TestCase):
         self.assertEqual(card["low_class"], "new")
         self.assertEqual(card["low_label"], "新史低")
         self.assertEqual(card["price_text"], "¥149.00")   # S9-1：一律两位小数
-        self.assertEqual(card["steam_url"], "https://store.steampowered.com/app/1091500/")
-        self.assertEqual(card["xiaoheihe_url"], "https://www.xiaoheihe.cn/games/detail/1091500")
+        # steam_url / xiaoheihe_url 已删（2026-10-08 问题1）—— 前端由 appid 现拼，
+        # 服务端不再下发（现拼结果由 jsdom 冒烟测锁定）
         self.assertEqual(card["tier_label"], classify.TIER_LABELS[classify.TIER_QUALITY])
 
     def test_card_tier_label_follows_group_label(self):
@@ -296,11 +296,14 @@ class CardTest(unittest.TestCase):
         self.assertEqual(report.build_card(entry, self.now)["days_left"], 0)
 
     def test_card_without_appid_has_no_links(self):
+        """无 appid 的卡片：前端不会渲染 Steam / 小黑盒链接（现拼依据 appid 缺失）。
+        2026-10-08 问题1 起链接 URL 不再由服务端下发 —— 这里改锁「appid 为 None」这个依据。"""
         entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
                  "tier": classify.TIER_PENDING}
         card = report.build_card(entry, self.now)
-        self.assertIsNone(card["steam_url"])
-        self.assertIsNone(card["xiaoheihe_url"])
+        self.assertIsNone(card["appid"])
+        self.assertNotIn("steam_url", card)
+        self.assertNotIn("xiaoheihe_url", card)
         self.assertEqual(card["compare"], [])
 
     def test_card_drops_itad_url_and_keeps_price_int(self):
@@ -467,6 +470,35 @@ class LazyViewsTest(unittest.TestCase):
         self.assertEqual(all_payload["groups"][0]["criteria"],
                          "好评率 ≥ 70% 且 评价数 ≥ 100")
 
+    def test_all_json_cards_are_slimmed(self):
+        """all.js 卡片瘦身（2026-10-08 问题1，分类页 6.3MB）：剔除前端不读
+        （tier_label/low_label/last_low_days）或能现拼（steam_url/xiaoheihe_url/banner）
+        的字段；`banner` 换成紧凑 `art` 扩展名码；`game_id` 必须保留（art 现拼的依据）。"""
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        entry = self._entry("g-art", 1, "2026-09-28T10:00:00+08:00")
+        entry["boxart"] = "https://assets.isthereanydeal.com/g-art/boxart.png?t=123"
+        card = report.build_card(entry, self.now)
+        cfg = dict(CFG, output_dir=str(out))
+        report.render(cfg, [], _STATS, self.now, all_cards=[card])
+        all_payload = json.loads(
+            (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
+        item = all_payload["groups"][0]["items"][0]
+        for dropped in ("tier_label", "low_label", "last_low_days",
+                        "steam_url", "xiaoheihe_url", "banner"):
+            self.assertNotIn(dropped, item)
+        self.assertEqual(item["art"], "png")
+        self.assertIn("game_id", item)          # art 现拼的依据，不能删
+
+    def test_boxart_code(self):
+        """封面 URL → 紧凑扩展名码：只下发不可现拼的扩展名（.png 不能一律当 .jpg，实测 403）。
+        未知后缀回落 None（code-review 2026-10-08）：真出现 webp 说明资产形态变了，
+        猜 jpg 会 403 出破图，不如灰块占位。"""
+        self.assertIsNone(report.boxart_code(None))
+        self.assertEqual(report.boxart_code("https://x/a/boxart.jpg?t=1"), "jpg")
+        self.assertEqual(report.boxart_code("https://x/a/boxart.png?t=1"), "png")
+        self.assertIsNone(report.boxart_code("https://x/a/weird.webp"))
+
     # featured 开关与旧的 groups 分组已随 2026-10-08 payload 瘦身删除 ——
     # data.js 不再带 groups/view_groups（S9 前端不读分组键）。
 
@@ -539,6 +571,39 @@ class HomeSectionsTest(unittest.TestCase):
         got = self.sections([self.card("低", cut=85), self.card("高", cut=95)])
         self.assertEqual([i["title"] for i in got["big_cut"]["items"]], ["高", "低"])
 
+    def test_section_sort_follows_board_semantics(self):
+        """**行为断言（2026-10-08 重定）**：板块排序跟着板块语义走，不再三个板块
+        共用一套推荐公式 —— 大促时名气头部全是 ≥80% 折扣，共用公式曾让「热门」与
+        「大额折扣」的头 10 张逐项相同（实测），两个板块等于一个板块。
+
+        · 热门 = 评价数降序（名气榜）；平手比好评率。
+        · 大额折扣 = 折扣降序（力度榜）；平手比评价数。
+        · 新史低 = 推荐公式（名气优先），见 test_section_order_uses_featured_score。
+        """
+        pool = [
+            {"title": "名气大折浅", "low_class": "new", "cut": 30,
+             "reviews": {"score": 90, "count": 500000}, "start_days_ago": 1},
+            {"title": "名气小折深", "low_class": "new", "cut": 95,
+             "reviews": {"score": 90, "count": 200}, "start_days_ago": 1},
+        ]
+        pop = sorted(pool, key=report._section_sort("popular", self.CFG))
+        self.assertEqual([c["title"] for c in pop], ["名气大折浅", "名气小折深"],
+                         "热门按评价数：50 万评压过 95% 折扣的小游戏")
+        big = sorted(pool, key=report._section_sort("big_cut", self.CFG))
+        self.assertEqual([c["title"] for c in big], ["名气小折深", "名气大折浅"],
+                         "大额折扣按折扣：95% 压过 30%")
+        # 平手键：折扣相同比评价数；评价数相同比好评率；都相同比 title（deterministic）
+        tie = [
+            {"title": "乙", "low_class": "new", "cut": 90,
+             "reviews": {"score": 80, "count": 30000}, "start_days_ago": 1},
+            {"title": "甲", "low_class": "new", "cut": 90,
+             "reviews": {"score": 95, "count": 30000}, "start_days_ago": 1},
+        ]
+        self.assertEqual([c["title"] for c in sorted(tie, key=report._section_sort("big_cut", self.CFG))],
+                         ["乙", "甲"], "折扣同 → 评价数多的在前")
+        self.assertEqual([c["title"] for c in sorted(tie, key=report._section_sort("popular", self.CFG))],
+                         ["甲", "乙"], "评价数同 → 好评率高的在前")
+
     def test_picks_include_tie_but_not_expired_nor_unknown(self):
         """推荐位池子 = **新史低 + 平史低**（用户 2026-10-07：「大卡不止新史低，
         平史低也有机会进大卡」），但**必须还在折扣期内**、且史低类型已知。
@@ -572,9 +637,12 @@ class HomeSectionsTest(unittest.TestCase):
         val = lambda g: {o["value"]: o.get("implied") for o in groups[g]["options"]}
 
         self.assertEqual(val("only_new")["new"], ["new_low"])
-        # ⚠️ 「排序」不在表里：精选已改为按推荐公式打分（featured_score），
-        #    不再等于各板块的自然顺序，「折扣降序」在哪个板块都有区分度。
-        self.assertIsNone(val("sort")["cut"])
+        # 2026-10-08 起板块排序回到各自维度：大额折扣板块「精选」== 折扣降序
+        # ⇒ 该板块内选「折扣降序」不改变顺序，重新被隐含；其余板块仍有区分度。
+        self.assertEqual(val("sort")["cut"], ["big_cut"])
+        self.assertIsNone(val("sort")["rate"], "好评率降序在热门板块之外仍有区分度")
+        self.assertIsNone(val("sort")["price"])
+        self.assertIsNone(val("sort")["featured"])
         self.assertEqual(val("cut")["50"], ["big_cut"])
         self.assertEqual(val("cut")["80"], ["big_cut"])      # 与板块下限同档 = 筛不掉
         self.assertEqual(val("cut")["90"], None)             # 比下限高 = 有区分度

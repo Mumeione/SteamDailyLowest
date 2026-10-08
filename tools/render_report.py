@@ -40,7 +40,6 @@ from run import (  # noqa: E402
 from src import classify  # noqa: E402
 from src import enrich  # noqa: E402
 from src.config import ConfigError, load_config, resolve_path  # noqa: E402
-from src.enrich import COMPARE_LABELS  # noqa: E402
 from src.state import State  # noqa: E402
 
 
@@ -101,8 +100,16 @@ def graft_compare_from_cache(state, cfg: dict, entries: list[dict], fx: dict | N
 
     ⚠️ 现价是**估算**：`外区现价 = 外区原价 × (国区现价 / 国区原价)`
     （refs §3.3 实测：15/20 与真查完全一致，5/20 差 1~2 个百分点，成因是各区价格
-    四舍五入后反算）。**只用于本地看版式**；正式产物由 `src/enrich.py` 每轮真查，
-    且「真查即校准」会把区域重定价回写缓存。
+    四舍五入后反算）。2026-10-08 起生产对非真查板块（热门/大额折扣等历史条目）
+    也用同一估算（``enrich.estimate_compare``）；真查只保证「当日新增 + 即将到期」
+    两板块的真实性。本工具的差异只在于**本地不发任何网络请求** —— 连真查覆盖的
+    条目也用缓存估算，让预览完全离线可看。
+
+    ⚠️ 存在理由（2026-10-08 决策，回应 check-report 的「修时要一并考虑」）：
+    曾经它在渲染前预注入 compare、**掩盖了** run.py 的回灌缺失（线上 compare 全空、
+    本地却看得到）；该回归已由 run.render_pass 的 `compare_by_appid` 回灌修复。
+    本函数仍需保留 —— 本地预览不做 Steam 真查（费额度、要 key），没有它本地就
+    完全看不到比价行版式。
 
     ``appid_of``：条目 → appid 的解析函数。**必须传** —— `seen_deal` 里没有 appid，
     它是 `game_meta` 的字段、由 `merge_details` 在渲染时才合并进去（2026-10-07 踩过：
@@ -113,30 +120,15 @@ def graft_compare_from_cache(state, cfg: dict, entries: list[dict], fx: dict | N
     for entry in entries:
         if entry.get("compare"):
             continue                      # 已有真查结果的（上一次产物的回收）不动
-        appid = appid_of(entry)
-        base, regular = entry.get("price_int"), entry.get("regular_int")
-        if not appid or not base or not regular:
-            continue
-        ratio = base / regular
-        raw_rows = []
-        for cc in countries:
-            initial = state.compare_original(appid, cc)
-            if initial is None:
-                continue
-            currency = (state.compare_cache.get(state.compare_key(appid, cc)) or {}).get("currency")
-            raw_rows.append({
-                "cc": cc,
-                "label": COMPARE_LABELS.get(cc, cc),
-                "currency": currency,
-                "final": int(round(initial * ratio)),
-            })
-        if not raw_rows:
-            continue
-        entry["compare"] = enrich.assemble_rows(raw_rows, entry, fx)
-        added += 1
+        # 估算公式收敛到 enrich.estimate_compare（2026-10-08）：生产 run.py 对
+        # 非真查板块用同一个函数补估算行，两处口径永远一致，这里只管遍历与计数。
+        est = enrich.estimate_compare(state, entry, countries, fx, appid=appid_of(entry))
+        if est:
+            entry["compare"] = est
+            added += 1
     if added:
         log(f"[info] 比价行由 cache.json 的区域原价推算补上：{added} 条"
-            f"（现价 = 外区原价 × 国区折扣比例，仅本地预览用）")
+            f"（现价 = 外区原价 × 国区折扣比例）")
     return added
 
 

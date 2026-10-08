@@ -63,7 +63,8 @@ def main() -> int:
     lines.append("")
     lines.append("--- 分组标签 vs 卡片标签（必须一致）---")
     group_labels = {g["key"]: g["label"] for g in groups}
-    card_labels = {i["tier"]: i["tier_label"] for i in items}
+    # all.js 已瘦身、不再下发 tier_label（2026-10-08 问题1）—— 由 tier 从 classify 派生期望值再比对分组标题
+    card_labels = {i["tier"]: classify.TIER_LABELS.get(i["tier"], i["tier"]) for i in items}
     ok = True
     for key, label in group_labels.items():
         same = card_labels.get(key) == label
@@ -105,13 +106,14 @@ def main() -> int:
         lines.append(f"  {c}: {sum(1 for i in items if i.get('low_class') == c)}")
     bad_class = [i.get("low_class") for i in items
                  if i.get("low_class") not in ("new", "tie", "unknown")]
-    expect_label = {"new": "新史低", "tie": "平史低", "unknown": "史低待确认"}
-    bad_pair = [(i.get("low_class"), i.get("low_label")) for i in items
-                if expect_label.get(i.get("low_class")) != i.get("low_label")]
+    # 「class 与标签不对应」校验已随 all.js 瘦身（2026-10-08 问题1）失去对象：
+    # all.js 卡片不再下发 low_label（前端只用色条表达史低类型，无文字标签可比对）。
+    # 若在这里拿 classify.steam_low_label 现派生来比对，两边同源、恒真，等于没校验 ——
+    # 所以只保留上面 still 有效取值校验（bad_class）；真要防标签漂移，
+    # 看 smoke_s9.js 与 tests/ 里对 classify 常量的断言。
     lines.append(f"  取值非法：{len(bad_class)} 条"
                  + ("" if not bad_class else f" → {sorted(set(bad_class))}"))
-    lines.append(f"  class 与标签不对应：{len(bad_pair)} 条"
-                 + ("" if not bad_pair else f" → {sorted(set(bad_pair))}"))
+    lines.append("  class 与标签不对应：校验已下线（all.js 不再下发 low_label，前端只用色条）")
 
     lines.append("")
     lines.append("--- low_class 字面量 vs classify 常量（步骤 5.1）---")

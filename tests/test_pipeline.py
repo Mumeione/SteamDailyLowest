@@ -152,6 +152,79 @@ class RenderPassTest(unittest.TestCase):
         good = next(i for i in items if i["game_id"] == "g-good")
         self.assertEqual(good["title_zh"], "好游戏")
 
+    def test_compare_propagates_from_enrich_to_all_cards(self):
+        """S9 回归修复（2026-10-08）：`enrich_hook` 就地写的是 `shown`/`upcoming_shown`
+        那批 dict，而首页四板块/大卡/all.js 走 `render_pass` 里**另建**的 `all_cards`
+        （`merge_details` 的 `item = dict(entry)` 是拷贝）——不按 appid 回灌的话比价
+        在所有页面上都是空的（`tools/render_report.py` 的 `graft_compare_from_cache`
+        只在本地预览补，掩盖了线上）。这条测试锁定「回灌」这一步。"""
+        marker = [{"cc": "UA", "label": "乌克兰区", "currency": "UAH", "final": 100,
+                   "cny_minor": 80, "diff_pct": -20}]
+
+        def enrich_hook(shown, upcoming_shown, info):
+            for entry in shown + upcoming_shown:
+                entry["compare"] = marker
+            return {"title_fetched": 0, "title_cached": 0, "compare_batches": 2,
+                    "compare_repriced": 0, "compare_fetched": 2}
+
+        def stats_of(info):
+            return {"sweep": "low_only", "new_today_raw": 3, "new_today_shown": info["shown"],
+                    "deals_fetched": 0, "hist_low_total": 0,
+                    "detail_pending": info["tier"].get(classify.TIER_PENDING, 0),
+                    "detail_backlog": 0}
+
+        render_pass(self.state, self.candidates, self.cfg, NOW, stats_of,
+                    announce_merges=False, enrich_hook=enrich_hook,
+                    all_entries=self.candidates)
+
+        payload = json.loads(
+            (self.out / "data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
+        )
+        section_cards = [i for s in payload["sections"] for i in s["items"]]
+        good = next(i for i in section_cards if i["game_id"] == "g-good")
+        self.assertTrue(good["compare"], "首页板块卡片必须带上 enrich 回灌的比价行")
+
+        all_data = json.loads(
+            (self.out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
+        )
+        all_cards = [c for g in all_data["groups"] for c in g["items"]]
+        good_all = next(c for c in all_cards if c["game_id"] == "g-good")
+        self.assertTrue(good_all["compare"], "all.js 卡片同样要带上回灌的比价行")
+
+    def test_estimate_compare_fills_history_entries(self):
+        """2026-10-08 估算定案：真查只保证「当日新增 + 即将到期」两板块的真实性
+        （每日抓取是防打折中途降价），其余板块的历史条目用「外区原价永久缓存 ×
+        国区折扣比例」估算 —— **原价永久缓存就是为估算备料的**，生产路径必须补上
+        （此前只在本地预览 graft 里有，改着改着丢了）。enrich_hook 不给真查结果
+        ⇒ 全部走估算路径，缓存有原价的条目 compare 必须非空。"""
+        self.state.set_compare_original(111, "UA", 50000, "UAH", NOW)
+        self.state.set_compare_original(111, "IN", 60000, "INR", NOW)
+        self.state.save(NOW)
+
+        def stats_of(info):
+            return {"sweep": "low_only", "new_today_raw": 3, "new_today_shown": info["shown"],
+                    "deals_fetched": 0, "hist_low_total": 0,
+                    "detail_pending": info["tier"].get(classify.TIER_PENDING, 0),
+                    "detail_backlog": 0}
+
+        render_pass(self.state, self.candidates, self.cfg, NOW, stats_of,
+                    announce_merges=False, enrich_hook=None,
+                    all_entries=self.candidates)
+
+        all_data = json.loads(
+            (self.out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
+        )
+        all_cards = [c for g in all_data["groups"] for c in g["items"]]
+        good = next(c for c in all_cards if c["game_id"] == "g-good")
+        # 国区现价 1000 / 原价 10000 → 折扣比例 0.1；UA 原价 50000 → 估算现价 5000
+        # （卡片里存的是 compare_rows 格式化后的展示行）
+        rows = {r["label"]: r for r in good["compare"]}
+        self.assertEqual(rows["乌克兰区"]["price_text"], "₴50.00")
+        self.assertEqual(rows["印度区"]["price_text"], "₹60.00")
+        # 无真查 → 无汇率 → 不换算 CNY、不出差价%（如实留空，不造假数）
+        self.assertIsNone(rows["乌克兰区"]["cny_text"])
+        self.assertIsNone(rows["乌克兰区"]["diff_pct"])
+
     def test_no_conditions_block_in_payload_or_html(self):
         """批 F：筛选条件框已从页面删除，判定口径只在 README —— 别又跑回来。"""
         _, payload = self._run()

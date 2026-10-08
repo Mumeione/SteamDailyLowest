@@ -224,8 +224,11 @@ check("新史低板块：折扣降序可选（精选已改为按公式打分，�
 check("新史低板块：好评数量仍可选（板块没有评价数门槛）",
   !optBy("reviews", "500").disabled);
 navTo(3);                                    // 大额折扣
-check("大额折扣板块：折扣降序可选（精选=公式打分，两者已不同）",
-  !optBy("sort", "cut").disabled && !optBy("sort", "cut").classList.contains("is-implied"));
+check("大额折扣板块：折扣降序被隐含（2026-10-08 板块精选改回折扣降序，两者等价）",
+  optBy("sort", "cut").classList.contains("is-implied") &&
+  !optBy("sort", "cut").classList.contains("is-off") &&
+  /折扣降序/.test(optBy("sort", "cut").title || ""),
+  optBy("sort", "cut").title || "(无 title)");
 check("大额折扣板块：折扣区间 ≥50% / ≥80% 置灰、≥90% 可选",
   optBy("cut", "50").disabled && optBy("cut", "80").disabled && !optBy("cut", "90").disabled);
 check("大额折扣板块：史低类型仍可选（板块里有平史低）",
@@ -406,15 +409,45 @@ check("CSS @media 边界只用 payload 下发的断点", (function () {
   const legal = [...nums].every((n) => n === mob || n === mob + 1 || n === tab || n === tab + 1);
   // ② 手机断点的两条边界（600 / 601）必须成对出现，否则「布局按手机、逻辑按桌面」会错位。
   // ⚠️ 平板断点 1100/1101 **故意不在 CSS 里**：E1 定案后平板与 PC 共用同一套规则
-  //    （行卡片的一行/两行结构由 @container 按行宽判、板块两列由 601 那条判），
-  //    三档视口实际只剩两条边界；`tablet_breakpoint` 仍留在 payload 里给预览工具用。
+  //    （行卡片的一行/两行结构由 @container row 按行宽判、板块两列由 @container home
+  //    按 .home 内容宽判），三档视口实际只剩两条边界；`tablet_breakpoint` 仍留在
+  //    payload 里给预览工具用。
   //    所以这条断言**不再要求 tab+1 出现**，但 url 上仍然不允许多出别的数值。
   return legal && nums.has(mob) && nums.has(mob + 1);
 })(), "media=" + [...new Set(Array.from(css.matchAll(/@media[^{]*?(\d{3,4})px/g), (m) => m[1]))].join("/")
     + " payload=" + listCfg.breakpoint + "/" + listCfg.tablet_breakpoint);
+// ---- 口径机械校验（2026-10-08）：板块两列的 @container 阈值必须 == 「大卡 4 列」
+// 的同一内容宽 4×(PICK_MIN+PICK_GAP)−12。用户定的口径是「两列板块刚好放得下 =
+// 大卡从 3 张变 4 张」，两边各写一份数字就会悄悄失配 —— 大卡 3→4 张与板块
+// 1→2 列必须在同一宽度发生（见 app.css「四板块」注释）。
+(function () {
+  const min = (appJs.match(/PICK_MIN\s*=\s*(\d+)/) || [])[1];
+  const gap = (appJs.match(/PICK_GAP\s*=\s*(\d+)/) || [])[1];
+  const th = (css.match(/@container\s+home\s*\(\s*min-width:\s*(\d+)px\s*\)/) || [])[1];
+  check("板块两列阈值 == 大卡 4 列宽（4×(PICK_MIN+PICK_GAP)−12）",
+    !!min && !!gap && !!th && Number(th) === 4 * (Number(min) + Number(gap)) - Number(gap),
+    "阈值=" + th + "px PICK_MIN=" + min + " PICK_GAP=" + gap);
+})();
 $$("#nav .nav-item")[0].click();
 const firstBatch = $$("#rows .row").length;
 check("列表页首批 = 每批 30 条", firstBatch === 30, firstBatch + " 行");
+// 2026-10-08 问题1：all.js 卡片瘦身后，列表页（数据来自 all.js）的卡片**没有** steam_url/
+// xiaoheihe_url/banner，链接与封面必须由 appid/game_id+art 现拼成功 —— 不然瘦身=毁页面。
+// 无 appid 的条目（unlisted/详情待补）本就没有链接，故断言「至少一行有链接」+「凡出现必合规」。
+(function () {
+  const rows = $$("#rows .row");
+  if (!rows.length) return;
+  const steamA = rows.map((r) => r.querySelector('.icon-link[aria-label="Steam 商店页"]')).filter(Boolean);
+  const xhhA = rows.map((r) => r.querySelector('.icon-link[aria-label="小黑盒"]')).filter(Boolean);
+  const imgs = rows.map((r) => r.querySelector(".row-thumb")).filter((t) => t && t.tagName === "IMG");
+  const ok = steamA.length > 0 && xhhA.length > 0
+    && steamA.every((a) => /^https:\/\/store\.steampowered\.com\/app\/\d+\/$/.test(a.href))
+    && xhhA.every((a) => /^https:\/\/www\.xiaoheihe\.cn\/games\/detail\/\d+$/.test(a.href))
+    && imgs.every((t) => /^https:\/\/assets\.isthereanydeal\.com\/[0-9a-f-]+\/boxart\.(jpg|png)$/.test(t.src));
+  check("列表页链接/封面由 appid/game_id 现拼（瘦身后）", ok,
+    "steam " + steamA.length + " · xhh " + xhhA.length + " · img " + imgs.length
+      + " · 样例 " + (steamA[0] ? steamA[0].href : "(无)"));
+})();
 const moreBtn = doc.querySelector("#lv-pager .load-more");
 check("底部有「加载更多」按钮", !!moreBtn);
 if (moreBtn) {
@@ -475,16 +508,21 @@ function buildDom(mutate, patchHtml, opts) {
 
 const festBox = doc.getElementById("msg-fest");
 const alertBox = doc.getElementById("msg-alert");
-check("节日条带季节主题类名 + 活动名",
-  !!festBox && /season-(spring|summer|autumn|winter)/.test(festBox.className),
-  festBox ? festBox.className : "(没有节日条)");
-check("节日条写明起止区间与剩余天数",
-  !!festBox && /\d{2}-\d{2} \d{2}:\d{2}.*\d{2}-\d{2} \d{2}:\d{2}/.test(festBox.textContent) &&
-  /还有|今天结束/.test(festBox.textContent),
-  festBox ? festBox.textContent.replace(/\s+/g, " ").trim() : "");
-check("节日条与顶栏正文左对齐（内容套了 .wrap）",
-  !!festBox && !!festBox.querySelector(".wrap.msg-inner"),
-  festBox ? (festBox.querySelector(".msg-inner") ? "有 .wrap.msg-inner" : "没有") : "");
+// 节日条 3 项**条件执行**（2026-10-08）：announcements.json 不覆盖今天就根本没有
+// 节日条 —— 以前无条件下会吃成 3 个假失败。有节日条才验，没有就说明跳过。
+if (festBox) {
+  check("节日条带季节主题类名 + 活动名",
+    /season-(spring|summer|autumn|winter)/.test(festBox.className), festBox.className);
+  check("节日条写明起止区间与剩余天数",
+    /\d{2}-\d{2} \d{2}:\d{2}.*\d{2}-\d{2} \d{2}:\d{2}/.test(festBox.textContent) &&
+    /还有|今天结束/.test(festBox.textContent),
+    festBox.textContent.replace(/\s+/g, " ").trim());
+  check("节日条与顶栏正文左对齐（内容套了 .wrap）",
+    !!festBox.querySelector(".wrap.msg-inner"),
+    festBox.querySelector(".msg-inner") ? "有 .wrap.msg-inner" : "没有");
+} else {
+  check("节日条：当前数据无节日（announcements.json 未覆盖今天），3 项跳过", true, "skip");
+}
 // ⚠️ 这条原先是直接断言**真实产物**里的 `alertBox.hidden`（即「刚跑过、不该告警」）——
 //    但产物的 `generated_at` 是渲染那一刻，它随墙上时钟变旧：本地预览数据放满 26 小时
 //    之后这条就会亮告警 → 变成**时间敏感的假失败**（2026-10-07 21:5x 踩到过一次）。

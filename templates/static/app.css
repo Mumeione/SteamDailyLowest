@@ -11,6 +11,13 @@
  *   冒烟测有机械校验（tests/jsdom/ 的「CSS @media 边界 == payload 断点」）；
  *   工具脚本（make_preview.py）也从 payload 读，别再各写一份（批 F3 踩过）。
  *   布局尽量交给 grid/flex 自适应而不是加断点 —— 档位越多越难维护。
+ *
+ * ⚠️ **纯悬停效果（`:hover`）一律包进 `@media (hover: hover)`**（2026-10-08）：
+ *   触屏浏览器把 tap 当 hover 并**粘住到下一次 tap 别处**（实测 390×844：点站名后
+ *   「DailyLowest」停在主色蓝、鼠标移开才复位）—— 不守卫就会在手机/平板上「卡住」。
+ *   守卫规则**留在原地**别挪到文件末尾：`.nav-item:hover` 与 `.nav-item.active`
+ *   同优先级，挪到后面会把选中态盖掉。下面的 `.row:hover` 之类都遵此。
+ *   （`@media (prefers-reduced-motion)` 里那条 `.row:hover{transform:none}` 是复位，不在此列。）
  */
 
 :root {
@@ -133,14 +140,14 @@ html, body {
   }
 }
 .brand-b { color: var(--text); }
-.brand:hover .brand-b { color: var(--accent); }
+@media (hover: hover) { .brand:hover .brand-b { color: var(--accent); } }
 
 .nav { display: flex; gap: var(--sp-1); flex: 1 1 auto; flex-wrap: wrap; }
 .nav-item {
   font: inherit; font-size: var(--fs-body); padding: 6px 12px; border: 0; background: none;
   color: var(--text); border-radius: 6px; cursor: pointer; white-space: nowrap;
 }
-.nav-item:hover { background: #eef1f5; }
+@media (hover: hover) { .nav-item:hover { background: #eef1f5; } }
 .nav-item.active { background: var(--accent); color: #fff; }
 
 /* 手机端导航折叠（汉堡 → 竖排浮层）；PC/平板上按钮 display:none、导航保持横排 */
@@ -237,12 +244,12 @@ html, body {
   border: 0; background: none; color: inherit; font: inherit; font-size: var(--fs-sub);
   line-height: 1; opacity: .6; cursor: pointer; padding: 0 5px; border-radius: 999px;
 }
-.a-chip button:hover { opacity: 1; background: rgba(37, 99, 235, .12); }
+@media (hover: hover) { .a-chip button:hover { opacity: 1; background: rgba(37, 99, 235, .12); } }
 .a-clear {
   border: 0; background: none; color: var(--muted); font: inherit; font-size: var(--fs-sub);
   cursor: pointer; padding: 3px 6px; border-radius: 6px;
 }
-.a-clear:hover { background: #eef1f5; color: var(--text); }
+@media (hover: hover) { .a-clear:hover { background: #eef1f5; color: var(--text); } }
 
 /* ---- 首页摘要（S2）：白卡胶囊 + 大号数字 ----
    用户 2026-10-07：原来那句 12px 灰字「太小了、和背景混到一块儿了」。
@@ -325,7 +332,7 @@ html, body {
   background: var(--card); color: var(--text); font-size: var(--fs-price); line-height: 1;
   cursor: pointer; padding: 0;
 }
-.round:hover:not(:disabled) { background: #eef1f5; }
+@media (hover: hover) { .round:hover:not(:disabled) { background: #eef1f5; } }
 .round:disabled { opacity: .35; cursor: not-allowed; }
 /* 列数由 app.js 算好写进 inline style（`repeat(N, 1fr)`，N ≤ 5）—— 这里只是
    JS 没跑/被禁用时的兜底（2 列），不要再在 CSS 里写第二份列数规则。 */
@@ -339,7 +346,7 @@ html, body {
      默认透明，保证没有类型的卡片高度与别人一致、不会错位。 */
   border-bottom: 6px solid transparent;
 }
-.pick:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+@media (hover: hover) { .pick:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); } }
 .pick.l-new { border-bottom-color: var(--new-low); }
 .pick.l-tie { border-bottom-color: var(--store-low); }
 .pick.l-unk { border-bottom: 6px dashed var(--store-low); }
@@ -364,7 +371,7 @@ html, body {
 /* 第 2 排：折扣徽章（绿字绿底 = 折扣力度色）+ 小黑盒 */
 .pick-low { display: flex; align-items: center; gap: 5px; margin-top: 6px; }
 .pick-low .links svg { fill: var(--faint); }
-.pick-low .links a:hover svg { fill: var(--accent); }
+@media (hover: hover) { .pick-low .links a:hover svg { fill: var(--accent); } }
 .pick-cut {
   font-size: var(--fs-aux); font-weight: 700; color: var(--price);
   background: #e8f5ec; border-radius: 3px; padding: 1px 5px;
@@ -382,7 +389,7 @@ html, body {
 }
 .pick-price-row .links { align-self: center; }
 .pick-price-row .links svg { fill: var(--faint); }
-.pick-price-row .links a:hover svg { fill: var(--accent); }
+@media (hover: hover) { .pick-price-row .links a:hover svg { fill: var(--accent); } }
 
 /* 史低类型徽章（`.hl` / `.hl-new`）已随 2026-10-07 第二轮删除 ——
    行卡片靠**左侧 6px 色条**区分、大卡靠**底部 6px 色条**区分（见 .row.l-* / .pick.l-*），
@@ -391,12 +398,25 @@ html, body {
    这正是用户说「颜色太多」的根源。 */
 
 /* ================= 四板块 =================
-   **手机单列、平板与 PC 两列**（用户 2026-10-07：「平板缩小一点可以放两列」）。
+   **单列是默认；容器宽 ≥ 636px 才两列**（2026-10-08 用户定稿）：
+   原来两列挂在视口 601px 上，平板 601~691 那段两列各只有 ~264px，塞不下行卡片 ——
+   用户给的尺子是**大卡**：「临界值在三张大卡即将变为四张大卡之间」，即
+   「两列刚好放得下」= 「大卡排满 4 列」的**同一内容宽 W**。
+   大卡列数 = floor((W+12)/162)（app.js `PICK_MIN=150` / `PICK_GAP=12`），
+   ≥4 列 ⟺ W ≥ 4×162−12 = **636px**。
+   尺子就是 `.home` 自己：它是尺寸容器（`container-type: inline-size`），
+   内容宽 W == picksTrack.clientWidth —— 两边天然同宽，不存在第二份口径。
+   ⚠️ 容器**不能**挂在 main.wrap 上：container-type 自带 layout containment，
+   会把 wrap 里 fixed 定位的 #drawer（手机档）的包含块从视口改成 wrap，定位全毁。
+   `.home` 里只有 picks + sections（纯静态流），没有这个坑。
    单列时 .section-col 变 display:contents，让 4 个 section 直接成为网格项 ——
-   JS 打的 order 才能把顺序复原成「新史低→即将到期→热门→大额折扣」。 */
+   JS 打的 order 才能把顺序复原成「新史低→即将到期→热门→大额折扣」。
+   ⚠️ 改 app.js 的 PICK_MIN/PICK_GAP 要同步改这里的 636
+   （冒烟测有机械校验：阈值 == 4×(PICK_MIN+PICK_GAP)−12）。 */
+.home { container-type: inline-size; container-name: home; }
 .sections { display: grid; grid-template-columns: 1fr; gap: 0 var(--sp-5); align-items: start; }
 .section-col { display: contents; }
-@media (min-width: 601px) {
+@container home (min-width: 636px) {
   .sections { grid-template-columns: 1fr 1fr; }
   .section-col { display: block; min-width: 0; }
 }
@@ -433,7 +453,7 @@ html, body {
 .row.l-new { border-left-color: var(--new-low); }
 .row.l-tie { border-left-color: var(--store-low); }
 .row.l-unk { border-left: 6px dashed var(--store-low); }
-.row:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+@media (hover: hover) { .row:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); } }
 .row-main {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -462,15 +482,21 @@ html, body {
    这个要留一点余量，让图标+力度条尽量对齐，每个界面都是如此」）----
    留宽的依据（12px 字号下量过）：
      · 好评率 `2.5em` ≈ 30px —— 装得下「100%」
-     · 评价数 `4.4em` ≈ 53px —— 装得下「11,326 条」（6 位数的大作会略微超出，属"尽量"范围）
+     · 评价数 `3.4em` ≈ 41px —— 装得下**紧凑写法**的最长值「22.9万」（≈35px，
+       更极端的「1000万」也够）。**2026-10-08 从 4.4em 收窄**：评价数改紧凑写法后
+       （app.js 的 compactCount，千/万 + 悬停看真实数），原为「11,326 条」留的 4.4em
+       白占 ~12px，正是行尾「剩余天数」被挤出可视区的余量。
      · 剩余天数 `3.8em` ≈ 46px —— 装得下「剩 12 天」；「今天结束」那个粉底徽章本身更宽，
        所以不会被拉宽（它那一行的图标会偏一点，可以接受）
    ⚠️ 这三个 `min-width` 是**对齐用的预留量**，不是手感间距 —— 删掉的话，「剩 X 天」
-      （以及精简模式里跟在它后面的图标/力度条）会随「评价数有几位」左右漂：
-      3 位数与 6 位数差 ≈ 26px，一眼就看出没对齐。**每个界面都靠它**（普通/精简、手机/PC）。
-   ⚠️ 别改成百分比 —— 百分比跟容器变，等于没留。 */
+      （以及精简模式里跟在它后面的图标/力度条）会随「评价数有几位」左右漂。
+      只要紧凑写法的最长值 ≤ 预留宽，各行的 `.rc` 都撑到同一宽 → 对齐成立。
+      **每个界面都靠它**（普通/精简、手机/PC）。
+   ⚠️ 别改成百分比 —— 百分比跟容器变，等于没留。
+   ⚠️ 改这几个数或改 compactCount 的格式，都要按 3~4 位数与千/万位在
+      1440 与 1101 两档复测行尾「剩余天数」是否仍可见。 */
 .row-sub .rate { display: inline-block; min-width: 2.5em; }
-.row-sub .rc { display: inline-block; min-width: 4.4em; }
+.row-sub .rc { display: inline-block; min-width: 3.4em; }
 .row-sub .days { display: inline-block; min-width: 3.8em; }
 
 /* 好评率分档（类名由服务端 rate_tier 给，阈值在 report.py）
@@ -531,6 +557,9 @@ html, body {
    余下的空档留在这一行的**右端**，不要再把「条 + 百分比」推到最右边。 */
 
 /* ---- 行宽够（≥480px）→ 一行结构 ----
+   480 的来历：右半固定列合计 372px（thumb 44 + tags 182 + price 84 + gap×3 + padding + border，
+   见下方 530 那条的推演）+ 标题区下限 ~108px —— 再窄一行结构就摆不平，
+   回落两行结构（不支持 @container 的老浏览器也停在两行，同属安全侧）。
    2026-10-07 第二轮：把**弹性全部给标题区**，右半边（图标 + 力度条 + 百分比 + 价格）
    改成**固定列宽** —— 用户：「把力度条与两个图标全部竖向对齐，保持界面统一性」。
    改前实测每行的图标 x 在 448/453 飘、力度条 492/497 飘、百分比右缘 632/641 飘
@@ -568,7 +597,7 @@ html, body {
 /* 链接图标 */
 .links { display: inline-flex; align-items: center; gap: 6px; }
 .icon-link { display: inline-flex; color: var(--muted); }
-.icon-link:hover { color: var(--accent); }
+@media (hover: hover) { .icon-link:hover { color: var(--accent); } }
 /* 高度统一 16px、宽度按各图形自己的框比例算（`width:auto`）。
    ⚠️ 两个 svg 的 viewBox 都是正方形 `0 0 24 24`（**别裁到墨迹范围**，见 app.js ICONS.heihe 注释）——
    裁了会让图形贴到 svg 元素边缘、被 overflow:hidden 切掉约 0.45px；
@@ -618,7 +647,7 @@ html, body {
   transition: opacity .15s ease, visibility .15s ease, background .15s ease;
 }
 .btn-float.show { opacity: 1; visibility: visible; }
-.btn-float:hover { background: #eef1f5; }
+@media (hover: hover) { .btn-float:hover { background: #eef1f5; } }
 .btn-float.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ================= 无图精简模式（2026-10-07 第七轮定稿）=================
@@ -699,6 +728,26 @@ body.compact .row-tags .cut-bar {
   body.compact .row-sub .rc,
   body.compact .row-sub .rc + .sp { display: none; }
 }
+/* 一行结构 · 普通模式 · 行宽不足（2026-10-08，用户实测「缓慢拉宽时三格放不下」）：
+   一行结构里右半边固定列吃掉 `thumb44 + tags182 + price84 + gap36 + padding20 + border6
+   = 372px`，标题区（`.row-sub` 的可用宽）只剩 `行宽 − 372`。
+   三格最坏情况是「好评率 30 + 分隔点 ~11 + 评价数 3.4em(41) + 分隔点 ~11 + **今天结束**
+   粉底徽章 ~58」≈ 150px（「剩 X 天」那档只要 ~46px，正是用户报的「同一档里
+   剩X天显示得下、今天结束显示不下的」来源）—— 所以**按最坏情况**统一隐藏评价数：
+   行宽 − 372 < 150 ⟺ 行宽（border-box）< 522 时，把 `.rc` 连同它前面的分隔点一起隐掉，
+   好评率与「剩余天数」都能完整显示；跨行对齐仍靠 `.rate`/`.days` 的固定宽维持。
+   ⚠️ **@container 量的是 content-box，不是 border-box** —— `.row` 只有 6px 左边框、
+   无 padding，所以这里写 **516 = 522 − 6**。第一版错写成 530（把 border-box 口径的数
+   直接搬进来）：wrap 封顶 1200 后行宽停在 532、content-box 只有 526 < 530 →
+   **PC 最大化时评价数被隐藏**（用户实测；拖动中 wrap 未封顶、行宽能过 530 所以显示，
+   「拉到边界又被藏」正是封顶那一瞬）。
+   ⚠️ 改这个数或改 compactCount 后，用「今天结束」的卡片在
+   1101 / 1161（隐藏带右界）/ 1279 / 1440（封顶档）复测：
+   评价数在封顶档要**显示**，隐藏带里「剩余天数」仍要完整。 */
+@container row (min-width: 480px) and (max-width: 516px) {
+  body:not(.compact) .row-sub .rc,
+  body:not(.compact) .row-sub .rc + .sp { display: none; }
+}
 /* 没有原名时（Steam 回退成英文名，或剥完只剩汉字）那个空 div 仍会白占宽度 ——
    实测「MONSTER HUNTER RISE」这类中文名缺失的条目，标题被压到只剩 6 个字。
    `:empty` 判得准：app.js 用的是 `textContent = enTitle(item)`，没有内容就是真的空节点。 */
@@ -724,7 +773,7 @@ body.compact .days-final {
   margin-top: var(--sp-3); font: inherit; font-size: var(--fs-body); padding: 6px 16px;
   border: 1px solid var(--line); background: var(--card); border-radius: 999px; cursor: pointer;
 }
-.empty-retry:hover { background: #eef1f5; }
+@media (hover: hover) { .empty-retry:hover { background: #eef1f5; } }
 
 /* ================= 页脚 =================
    2026-10-07 用户：「底部信息栏居中显示，精简内容，不要生成时间和最后运行时间，
@@ -732,7 +781,7 @@ body.compact .days-final {
 .footer { color: var(--muted); font-size: var(--fs-sub); padding: var(--sp-4) 12px 32px; text-align: center; }
 .footer p { margin: var(--sp-1) 0; }
 .foot-links a { color: var(--accent); text-decoration: none; }
-.foot-links a:hover { text-decoration: underline; }
+@media (hover: hover) { .foot-links a:hover { text-decoration: underline; } }
 .foot-links .sep { color: var(--muted); margin: 0 var(--sp-1); }
 
 /* ================= 「关于网站」页 ================= */
@@ -776,7 +825,7 @@ body.compact .days-final {
 .about table.logs th { font-weight: 600; color: var(--text); }
 .about .num { font-variant-numeric: tabular-nums; }
 .about a { color: var(--accent); text-decoration: none; }
-.about a:hover { text-decoration: underline; }
+@media (hover: hover) { .about a:hover { text-decoration: underline; } }
 
 /* ==================================================================
    三档视口：手机 ≤600（只竖屏）/ 平板 601~1100（横竖屏）/ PC ≥1101（只横屏）
