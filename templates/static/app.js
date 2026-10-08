@@ -940,44 +940,33 @@
     drawer.hidden = !open;
     drawerMask.hidden = !open;
     filterOpenBtn.setAttribute("aria-expanded", open ? "true" : "false");
-    if (open) placeDrawer();          // 手机端要按按钮当前位置算 bottom，见 placeDrawer
+    if (open) placeDrawer();          // 面板贴着浮层按钮上沿，bottom 要按按钮当前位置算
   }
 
   // ------------------------------------------------------------------
-  // 手机端：「筛选」按钮搬进右下角浮层 + 面板贴着它上沿展开
-  // 用户 2026-10-07：「手机的筛选放到右边精简模式上方，也是点开就可以选，
-  // 这样才符合手机的操作逻辑」
+  // 「筛选」按钮在右下角浮层 + 面板贴着它上沿展开（2026-10-08 起全端统一）
+  // 用户：「PC 端滑动页面时筛选也放到右侧精简模式框上方，和手机端布局一致」
+  // —— 原先只有手机搬浮层、桌面挂在筛选行下拉开，两套布局；现在只有一套。
   // ------------------------------------------------------------------
 
-  /** 是否手机档 —— 与 app.css 的 `@media (max-width: mobile_breakpoint_px)` 同一条断点
-      （数值从 payload 来，见本文件开头的 `mq`；别在这里另写一个像素数）。 */
-  function isMobileView() { return !!mq.matches; }
-
-  /** 把**同一个** `#filter-open` 节点在「筛选行」与「右下角浮层」之间搬一次。
+  /** 把**同一个** `#filter-open` 节点放进右下角浮层（全端统一，只搬一次）。
       为什么搬节点而不是写两份 markup：文案、角标、已选态都只有一份实现，
       两份按钮迟早会出现「角标数对不上」这种漂移。
       插到浮层最前面 → 顺序是 [筛选, 精简, 返回顶部]，「筛选」正好在「精简」上方 ✓。 */
   function placeFilterButton() {
     if (!filterOpenBtn) return;
     var floaters = document.getElementById("floaters");
-    var bar = document.getElementById("filterbar");
-    if (!floaters || !bar) return;
-    if (isMobileView()) {
-      if (filterOpenBtn.parentNode !== floaters) {
-        floaters.insertBefore(filterOpenBtn, floaters.firstChild);
-      }
-    } else if (filterOpenBtn.parentNode !== bar) {
-      bar.insertBefore(filterOpenBtn, bar.firstChild);
+    if (!floaters) return;
+    if (filterOpenBtn.parentNode !== floaters) {
+      floaters.insertBefore(filterOpenBtn, floaters.firstChild);
     }
   }
 
-  /** 手机端面板贴着浮层按钮的**上沿**展开 —— `bottom` 只能等打开那一刻量：
+  /** 面板贴着浮层按钮的**上沿**展开（全端统一）—— `bottom` 只能等打开那一刻量：
       浮动按钮的堆叠高度会随「返回顶部」是否出现而变化（±50px），纯 CSS 算不出来。
-      桌面端面板是 `position:absolute` 挂在 `.filterbar` 上，这里什么都不用做
-      （顺手清掉手机端写过的 inline 值，免得残留）。 */
+      CSS 里只写 64px 兜底（app.js 没跑时的估计值），打开瞬间以这里量的为准。 */
   function placeDrawer() {
     if (!drawer || !filterOpenBtn) return;
-    if (!isMobileView()) { drawer.style.bottom = ""; return; }
     var r = filterOpenBtn.getBoundingClientRect();
     drawer.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 8)) + "px";
   }
@@ -988,7 +977,9 @@
    *    （review-s9-01 补充审查 Spec (c)）。
    *  · 「今日新增：新史低 X · 平史低 Y」摘要 —— refs.md §10.7 用户定的是
    *    **只放首页**，五类标签页不放（列表页有自己的条数 lv-count）。
-   *    原先这个函数只管按钮，摘要就跟着留在列表页上了（用户 2026-10-07 报的违规）。
+   *    2026-10-08 起摘要挪进 #picks（「最值得买」标题上方，用户定的位置），
+   *    随 #picks 一起显隐；这里的 hidden 是双保险（summary 自带
+   *    display:inline-flex，hidden 必须显式写回，见 app.css 那条坑）。
    */
   function syncFilterVisibility() {
     if (filterOpenBtn) filterOpenBtn.hidden = !state.section;
@@ -1022,7 +1013,7 @@
     });
     syncFilterUI();
     syncFilterVisibility();
-    placeFilterButton();          // 手机档要把按钮搬进右下角浮层（见 placeFilterButton）
+    placeFilterButton();          // 按钮全端都在右下角浮层（见 placeFilterButton）
   }
 
   // ------------------------------------------------------------------
@@ -1069,7 +1060,7 @@
   // 效果已经能表达可点，气泡多此一举）—— refs.md §6.7 B11 的招 3 整条作废。
 
   function onBreakpointChange() {
-    placeFilterButton();               // 跨 600px 时「筛选」要在浮层与筛选行之间搬
+    placeFilterButton();               // 幂等兜底：按钮永远在浮层（正常在 init 已就位）
     setDrawer(false);                  // 搬完按钮面板位置就变了，直接收起更省事
     renderPicks();                     // 每页张数随断点变（口径只在 picksPerPage）
     if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }

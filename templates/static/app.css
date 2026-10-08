@@ -195,12 +195,12 @@ html, body {
 .msg-alert a { color: inherit; }
 
 /* ================= 筛选行 + 抽屉/下拉面板 =================
-   一行三件事（左→右）：**筛选按钮**（B1/B3）· **已选条件小标签**（B3，手机不显示）·
-   **今日新增摘要**（S2，只在首页）。
-   ⚠️ `position: relative` 是给 ≥601px 的「按钮下方下拉面板」做定位锚点的（E1），
-   别为了别的用途把它改掉 —— 面板是 .filterbar 的子元素，靠它对齐按钮左边缘。 */
+   一行内容：**已选条件小标签**（B3，只在列表页；手机不显示）。
+   —— 「筛选按钮」2026-10-08 起全端在右下角浮层、「今日新增摘要」挪进 #picks
+   （「最值得买」标题上方），都不在这一行了。
+   ⚠️ `.filterbar` 只是 .drawer 的 DOM 归属（冒烟有断言）；面板 fixed 贴视口，
+   这里**不再写 position:relative** —— 它已无定位用途（2026-10-08 review 删）。 */
 .filterbar {
-  position: relative;
   display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
   margin: var(--sp-3) 0 var(--sp-1);
 }
@@ -214,18 +214,26 @@ html, body {
    2026-10-07 第二轮：从 50×30px / 12px 的「次要按钮长相」改成**主操作**长相 ——
    高度 36px（手机 40px）、字号 14px、字重 600、圆角 10px（与卡片同族，不再是全圆胶囊）、
    加漏斗图标；**选了条件就整体变蓝**（描边 + 浅蓝底 + 蓝字 + 实心蓝计数），
-   这样「有没有筛过」不用去读那个 16px 小圆点。 */
+   这样「有没有筛过」不用去读那个 16px 小圆点。
+   2026-10-08 用户：「PC 端滑动页面时筛选也放到右侧精简模式框上方，和手机端布局一致」
+   → 按钮**全端**都在右下角浮层（app.js placeFilterButton 只搬一次），样式即
+   浮层方块（桌面 46×44、手机 42×42，逐档与 .btn-float 同高矮），「筛选」二字与
+   折角 caret 靠 display:none 收进方块里；面板也从「筛选行下拉」改成
+   「贴浮层上沿」（见文件末尾 .drawer）。 */
 .filter-open {
-  display: inline-flex; align-items: center; gap: var(--sp-2);
-  min-height: 36px; padding: 0 var(--sp-4); border-radius: 10px;
+  position: relative;               /* 角标的定位锚点 */
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 46px; height: 44px; min-height: 0; padding: 0; border-radius: 10px;
+  box-shadow: var(--shadow-card);
   font-size: var(--fs-body); font-weight: 600;
 }
-.filter-open .f-ico { width: 15px; height: 15px; fill: currentColor; flex: 0 0 auto; }
-.filter-open .f-caret { font-size: var(--fs-aux); color: var(--faint); line-height: 1; }
+.filter-open .f-label, .filter-open .f-caret { display: none; }
+.filter-open .f-ico { width: 18px; height: 18px; fill: currentColor; flex: 0 0 auto; }
 .filter-open.is-on { border-color: var(--accent); background: #eef4ff; color: #1d4ed8; }
-.filter-open.is-on .f-caret { color: #1d4ed8; }
 .f-badge {
-  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+  position: absolute; top: -5px; right: -5px;
+  min-width: 18px; height: 18px; padding: 0 6px; border-radius: 9px;
+  border: 2px solid var(--card);                    /* 白描边，压在蓝底上也认得出 */
   background: #e5eaf3; color: #475569; font-size: var(--fs-sub); font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
 }
@@ -262,9 +270,12 @@ html, body {
    ⚠️ 「新史低 / 平史低」的字号（`--fs-sub` 12px）要**比「今日新增」（`--fs-aux` 11px）
    大一档** —— 用户明确要求的那句话就是这个。 */
 .summary {
-  margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-4);
-  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-card);
+  display: inline-flex; align-items: center; gap: var(--sp-4);
+  background: var(--card); border: 1px solid var(--new-low); box-shadow: var(--shadow-card);
   border-radius: 999px; padding: 4px var(--sp-4);
+  margin-bottom: var(--sp-2);   /* 2026-10-08 挪到「最值得买」标题上方，与标题留一口气 */
+  /* 2026-10-08 用户：「加一圈细细的红线」—— 1px 新史低红描边，取代原灰线
+     （数字本来就是语义色，描边同色系只提亮不添新色）。 */
 }
 .summary .s-cap { font-size: var(--fs-aux); color: var(--muted); }
 .summary .s-item { display: inline-flex; align-items: baseline; gap: 5px; }
@@ -285,9 +296,11 @@ html, body {
    悬停有 tooltip 说明原因（app.js 写 title）。 */
 .chip.opt.is-implied:disabled { text-decoration: none; opacity: .45; }
 .drawer-mask { position: fixed; inset: 0; background: rgba(16, 24, 40, .42); z-index: 40; }
+/* 定位（fixed + right/bottom/width）与投影统一写在文件末尾那条 .drawer（2026-10-08
+   全端统一浮层后只剩一份），这里只保留配色、层级与纵向布局。 */
 .drawer {
-  position: fixed; z-index: 41; background: var(--card);
-  display: flex; flex-direction: column; box-shadow: 0 -8px 24px rgba(16, 24, 40, .18);
+  z-index: 41; background: var(--card);
+  display: flex; flex-direction: column;
 }
 /* ⚠️ 凡是在别处写了 `display:` 的元素，作者样式都会盖掉 UA 的 `[hidden]{display:none}`
    —— 必须在这里显式写回来。已踩过两次：
@@ -637,7 +650,8 @@ html, body {
 .pager .load-more { padding: 6px 16px; border-radius: 999px; }
 
 /* ================= 浮动按钮 + 无图精简模式 ================= */
-.floaters { position: fixed; right: 16px; bottom: 20px; z-index: 30; display: flex; flex-direction: column; gap: var(--sp-2); }
+/* right:12px 与 .drawer 的 right:12px 同一条竖线（2026-10-08 全端统一后抽屉贴按钮上沿） */
+.floaters { position: fixed; right: 12px; bottom: 14px; z-index: 30; display: flex; flex-direction: column; gap: var(--sp-2); }
 .btn-float {
   width: 46px; height: 44px; padding: 0; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--text);
@@ -649,6 +663,8 @@ html, body {
 .btn-float.show { opacity: 1; visibility: visible; }
 @media (hover: hover) { .btn-float:hover { background: #eef1f5; } }
 .btn-float.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* 「回到顶部」的箭头图标（2026-10-08）：字符 ↑ 只有 12px 看不清，换 20px 实心箭头 */
+.btn-top .top-ico { width: 20px; height: 20px; fill: currentColor; display: block; }
 
 /* ================= 无图精简模式（2026-10-07 第七轮定稿）=================
    沿革（三次被否，别再往回改）：
@@ -790,6 +806,9 @@ body.compact .days-final {
    （19px 只给站点名）。同档内靠**字重**拉开两级：h1 700 / 区块 h2 600。 */
 .about h1 { font-size: var(--fs-title); font-weight: 700; margin: var(--sp-3) 0 6px; }
 .about .lead { color: var(--muted); font-size: var(--fs-body); margin: 0; }
+/* 顶部介绍与下方板块卡留一口气（2026-10-08 用户：「介绍与两个板块边缘挨的太近，
+   留一点距离」）。⚠️ 限定 `> .lead` —— 免责块里的 p.lead 不吃这条。 */
+.about > .lead { margin-bottom: var(--sp-4); }
 .about .block {
   background: var(--card); border-radius: 8px; box-shadow: var(--shadow-card);
   padding: 14px 16px; margin-bottom: var(--sp-3);
@@ -849,19 +868,8 @@ body.compact .days-final {
   }
   .nav.open { display: flex; }
   .nav-item { width: 100%; text-align: left; padding: 11px 12px; border-radius: 8px; }
-  /* 「关于网站」页的导航只有一个「回首页」链接，那一页既没有汉堡按钮、也没加载 app.js
-     —— 跟着上面的 display:none 一起藏掉 = **手机上无法从关于页返回首页**
-     （2026-10-07 实测：390px 视口下 .nav 渲染成 0×0）。用 .nav-static 明确豁免：
-     它本来就不需要折叠，永久横排显示。 */
-  .nav.nav-static {
-    position: static; display: flex; flex-direction: row; gap: 0;
-    padding: 0; margin: 0; background: none; border: 0; box-shadow: none;
-  }
-  .nav.nav-static .nav-item { width: auto; padding: 6px 10px; text-align: center; }
-  /* 关于页顶栏在手机上改成两行：① 站点名 + 回首页　② 生成时间右对齐
-     （一行塞不下：站点名 ≈150px + 链接 ≈90px + 生成时间 ≈105px > 390px 视口可用宽） */
-  .topbar-about { flex-wrap: wrap; row-gap: 2px; }
-  .topbar-about .generated { flex: 1 1 100%; text-align: right; font-size: var(--fs-aux); }
+  /* 「关于网站」页 2026-10-08 删掉了顶栏导航（nav-static 豁免规则随之删除）——
+     本页不再有导航，返回走页脚的「← 回首页」；站点名 + 生成时间一行放得下。 */
 
   /* 消息区：季节条换行（起止时间另起一行） */
   .msg-fest { padding: 10px 0; }
@@ -871,30 +879,13 @@ body.compact .days-final {
   /* 筛选面板的定位在文件末尾（现在所有宽度都是「按钮下方悬浮气泡窗」），
      这里不再写第二份 —— 原先只写在本档，导致平板 601~1100 没有定位、面板跑出视口 */
 
-  /* 筛选行：**手机上「筛选」已经不是行内按钮了** —— app.js 把它搬进右下角的
-     `#floaters`，跟「精简 / 返回顶部」一样做成 42×42 的浮动方块（放在「精简」上方）。
-     用户 2026-10-07：「手机的筛选放到右边精简模式上方，也是点开就可以选，
-     这样才符合手机的操作逻辑」。方块里只放漏斗图标 + 角标（放不下「筛选」二字）。
-     ⚠️ 尺寸必须与 `.btn-float` 在本档的 42×42 一致，否则一列方块高矮不一。 */
-  .filter-open {
-    position: relative; width: 42px; height: 42px; min-height: 0; padding: 0;
-    justify-content: center; gap: 0; border-radius: 10px;
-    box-shadow: var(--shadow-card);
-  }
-  .filter-open .f-label, .filter-open .f-caret { display: none; }
-  .filter-open .f-ico { width: 18px; height: 18px; }
-  /* 角标挂到方块右上角（带一圈白描边，压在蓝底上也认得出） */
-  .filter-open .f-badge {
-    position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px;
-    border: 2px solid var(--card); border-radius: 9px;
-  }
-  /* 手机上面板从**浮层按钮的上沿**展开 —— 定位规则放在文件末尾（必须排在通用那条
-     `.drawer{position:absolute}` 之后，否则会被它盖掉）。 */
+  /* 筛选面板与「筛选」按钮 2026-10-08 起全端统一为右下角浮层（样式已收进
+     基础规则与文件末尾的 .drawer），这里不再写档位专属的第二份。 */
   /* 已选条件小标签在手机上整条不显示（用户 2026-10-07：「手机端还是默认 B1」）——
      面板里点开就能看/改，不用在行内再铺一遍。 */
   .active-chips { display: none; }
-  /* 摘要（只在首页出现）：手机上一行放不下按钮 + 胶囊 → 允许换行、胶囊占满整行靠右 */
-  .summary { gap: var(--sp-2); padding: 3px 12px; }
+  /* 摘要（只在首页出现）：2026-10-08 已挪进 #picks（大卡标题上方），随大卡自适应，
+     这里不再需要手机档的挤压规则 */
 
   /* 大卡：列数/每页张数由 app.js 按宽度算（口径只在 app.js 的 picksPerPage，
      这里不写第二份数字）；封面比例三档统一 3:4（原手机档的 1:1 覆盖已删 —— 断点处会跳） */
@@ -919,32 +910,33 @@ body.compact .days-final {
   .listview .rows { grid-template-columns: 1fr; }
 
   .floaters { right: 12px; bottom: 14px; }
-  .btn-float { width: 42px; height: 42px; }
+  /* 筛选方块与 .btn-float 逐档同尺寸，否则浮层一列高矮不一 */
+  .btn-float, .filter-open { width: 42px; height: 42px; }
   .about table.kv th { width: 88px; font-size: var(--fs-sub); }
   .about table.logs { display: block; overflow-x: auto; }
 }
 
-/* ---- 筛选面板：**所有宽度都用同一套「按钮正下方的悬浮气泡窗」**（2026-10-07 第三轮）----
-   用户：「手机筛选我觉得应该放到和精选上方按钮一样的悬浮气泡窗」——
-   原来手机走底部抽屉、≥601 走下拉，两种动效；现在统一成一套，手机上也是从按钮下方展开。
-   · 面板是 `.filterbar` 的子元素，`.filterbar{position:relative}` 是锚点；
-   · 宽度 `min(400px, 100%)` + `left:0` → 左边缘与按钮对齐、右边缘不越出内容区。
-     **400px 是量出来的**（用户 2026-10-07：「筛选栏展开有点太宽了，缩小一点，
-     pc 和手机的都太宽了，留了大量空白」）：最宽的一组是「排序」（精选 / 折扣降序 /
-     价格升序 / 好评率降序 = 294px）+ 面板左右内边距 32px = 326px，
-     所以 400px 里五个分组**每组都能排成一行**、右边只剩 ~70px 余量，
-     既不像原来 560px 那样空一大块，也不会因为太窄而把 chip 折行折出一堆空白。
-     再缩到 340 以下「排序 / 好评数量」就会折行（折行后每行右边照样空）。
-   ⚠️ 改这个数要同时看手机上那条（≤600 是 336px，见文件末尾）。
-   · `max-height` 取 70vh 与 560px 的小者 + 面板内部滚动 —— 手机上按钮离顶不远，
-     这个高度基本都能落在视口里（量过 390×844：面板底 ≈ 817 < 844）。
-   ⚠️ **别再给手机加回底部抽屉**（那正是用户要消除的「两种动效」）；
-     也别把 `bottom/right` 写进这条规则 —— 那会把面板钉到屏幕角上。 */
+/* ---- 筛选面板：**所有宽度都用「右下角浮层按钮上沿」这一套**（2026-10-08 全端统一）----
+   沿革：① ≤600 底部抽屉 / ≥601 按钮下方下拉（两种动效）→ 2026-10-07 第三轮统一成
+   「按钮下方悬浮气泡窗」；② 2026-10-08 用户：「PC 端滑动页面时筛选也放到右侧精简
+   模式框上方，和手机端布局一致」→ 按钮全端进右下角浮层（app.js placeFilterButton
+   只搬一次），面板跟着改成**贴浮层按钮上沿**的气泡窗 —— 只剩一套布局。
+   · `bottom` 的准确值由 app.js 在打开那一刻量按钮位置后写进 inline style
+     （浮层堆叠高度会随「返回顶部」出现而变化，纯 CSS 算不出来）；
+     这里 64px 只是 JS 没跑时的兜底（≈两层浮层方块 + 间距）。
+   · 宽度 `min(400px, calc(100vw - 24px))`：**400px 是量出来的**（用户 2026-10-07：
+     「筛选栏展开有点太宽了……」）—— 最宽的一组是「排序」（294px）+ 面板左右内边距
+     32px = 326px，400px 里五个分组每组都能排成一行；手机 390 视口取到 366px 同样
+     装得下。再缩到 340 以下「排序 / 好评数量」就会折行。
+   · `max-height` 取 70vh 与 560px 的小者 + 面板内部滚动。
+   ⚠️ 面板仍是 `.filterbar` 的子元素（`.filterbar{position:relative}`）—— 那个锚点
+     现在**不用于定位**（fixed 贴视口），只是 DOM 结构；别把面板挪出 .filterbar。
+   ⚠️ 别把 `top/left` 写进这条 —— 面板只从右下往上长。 */
 .drawer {
-  position: absolute; top: calc(100% + var(--sp-2)); left: 0; right: auto; bottom: auto;
-  width: min(400px, 100%); max-height: min(70vh, 560px);
+  position: fixed; left: auto; right: 12px; top: auto; bottom: 64px;
+  width: min(400px, calc(100vw - 24px)); max-height: min(70vh, 560px);
   border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: 0 16px 40px rgba(16, 24, 40, .18);
+  box-shadow: 0 16px 40px rgba(16, 24, 40, .18);   /* 覆盖基础那条底部抽屉投影 */
 }
 /* 透明遮罩：只负责接住「点面板以外 = 关闭」那一击，不压暗页面 ——
    悬浮气泡窗不是模态弹窗，整屏压暗的语汇只属于底部抽屉/对话框。 */
@@ -954,28 +946,8 @@ body.compact .days-final {
 .drawer-foot { padding: var(--sp-3) var(--sp-4); }
 .drawer-foot .chip { flex: 0 0 auto; padding: 7px 20px; }
 
-/* ---- 手机（≤600）：面板从**右下角浮层按钮的上沿**展开 ----
-   手机上「筛选」是浮层方块（app.js 把它搬进 #floaters、CSS 在上面那条手机档里改成 42×42），
-   按钮在屏幕右下角 → 面板只能往上长，所以这里从「按钮正下方」改成「按钮正上方」。
-   ⚠️ `bottom` 的准确值由 app.js 在打开那一刻量按钮位置后写进 inline style
-      （浮层堆叠高度会随「返回顶部」出现而变化，纯 CSS 算不出来）；
-      下面这个 64px 只是 JS 没跑时的兜底。
-   ⚠️ 这条**必须排在上面那条通用 `.drawer{position:absolute}` 之后**，
-      否则同优先级下会被它盖掉（文件末尾就是干这个用的）。 */
-@media (max-width: 600px) {
-  /* 手机上也是「窄版气泡窗」：靠右对齐（按钮在右下角）、宽 336px ——
-     用户 2026-10-07：「pc 和手机的都太宽了，留了大量空白」。
-     336px 同样保证五个分组每组一行（最宽的「排序」294px + 内边距 32px = 326px）。 */
-  .drawer {
-    position: fixed; left: auto; right: 12px; top: auto; bottom: 64px;
-    width: min(336px, calc(100vw - 24px)); max-height: calc(100vh - 140px);
-  }
-}
-
 /* ---- PC 档（≥1101）----
-   ⚠️ 原来的「抽屉从右侧滑出（width:380px）」已随 E1 作废 —— PC 与平板现在共用
-   ≥601 那条「按钮下方下拉」（用户 2026-10-07：位置按 E1，面板样式沿用老的）。
-   这里不再给 .drawer 任何定位，**别把右侧浮层加回来**：两处定位会互相打架。
+   筛选面板与按钮 2026-10-08 起全端统一右下角浮层（见上），本档不再有专属定位。
    行卡片的一行结构由 @container 按**行宽**判断（见上文 480px 那条）：
    768 单列的行宽 707px 也走一行，PC 两列 532px 同样走一行。 */
 

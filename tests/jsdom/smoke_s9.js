@@ -267,17 +267,23 @@ check("首页隐藏「筛选」按钮（属性 + 计算样式）",
   "hidden=" + fBtn.hidden + " · display=" + dom.window.getComputedStyle(fBtn).display);
 check("首页显示概览摘要", !doc.getElementById("summary").hidden);
 
-// 大卡翻页 —— 2026-10-07 第六轮起默认**只放一页**（5 张，用户：「平时 5 张就行」），
-// 所以默认状态下没有翻页可言：两个圆按钮禁用、整块 deck-nav 收起、副标题不再写「第 1/1 页」。
+// 大卡翻页 —— 2026-10-08 起默认上限 3 页 15 张（最低 5、能凑 15 凑 15、不凑数）：
+// 真实产物（大促满额）走**多页**分支：翻页可用、副标题写页码；
+// 单页收起（deck-nav 整块 hidden）的分支在下面用受控数据（切回 5 张）覆盖。
 const nextBtn = doc.getElementById("picks-next");
 const prevBtn = doc.getElementById("picks-prev");
 const picksSubEl = doc.getElementById("picks-sub");
-check("单页大卡：翻页按钮禁用 + 整块收起 + 副标题不带页码",
-  nextBtn.disabled && prevBtn.disabled &&
-  !!doc.querySelector("#picks .deck-nav[hidden]") &&
-  !/第\s*\d+\s*\/\s*\d+\s*页/.test(picksSubEl.textContent),
-  picksSubEl.textContent);
-check("单页大卡仍是 5 张、排名从 #1 开始",
+// 期望页数由夹具数据推算（ceil(总张数/列数)），不硬编码 —— 大促夹具换了张数也不脆断
+  const mpCols = Number(((doc.getElementById("picks-track").getAttribute("style") || "")
+    .match(/repeat\((\d+),/) || [0, 0])[1]);
+  const mpTotal = ((dom.window.REPORT_DATA || {}).picks || []).length;
+  const mpPages = mpCols && mpTotal ? Math.ceil(mpTotal / mpCols) : 0;
+  check("多页大卡：第 1 页上「上一页」禁用、「下一页」可用 + 副标题写页码",
+    prevBtn.disabled && !nextBtn.disabled &&
+    !doc.querySelector("#picks .deck-nav[hidden]") &&
+    mpPages > 1 && new RegExp("第\\s*1\\s*/\\s*" + mpPages + "\\s*页").test(picksSubEl.textContent),
+    picksSubEl.textContent + "（期望共 " + mpPages + " 页）");
+check("大卡一排 5 张（第一页）、排名从 #1 开始",
   $$("#picks-track .pick").length === 5 &&
   $$("#picks-track .pick-rank")[0].textContent === "#1",
   $$("#picks-track .pick-rank").map(function (e) { return e.textContent; }).join(","));
@@ -311,10 +317,14 @@ check("图标链接不会被 CSS 藏掉（含精简模式）",
 // ---- 2026-10-07 第三轮：手机端「筛选」搬进右下角浮层（桌面上它必须待在筛选行里）----
 // jsdom 不跑媒体查询（mq.matches 被桩成 false = 桌面档），所以这里只锁桌面分支：
 // 桌面下按钮不能在浮层里，否则手机那份搬动逻辑会把它永久留在浮层。
-check("桌面档：「筛选」按钮待在筛选行、不在右下角浮层",
-  doc.querySelector(".filterbar > #filter-open") === doc.getElementById("filter-open") &&
-  doc.querySelector("#floaters #filter-open") === null,
-  "浮层里的节点：" + Array.from(doc.getElementById("floaters").children).map((c) => c.id).join(","));
+check("「筛选」按钮全端在右下角浮层、且在「精简」上方（2026-10-08 全端统一）",
+  doc.querySelector("#floaters #filter-open") === doc.getElementById("filter-open") &&
+  doc.querySelector(".filterbar > #filter-open") === null &&
+  (function () {
+    const kids = Array.from(doc.getElementById("floaters").children);
+    return kids[0].id === "filter-open" && kids[1] && kids[1].id === "btn-compact";
+  })(),
+  "浮层顺序：" + Array.from(doc.getElementById("floaters").children).map((c) => c.id).join(","));
 // 手机上按钮只留漏斗图标 → 「筛选」二字必须有个可隐藏的类名（别写成裸 span）
 check("「筛选」二字带可隐藏的 .f-label",
   $$("#filter-open .f-label").length === 1);
@@ -555,6 +565,15 @@ check("陈旧告警优先于站点通知（两者同时成立时）",
 // ---- S9-3：空状态三态插画（refs.md B13）----
 // ① 无内容：把 sections 清空
 const emptyDoc = buildDom((o) => { o.sections = []; o.picks = []; }).window.document;
+
+// ② 单页大卡（2026-10-08：默认上限 15 张后，真实产物恒为多页）——
+//    用受控数据把大卡切回 5 张，验证「单页时翻页整块收起 + 副标题不带页码」的分支。
+const singleDoc = buildDom((o) => { o.picks = (o.picks || []).slice(0, 5); }).window.document;
+check("单页大卡（受控 5 张）：翻页整块收起 + 副标题不带页码",
+  !!singleDoc.querySelector("#picks .deck-nav[hidden]") &&
+  !/第\s*\d+\s*\/\s*\d+\s*页/.test(singleDoc.getElementById("picks-sub").textContent),
+  singleDoc.getElementById("picks-sub").textContent);
+
 const emptyEl = emptyDoc.getElementById("empty");
 check("没内容 → 显示空状态（不再只是一句话）",
   !emptyEl.hidden && !!emptyEl.querySelector(".empty-art"),
@@ -617,13 +636,16 @@ check("大卡每页张数 = 实际列数（不是写死的 5）", (function () {
   const cols = cm ? Number(cm[1]) : 0;
   const sub = doc.getElementById("picks-sub").textContent;
   const n = $$("#picks-track .pick").length;
-  // jsdom 没有布局引擎 → clientWidth 恒 0，走的是「按视口宽度估列数」那条兜底
-  // （1024 视口 → 5 列）。2026-10-07 第六轮起大卡默认只取一页（5 张），
-  // 所以这里判两件事：① 张数不超过一排的列数或刚好一页；② 副标题里的页数与张数自洽
-  // （单页时不写页码，多页时「第 x/y 页」的 y 必须 = ceil(张数/列数)）。
-  if (!cols || n < 2 || n > 8) return false;
+  const total = ((dom.window.REPORT_DATA || {}).picks || []).length;
+  // jsdom 没有布局引擎 → clientWidth 恒 0，走「按视口宽度估列数」兜底（1024 → 5 列）。
+  // track 上摆的是**当前页**的 cols 张；多页时副标题「第 x/y 页」的 y = ceil(总张数/列数)。
+  if (!cols || !total) return false;
   const pg = sub.match(/第\s*(\d+)\s*\/\s*(\d+)\s*页/);
-  return pg ? Number(pg[2]) === Math.ceil(n / cols) : n <= cols;
+  if (total > cols) {
+    return n === cols && !!pg &&
+      Number(pg[2]) === Math.ceil(total / cols) && Number(pg[1]) === 1;
+  }
+  return n === total && n <= cols && !pg;
 })(), doc.getElementById("picks-sub").textContent);
 
 // 板块列表页的顺序必须来自服务端下发的 section_order（否则「查看更多」里顺序和首页不一致）

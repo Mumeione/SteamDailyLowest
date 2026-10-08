@@ -561,6 +561,31 @@ class HomeSectionsTest(unittest.TestCase):
         self.assertEqual(len(got["new_low"]["items"]), 3)   # home_section_preview
         self.assertEqual(got["new_low"]["count"], 10)       # 完整条数照实报
 
+    def test_section_preview_slots_dynamic(self):
+        """**栏位统一、随池量动态**（2026-10-08 用户定案）：四板块共用同一个
+        预览条数 K = clamp(最小池量, 最低栏位 5, 上限 10) —— 平时与节日之间
+        自动调整，个别板块池子不足 K 时如实显示池量（不凑数）。
+
+        （大促时三板块共用 featured_score 曾让热门/大额折扣头 10 逐项相同 ——
+          排序已分语义，见 test_section_sort_follows_board_semantics。）"""
+        cfg = dict(self.CFG, home_section_preview=10)
+
+        def pool(n_new, n_pop, n_big, n_exp):
+            cards = ([self.card(f"新{i}", count=200) for i in range(n_new)]
+                     + [self.card(f"热{i}", count=20000) for i in range(n_pop)]
+                     + [self.card(f"折{i}", cut=90, count=200) for i in range(n_big)]
+                     + [self.card(f"临{i}", count=200, upcoming=True) for i in range(n_exp)])
+            return {s["key"]: s for s in report.build_sections(cards, cfg)}
+
+        # 平时：最小池量 3 → K = 5；不足 K 的板块（热门 3、临期 2）如实显示池量
+        got = pool(8, 3, 12, 2)
+        self.assertEqual([len(got[k]["items"]) for k in ("new_low", "popular", "big_cut", "expiring")],
+                         [5, 3, 5, 2])
+        # 节日：各池都 ≥ 上限 → K = 10 满额
+        got = pool(12, 10, 12, 10)
+        self.assertEqual([len(got[k]["items"]) for k in ("new_low", "popular", "big_cut", "expiring")],
+                         [10, 10, 10, 10])
+
     def test_pick_page_sent_via_payload(self):
         """大卡「一页几张」由服务端下发（payload `pick_page`），前端 app.js 只读
         不抄 —— 双源口径（服务端整数页取数 ↔ 前端一排最多几张）经它对齐。"""
@@ -699,13 +724,28 @@ class HomeSectionsTest(unittest.TestCase):
         self.assertEqual(picks[0]["title"], "新", "分再高也排在后面")
         self.assertEqual([i["title"] for i in picks], ["新", "平"])
 
-    def test_picks_count_defaults_to_one_page(self):
-        """默认只放**一页（5 张）**（用户 2026-10-07：「平时 5 张就行，能凑够再放，
-        不要凑数」）—— 而且不够一页时只用平史低补满这一页，不多放。"""
+    def test_picks_default_cap_is_fifteen(self):
+        """默认上限 = **三页 15 张**（2026-10-08 用户澄清：最低 5、最多 15、
+        新史低为主、没有才替补平史低、不强行凑 15 —— 上一版默认 5 导致
+        **大促也只有 5 张**，`home_picks` 配置从未设置）。新史低 9 张 →
+        2 整页（10 张），末页用平史低补满。"""
         cfg = {k: v for k, v in self.CFG.items() if k != "home_picks"}
-        cards = [self.card(f"新{i}", count=200) for i in range(9)]
+        cards = ([self.card(f"新{i}", count=200) for i in range(9)]
+                 + [self.card(f"平{i}", count=200, low="tie") for i in range(3)])
         picks = report.pick_top(cards, cfg)
-        self.assertEqual(len(picks), report.HOME_PICKS_PAGE)
+        self.assertEqual(len(picks), 10)
+        self.assertEqual([i["title"] for i in picks],
+                         [f"新{i}" for i in range(9)] + ["平0"])
+
+    def test_picks_floor_is_one_page(self):
+        """最低一页 5 张：新史低只有 3 张时也要放满一页（平史低补位）——
+        「最低展示五个」。新史低 + 平史低都不足 5 时如实显示池量（不凑数）。"""
+        cfg = {k: v for k, v in self.CFG.items() if k != "home_picks"}
+        picks = report.pick_top([self.card(f"新{i}", count=200) for i in range(3)]
+                                + [self.card(f"平{i}", count=200, low="tie")
+                                   for i in range(4)], cfg)
+        self.assertEqual(len(picks), 5)
+        self.assertEqual(sum(1 for p in picks if p["low_class"] == "new"), 3)
 
     def test_picks_count_rounds_to_whole_pages_when_cap_raised(self):
         """把上限调大（15）时按**整数页**取：新史低 7 张 → 2 页（10 张），

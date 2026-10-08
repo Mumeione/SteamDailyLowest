@@ -78,31 +78,31 @@
 <div class="floaters" id="floaters">
   <button type="button" class="btn-float" id="btn-compact" title="无图精简模式"
           aria-pressed="false">精简</button>
-  <button type="button" class="btn-float" id="btn-top" title="回到顶部"
-          aria-label="回到顶部">↑</button>
+  <button type="button" class="btn-float btn-top" id="btn-top" title="回到顶部"
+          aria-label="回到顶部">
+    {# 2026-10-08 用户：「箭头太小了不好看清」—— 字符 ↑（12px）换成 20px 实心箭头。
+       ⚠️ 墨迹 3.5~20.5，别裁进 viewBox 边缘（overflow:hidden 会切边）。 #}
+    <svg class="top-ico" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5 3.5 12.8h5v7.7h7v-7.7h5z"/>
+    </svg>
+  </button>
 </div>
 
 <main class="wrap">
 
-  {# 筛选行（2026-10-07 第二轮重做）：
-     ① **筛选按钮** —— B1 长相（漏斗 + 计数 + 折角），PC/平板额外挂一排
-        「已选条件小标签」（B3，见下）。
-        ⚠️ **手机上这个节点会被 app.js 搬进右下角的浮层（#floaters）**，
-        放在「精简」上方做成一个浮动方块（用户 2026-10-07：「手机的筛选放到右边
-        精简模式上方，这样才符合手机的操作逻辑」）—— 所以 `.f-label`（「筛选」二字）
-        与折角在手机档是隐藏的，只留漏斗图标 + 角标。
+  {# 筛选行（2026-10-07 第二轮重做；2026-10-08 起只承担②）：
+     ① **筛选按钮** —— B1 长相（漏斗 + 计数 + 折角）。markup 初始写在这里，
+        但 **app.js 初始化时会把这同一个节点搬进右下角浮层（#floaters）、
+        放在「精简」上方 —— 全端统一**（用户 2026-10-08：「PC 端滑动页面时筛选也
+        放到右侧精简模式框上方，和手机端布局一致」）；`.f-label`（「筛选」二字）
+        与折角因此全端隐藏，只留漏斗图标 + 角标。
         搬动的是**同一个节点**，不做两份 markup：文案与角标只有一份实现。
      ② **已选条件小标签**（#active-chips）—— 由 app.js 按 state.filters 渲染，
         每个都能单独 ✕ 掉、末尾一个「清空」。⚠️ 手机档 `.active-chips{display:none}`。
-     ③ **今日新增摘要**（S2）—— 白卡胶囊 + 大号数字，**只在首页**（refs §10.7）。
-        数字各自用语义色（新史低＝红、平史低＝中性深灰），「新史低 / 平史低」两个字的
-        字号**比「今日新增」大一档** —— 用户 2026-10-07：「新史低和史低字号比今日新增
-        大一点就行了」。
-        ⚠️ 数字前面**不要再放小色条**（用户：「中间不要留很粗的竖线，不好看，可以隔开
-        一点」）—— 靠间距 + 数字本身的颜色区分就够了。
-        切到分类列表页由 app.js 隐藏。
-     ⚠️ `#drawer` 必须留在 .filterbar **里面**：≥601px 的面板是 `position:absolute`
-        挂在 .filterbar 上的（E1「按钮正下方展开」），挪出去就会定位到别处。 #}
+     ③ **今日新增摘要**（S2）已挪进下方 #picks（「最值得买」标题上方）—— 见那里。
+     ⚠️ `#drawer` 仍留在 .filterbar **里面**：这是它的 DOM 归属（冒烟有断言），
+        但 2026-10-08 起面板是 `position:fixed` 贴右下浮层按钮上沿，
+        `.filterbar{position:relative}` 不再参与定位。 #}
   <div class="filterbar" id="filterbar">
     <button type="button" class="chip filter-open" id="filter-open"
             aria-expanded="false" aria-controls="drawer">
@@ -114,14 +114,9 @@
       <span class="f-caret" aria-hidden="true">▾</span>
     </button>
     <span class="active-chips" id="active-chips"></span>
-    <span class="summary" id="summary">
-      <span class="s-cap">今日新增</span>
-      <span class="s-item s-new"><b>{{ low_points["new"] }}</b><span class="s-unit">新史低</span></span>
-      <span class="s-item s-tie"><b>{{ low_points["tie"] }}</b><span class="s-unit">平史低</span></span>
-    </span>
 
-  {# S9-2 / E1：筛选面板 —— 手机上从屏幕底部滑出，平板与 PC 从**按钮正下方**展开
-     （同一个面板、同一个 DOM，定位由 app.css 的 ≤600 / ≥601 两条 @media 切换）。
+  {# 筛选面板 —— 2026-10-08 起全端统一：`position:fixed` 贴右下浮层按钮的上沿
+     （app.js placeDrawer 打开那一刻量按钮位置），不再分 ≤600 / ≥601 两套 @media。
      选项由 report.filter_specs(cfg) 生成。 #}
   <div class="drawer-mask" id="drawer-mask" hidden></div>
   <aside class="drawer" id="drawer" hidden aria-label="筛选">
@@ -157,6 +152,15 @@
 
   <section class="home" id="home">
     <div class="picks" id="picks" hidden>
+      {# ③ 今日新增摘要（S2）—— 2026-10-08 用户：「放到左边最值得买文字上方，
+         不放右侧了」→ 从筛选行挪到这里（大卡标题上方、左对齐）。
+         数字各自用语义色（新史低＝红、平史低＝中性深灰），字号口径见 app.css
+         .summary 的注释；切到分类列表页时随 #picks 一起被 app.js 藏起。 #}
+      <span class="summary" id="summary">
+        <span class="s-cap">今日新增</span>
+        <span class="s-item s-new"><b>{{ low_points["new"] }}</b><span class="s-unit">新史低</span></span>
+        <span class="s-item s-tie"><b>{{ low_points["tie"] }}</b><span class="s-unit">平史低</span></span>
+      </span>
       <div class="deck-head">
         <h2 class="deck-title">最值得买</h2>
         <span class="deck-sub" id="picks-sub"></span>
@@ -184,7 +188,7 @@
   <div id="empty" class="empty" hidden></div>
 </main>
 
-{# S9-2 / E1：筛选面板已挪进上面 .filterbar 里（≥601px 要靠它做绝对定位锚点），
+{# 筛选面板已挪进上面 .filterbar 里（DOM 归属；定位见 app.css 文件末尾的 .drawer），
    这里不再重复一份。 #}
 <script>window.FILTER_DEFAULTS = {{ filter_defaults | tojson }};</script>
 

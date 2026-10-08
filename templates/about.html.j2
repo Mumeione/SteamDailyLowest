@@ -13,9 +13,9 @@
 <body>
 
 <header class="topbar">
-  {# topbar-about：手机上这一行塞不下（站点名 + 回首页 + 生成时间），CSS 里让它换行；
-     nav-static：本页没有汉堡按钮也没加载 app.js，导航必须豁免手机端的折叠规则，
-     否则「← 回首页」在手机上会被 display:none 藏掉。 #}
+  {# 2026-10-08 用户：「删掉站名旁边的回首页」—— 关于入口旁边就是仓库和 Actions，
+     返回走页脚的「← 回首页」即可。原 nav-static（手机豁免折叠）随导航一起删除：
+     本页不再有导航，手机端也不再需要那套豁免规则。 #}
   <div class="wrap topbar-inner topbar-about">
     {# 与首页同一套站点名标识（纯 CSS，不引外部字体）；图标 2026-10-07 第二轮换成
        「下跌折线触底 + 基线」，与 favicon 同一枚（macro 见 _brand.j2）。
@@ -24,9 +24,6 @@
       {{ brand_mark() }}
       <span class="brand-text"><span class="brand-a">Steam</span><span class="brand-b">DailyLowest</span></span>
     </a>
-    <nav class="nav nav-static">
-      <a class="nav-item" href="index.html">← 回首页</a>
-    </nav>
     <div class="generated">生成时间 {{ generated_at_text }}</div>
   </div>
 </header>
@@ -110,9 +107,9 @@
   {# ⚠️ 块顺序 = 网格的「配行」（`.about .blocks` 是两列，同一行的两张卡会被拉成等高）：
      把高度相近的两块排在一起，行内留白才小。实测各块高度（1440 视口）：
        本轮抓取概览 471 · 筛选口径 432 · 数据来源 229 · 汇率 186 ·
-       史低构成 165 · 免责 106 · 仓库与运行状态 103
-     → 配行：(471,432) 差 39 · (229,186) 差 43 · (165,106) 差 59 · (103, 空)
-     所以顺序是：概览 → 筛选口径 → 数据来源 → 汇率 → 史低构成 → 免责 → 仓库 →（日志跨满整行）。
+       史低构成 165 · 免责 106
+     → 配行：(471,432) 差 39 · (229,186) 差 43 · (165,106) 差 59 →（日志跨满整行）。
+     2026-10-08 删掉「仓库与运行状态」块（页脚已有同款链接，见下）。
      ⚠️ 改块内容（尤其筛选口径的文案长度）会改变这些高度，配行会漂；挪块前后各量一次。 #}
   <section class="block">
     <h2>免责</h2>
@@ -122,14 +119,8 @@
     </p>
   </section>
 
-  <section class="block">
-    <h2>仓库与运行状态</h2>
-    <p class="foot-links">
-      <a href="{{ links.repo }}" target="_blank" rel="noopener">源码仓库</a>
-      <span class="sep">·</span>
-      <a href="{{ links.actions }}" target="_blank" rel="noopener">Actions 运行记录（判断今天有没有正常跑）</a>
-    </p>
-  </section>
+  {# 「仓库与运行状态」块已删（2026-10-08 用户：页脚有源码仓库 / Actions 运行记录，
+     关于入口旁边就是这两个链接，不要在关于页再放一遍）。 #}
 
   <section class="block wide">
     <h2>每日更新日志</h2>

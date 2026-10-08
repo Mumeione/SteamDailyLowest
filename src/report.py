@@ -507,6 +507,12 @@ DEFAULT_HOME_DAYS = 7
 DEFAULT_BIG_CUT = 80
 DEFAULT_NOTABLE = 10000
 DEFAULT_UPCOMING_HOURS = 48
+#: 四板块预览栏位的**上限**（节日满额）与**最低栏位**（平时整齐度）——
+#: 唯一来源在这里，配置键 `home_section_preview` / `home_section_preview_min`。
+#: 2026-10-08 用户问「最低设置多少个，3 还是 4 还是 5」→ 取 **5**：与大卡单排
+#: 5 张同高、页面节奏统一；3 偏空、4 不对称。口径见 :func:`build_sections`。
+DEFAULT_HOME_SECTION_PREVIEW = 10
+DEFAULT_HOME_SECTION_FLOOR = 5
 
 
 def _is_fresh(card: dict, days: int) -> bool:
@@ -596,18 +602,37 @@ def _section_sort(key: str, cfg: dict | None = None):
 
 
 def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
-    """首页四板块。``items`` 只放前 N 条（``home_section_preview``），
-    完整条数放 ``count``，前端「查看更多」按需展开（数据在 all.js 里）。"""
-    preview = int(cfg.get("home_section_preview", 10))
-    out = []
+    """首页四板块。``items`` 放前 K 条，完整条数放 ``count``，
+    前端「查看更多」按需展开（数据在 all.js 里）。
+
+    ⚠️ **栏位统一、随池量动态**（2026-10-08 用户定案）—— 明天大促结束后
+    新史低池量回落，固定 10 条会放不满、四板块参差。四板块共用**同一个**
+    预览条数 K，随池量在平时与节日之间自动调整：
+
+        K = clamp(四板块最小池量, 最低栏位, 上限)
+          = min(home_section_preview(10), max(home_section_preview_min(5), min_pool))
+
+      · 大促（各池都 ≥10）→ K = 10，满额；
+      · 平时（最小池量 5~9）→ K = 最低栏位 5 ~ 9，各板块条数一致、整齐；
+      · 个别板块池子不足 K 时**如实显示池量**（不凑数 —— 与大卡同一哲学，
+        池量本身就是「平时 vs 节日」的信号，不需要额外的节日开关）。
+    """
+    preview = int(cfg.get("home_section_preview", DEFAULT_HOME_SECTION_PREVIEW))
+    floor = int(cfg.get("home_section_preview_min", DEFAULT_HOME_SECTION_FLOOR))
+    boards = []
     for spec in HOME_SECTIONS:
         members = _section_members(spec["key"], cards, cfg)
         members.sort(key=_section_sort(spec["key"], cfg))
+        boards.append((spec, members))
+    min_pool = min((len(m) for _, m in boards), default=0)
+    k = min(preview, max(floor, min_pool))
+    out = []
+    for spec, members in boards:
         out.append({
             "key": spec["key"],
             "label": spec["label"],
             "count": len(members),
-            "items": members[:preview],
+            "items": members[:k],
         })
     return out
 
@@ -643,15 +668,18 @@ PICK_LOW_CLASSES = (classify.STEAM_LOW_NEW, classify.STEAM_LOW_TIE)
 #: 前端 app.js 的 `PICK_MAX_COLS`（一排最多几张）从 payload 读、不再自己写死 5
 #: （2026-10-07 review：双源靠注释提醒同步迟早漂移，改由 payload 下发）。
 HOME_PICKS_PAGE = 5
-#: 大卡张数的**默认上限** = 一页（5 张）。用户 2026-10-07 定的：
-#: 「平时凑不够 15 张内容，平时 5 张就行，能凑够再放，不要凑数」。
-#: 想放更多就改 `config.json` 的 `home_picks`（仍按整数页取：10 / 15；平史低只拿来
-#: **补末页的空格**，页数永远只由新史低决定 —— 见 :func:`pick_top` 的注释）。
-#: ⚠️ 别拿大促期间的数据来"验证"这条 —— 大促那几天新史低一天上千条（refs §6.2 实测
-#: 09-26→10-05 的每日新增：24/16/13/28/29/47/**1943**/4/2/4，1943 就是 10-02 那波大促），
-#: 上限当然天天填满；**平时一天只有个位数**，一页 5 张才是常态。
-#: 反过来说：大促期间候选多，但也没必要把首页顶成三页要翻的大卡。
-HOME_PICKS_DEFAULT = HOME_PICKS_PAGE
+#: 大卡张数的**默认上限** = **三页 15 张**（2026-10-08 用户澄清定案）：
+#: 「最低展示五个，最多展示 15 个，新史低为主，没有才替补平史低，不要强行显示
+#: 15 个」—— 上一版默认 5 导致**大促也只有 5 张**（`home_picks` 配置从未设置，
+#: 「能凑够再放」的意图没落地）。现在的口径：
+#:   · 张数 = min(新史低能凑满的整数页 × 5, 15)，**最低一页 5 张**（不够的页用
+#:     平史低补满 ——「没有才替补平史低」）；
+#:   · 新史低凑不满 15 张时按整数页回落（10 / 5），**绝不拿平史低硬凑到 15**。
+#: 想改上限就改 `config.json` 的 `home_picks`（仍是 5 的整数倍：10 / 15）。
+#: ⚠️ 别拿大促期间的数据来"验证"平时条数 —— 大促那几天新史低一天上千条
+#: （refs §6.2 实测 09-26→10-05：24/16/13/28/29/47/**1943**/4/2/4），上限天天填满；
+#: 平时一天只有个位数，回落到一页 5 张才是常态。
+HOME_PICKS_DEFAULT = 15
 #: 前置门槛（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
 RECOMMEND_MIN_RATE = 70
 RECOMMEND_MIN_COUNT = 100
@@ -772,10 +800,10 @@ def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     1. 先取近 N 天的**新史低**（过门槛 + 打分排序）；
     2. 只有不够**一整页**时，**才**用同一套规则补**平史低**（把当前那页补满）。
 
-    张数 = 「新史低能凑满几页」× ``HOME_PICKS_PAGE``（5），上限 ``home_picks``；
-    **默认上限就是一页 5 张** —— 用户：「平时凑不够 15 张内容，平时 5 张就行，
-    能凑够再放，不要凑数」。（平时一天的新史低只有个位数，一页常有富余；
-    大促期间候选上千条，但也没必要把首页顶成三页要翻的大卡。）
+    张数 = 「新史低能凑满几页」× ``HOME_PICKS_PAGE``（5），上限 ``home_picks``
+    （**默认 15**，见 :data:`HOME_PICKS_DEFAULT` 的 2026-10-08 澄清）；
+    **最低一页 5 张**，新史低凑不满时按整数页回落（10 / 5），末页用平史低补满 ——
+    **绝不拿平史低硬凑上限**。
 
     refs §10.2 原文写的是「**轮播池 = 新史低 ∩ 有详情**」（原文权重表里「史低」那一格
     给轮播版的就是「—（池子全是新史低，无区分度）」）—— 用户确认的口径是它的放宽版：
@@ -787,10 +815,11 @@ def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     该层退回老的字典序，保证大卡这一块不会整块消失。
     """
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
-    # 展示张数 = 「新史低能凑满几页」× 每页张数，上限 home_picks：
-    #   上限 5（默认）→ 只放一排 · 上限 15 → 新史低 ≥15 放 15、10~14 放 10、其余放 5
-    #   末页不够时**只补满这一页**（否则一排会缺格子、右边空一块），绝不多补。
-    # 用户 2026-10-07：「平时凑不够 15 张内容，平时 5 张就行，能凑够再放，不要凑数」。
+    # 展示张数 = 「新史低能凑满几页」× 每页张数，上限 home_picks（默认 15）：
+    #   大促（新史低 ≥15）→ 3 页 15 张；新史低 7 → 2 页 10 张；个位数 → 1 页 5 张。
+    #   末页不够时**只补满这一页**（否则一排会缺格子、右边空一块），绝不硬凑上限。
+    # 用户 2026-10-08：「最低展示五个，最多展示 15 个，新史低为主，没有才替补
+    # 平史低，不要强行显示 15 个」。
     want = max(HOME_PICKS_PAGE, int(cfg.get("home_picks", HOME_PICKS_DEFAULT)))
     pool = [c for c in cards if _is_fresh(c, days) and _is_live(c)]
 
