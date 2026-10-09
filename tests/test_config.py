@@ -171,17 +171,15 @@ class ResolvePathTest(unittest.TestCase):
                          ROOT / "data" / "state.json")
 
     def test_absolute_is_kept(self):
-        target = Path(self.tmp_dir()) if False else Path("C:/abs/x.json")
+        # 跨平台取一个真绝对路径当夹具：`C:/abs/...` 在 Windows 是绝对路径、
+        # 在 Linux 上 is_absolute() 为 False 会被当相对路径拼进 ROOT（CI 实测翻车）
+        target = Path(tempfile.gettempdir()) / "abs" / "x.json"
         self.assertEqual(resolve_path({"p": str(target)}, "p"), target)
 
     def test_unset_raises(self):
         for value in (None, ""):
             with self.assertRaises(ConfigError):
                 resolve_path({"p": value}, "p")
-
-    @staticmethod
-    def tmp_dir():
-        return tempfile.gettempdir()
 
 
 if __name__ == "__main__":

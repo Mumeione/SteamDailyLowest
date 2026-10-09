@@ -767,14 +767,27 @@ check("第 0 片 agg 覆盖全部筛选组合（只加载 1 片也知道共几�
   }
   return n > 0 && miss === 0;
 })(), Object.keys((shard0("new_low").agg || {}).counts || {}).length + " 个组合");
-// 端到端地验一次：只加载了第 0 片（200 条），「共 N 条」必须来自 agg 而不是已加载条数
-check("「共 N 条」来自预聚合表（比已加载条数多 ⇒ 没退化成全量加载）", (function () {
+// 端到端地验一次：「共 N 条」来自 agg 预聚合表而不是已加载条数。
+// 真源 = agg.counts[默认组合键]（FILTER_DEFAULTS，键格式与 app.js 的 aggCount() 同构：
+// [date,cut,reviews,only_new].join("|")，undefined/null → "all"）。
+// 不要再锁「total > 已渲染行数」—— 板块总量一旦 ≤ 片大小（每片 200 条），
+// total == shown 是合法状态，那条断言必然假红（2026-10-09 数据漂移实录）。
+const aggDefaultKey = (function () {
+  const defs = dom.window.FILTER_DEFAULTS || {};
+  return ["date", "cut", "reviews", "only_new"].map((k) =>
+    (defs[k] === undefined || defs[k] === null) ? "all" : String(defs[k])).join("|");
+})();
+check("「共 N 条」来自预聚合表（等于 agg 表默认组合键的计数）", (function () {
+  const expected = (shard0("new_low").agg || {}).counts;
+  const val = expected ? expected[aggDefaultKey] : undefined;
   const txt = doc.getElementById("lv-count").textContent;
   const m = txt.match(/(\d+)\s*条/);
   const shown = doc.querySelectorAll("#rows .row").length;
-  return !!m && Number(m[1]) > shown;
-})(), doc.getElementById("lv-count").textContent + " / 已渲染 "
-      + doc.querySelectorAll("#rows .row").length + " 行");
+  // total >= shown 作弱 sanity（行数是总数的切片）
+  return typeof val === "number" && !!m && Number(m[1]) === val && Number(m[1]) >= shown;
+})(), doc.getElementById("lv-count").textContent + " / agg[" + aggDefaultKey + "]="
+      + ((shard0("new_low").agg || {}).counts || {})[aggDefaultKey]
+      + " / 已渲染 " + doc.querySelectorAll("#rows .row").length + " 行");
 
 // 点进板块列表页后，渲染顺序必须 = 该板块分片的物理顺序（首页预览与列表页一致）。
 // 做法：渲染出来的行标题必须是「第 0 片顺序」的**子序列** —— 既能证明顺序一致，

@@ -63,6 +63,10 @@ jobs:
         with:
           python-version: "3.13"
 
+      # 与 daily.yml 同款（2026-10-09 补：此前样板漏了这步，脚本 import requests 即挂）
+      - name: 安装依赖
+        run: pip install requests jinja2
+
       # 联网脚本用得到（config.py 支持 ITAD_API_KEY 环境变量覆盖）；离线脚本忽略
       - name: 生成运行配置（key 走 secrets 环境变量）
         run: cp config.example.json config.json
