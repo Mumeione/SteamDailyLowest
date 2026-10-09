@@ -238,19 +238,22 @@
     ]);
   }
 
-  // 「距上次史低」（§3.6）：主文本就是「N 天」，有具体日期时加虚线下划线标记可交互 ——
+  // 「上次新史低」（§3.6，2026-10-09 用户定案改名，原「距上次史低」）：
+  // 主文本就是「N 天」，有具体日期时加虚线下划线标记可交互 ——
   // 电脑悬停（title）看日期，手机点按在「天数 ↔ 日期」之间切换。
+  // 新史低 = 距上一次史低期（自有记忆）；平史低 = 距上次同价（ITAD）；
+  // 「本次新史低」（该游戏首次史低/记忆未建立）没有日期，不显示切换。
   // ⚠️ S9 重写行列表时把这个切换弄丢了（2026-10-07 用户指出），已加回；
   //    别再用 detailRow 直接渲染 last_low_text，那样日期就永远看不到。
   function lastLowRow(text, date) {
     if (!text) return null;
     var b = el("b", { text: text });
     if (!date) return el("div", { class: "detail-row" },
-      [el("span", { text: "距上次史低" }), b]);
+      [el("span", { text: "上次新史低" }), b]);
     b.classList.add("has-alt");
     b.title = date;
     var row = el("div", { class: "detail-row" },
-      [el("span", { text: "距上次史低" }), b]);
+      [el("span", { text: "上次新史低" }), b]);
     b.addEventListener("click", function (e) {
       e.stopPropagation();            // 别触发整行的展开/收起
       var showingDate = b.textContent === date;
@@ -302,7 +305,7 @@
       ])
     ]);
 
-    // 详情（点行展开）：左「距上次史低 / 折扣结束」，右「跨区比价」。
+    // 详情（点行展开）：左「上次新史低 / 折扣结束」，右「跨区比价」。
     // S9-卡片（2026-10-07）：恒定两栏 —— 之前无比价数据时回落单栏，右半边空着，
     // 用户反馈「展开的布局也没修改好」；现在右栏没有数据就写一行说明，结构对称。
     // ⚠️ 「折扣开始」这一行**已删**（用户 2026-10-07：「删除详情展开里折扣开始的时间这一行，
@@ -335,7 +338,11 @@
       el("div", { class: "detail-cols" }, [left, right])
     ]);
 
-    var row = el("article", { class: "row " + lowClassOf(item) }, [summary, detail]);
+    // data-gid：行卡与大卡共用的身份（点大卡跳转后靠它定位并展开这一行，见 renderList）
+    var row = el("article", {
+      class: "row " + lowClassOf(item),
+      "data-gid": item.game_id || ""
+    }, [summary, detail]);
     summary.addEventListener("click", function () {
       var was = row.classList.contains("open");
       var open = document.querySelectorAll(".row.open");
@@ -398,6 +405,12 @@
   var picksNext = document.getElementById("picks-next");
   var picksNav = document.querySelector("#picks .deck-nav");
 
+  // 点大卡后待定位的行：``{gid, triedAll}``；null = 没有待办。
+  // 见 renderList 末尾：先在新史低板块找，找不到再退到全部折扣。
+  var pendingPick = null;
+  var LOCATE_STEP = 300;    // 定位时每次多加载几条（分片 200 一片，约一片多）
+  var LOCATE_MAX = 1500;    // 自动加载上限：够覆盖新史低板块，又不至于把全部折扣铺满 DOM
+
   function pickCard(item, rank) {
     var pickSrc = bannerUrl(item);
     var art = el("div", { class: "pick-art" }, [
@@ -433,7 +446,12 @@
     ]);
     // 底部色条走 lowClassOf（与行卡片同一个函数，改口径只改那一处）
     var card = el("article", { class: "pick " + lowClassOf(item) }, [art, body]);
-    card.addEventListener("click", function () { openSection("new_low"); });
+    // 点大卡 → 跳到「新史低」板块，**并记住这张卡**：落地后自动滚到对应行、展开详情
+    // （2026-10-09 用户定案 A —— 原来只跳转，用户「不能一眼找到刚才点击的大卡详情」）。
+    card.addEventListener("click", function () {
+      pendingPick = item.game_id ? { gid: item.game_id, triedAll: false } : null;
+      openSection("new_low");
+    });
     return card;
   }
 
@@ -765,6 +783,31 @@
     // 「共 N 条」用预聚合表的精确值；没有这张表就退回已加载条数（不会更好，但不会错）
     var total = (meta.count === null || meta.count === undefined) ? cards.length : meta.count;
     document.getElementById("lv-count").textContent = total + " 条";
+    // 点大卡跳进来 → 定位并展开那一行（2026-10-09 用户定案 A）：
+    //   ① 命中当前批次 → 滚动到它 + 展开详情；
+    //   ② 还没渲染到 → 分步多加载（封顶 LOCATE_MAX，别把大板块一次铺满 DOM）；
+    //      ⚠️ 有分片失败时**不再加量**（否则 cards.length 恒 < total 会反复重拉 = 死循环）；
+    //   ③ 「新史低」板块找不到（大卡可能是**平史低补位**，该板块不含平史低）→ 退到
+    //      「全部折扣」再找一遍；④ 仍找不到 → 放弃定位，别卡住。
+    if (pendingPick) {
+      var hit = pendingPick.gid
+        ? rowsBox.querySelector('.row[data-gid="' + pendingPick.gid + '"]') : null;
+      if (hit) {
+        hit.classList.add("open");
+        if (hit.scrollIntoView) hit.scrollIntoView({ block: "center" });
+        pendingPick = null;
+      } else if (cards.length < total && !meta.failed && state.limit < LOCATE_MAX) {
+        state.limit = Math.min(total, state.limit + LOCATE_STEP);
+        refreshList();
+        return;
+      } else if (!pendingPick.triedAll) {
+        pendingPick.triedAll = true;
+        openSection("__all__");
+        return;
+      } else {
+        pendingPick = null;
+      }
+    }
     // 中间有分片加载失败 ⇒ 列表可能缺一段（「共 N 条」仍是 agg 的精确值）。
     // 不清空已加载的内容，只在底部挂一条提示 + 重试按钮，让用户可以自愈。
     if (meta.failed) {
@@ -871,6 +914,7 @@
       // 期间用户切走了 / 又有更新的请求 → 丢掉这次结果，别把旧数据画上去
       if (seq !== listSeq || listState.key !== key) return;
       if (err) {
+        pendingPick = null;   // 这一板块取不到数 → 别再等定位，免得状态挂到别的板块上
         document.getElementById("lv-count").textContent = "";
         setEmpty("fail",
           "折扣数据加载失败（" + ((err && err.message) || "网络错误") + "），可以点下面的按钮重试。",

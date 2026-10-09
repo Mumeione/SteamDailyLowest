@@ -590,6 +590,47 @@ class State:
         self._low_time_idx = None
 
     # ------------------------------------------------------------------
+    # 史低期记忆（§3.6 扩展，2026-10-09）：每个游戏一对时间戳（game_meta 永久层）
+    # —— ``low_period = {cur: 本次史低期开始, prev: 上一次史低期开始}``。
+    # 动机：**新史低**的「距上次史低」没有数据源 —— storelow/v2 对新史低返回空
+    # （这个价从没出现过），只能自己攒：新史低期首次入账时滚动更新
+    # （prev=cur、cur=新值），渲染时新史低卡取 prev 算间隔。平史低不动
+    # （继续走 ITAD storelow 的上次同价时刻，更精确）。
+    # 每游戏只有两条时间戳、新值覆盖旧值 —— 不积累垃圾（等价于「只保存到当前
+    # 折扣结束」），也不把数据绑在 expiry 上 —— 天然免疫折扣期延长键漂移
+    # （low_time_cache 2026-10-09 踩过的坑）。
+    # ------------------------------------------------------------------
+    def record_low_period(self, game_id: str | None, start: str | None) -> None:
+        """史低期首次入账时滚动更新记忆。
+
+        同 deal 重复入账 / 折扣期延长（同 start）不更新；乱序写入只认
+        **更晚**的开始时间。首次史低（cur 原本为空）→ prev 记 None，
+        该卡维持「本次新史低」文案。
+        """
+        if not game_id or not start:
+            return
+        meta = self.game_meta.get(game_id)
+        if meta is None:
+            meta = {}
+            self.game_meta[game_id] = meta
+        period = meta.get("low_period") or {}
+        cur = period.get("cur")
+        if cur == start:
+            return
+        parsed_new = classify.parse_time(start, self.tz)
+        parsed_cur = classify.parse_time(cur, self.tz) if cur else None
+        if parsed_new is None or (parsed_cur is not None and parsed_new <= parsed_cur):
+            return
+        meta["low_period"] = {"cur": start, "prev": cur}
+
+    def prev_low_start(self, game_id: str | None) -> str | None:
+        """该游戏上一次史低期的开始时间（无记忆返回 None —— 首次史低/冷启动）。"""
+        if not game_id:
+            return None
+        period = (self.game_meta.get(game_id) or {}).get("low_period") or {}
+        return period.get("prev") or None
+
+    # ------------------------------------------------------------------
     # 跨区比价（重构 S7 换模型）：**区域原价永久缓存**，键 ``<appid>|<cc>``。
     # 存 price_overview.initial（该区常规原价）—— 原价不随折扣期失效，永久
     # 积累；现价（final）每轮真查、不进缓存。

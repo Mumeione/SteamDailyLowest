@@ -50,6 +50,29 @@ class ItadBlocked(Blocked, ItadError):
     """连续 403 —— 滥用封禁，中止本轮并告警。"""
 
 
+def build_client(cfg: dict, log: Callable[[str], None] | None = None) -> ItadClient:
+    """按配置构造**带限流**的 ITAD 客户端 —— 唯一出处（run.py 与 tools/backfill_* 共用）。
+
+    ⚠️ 限流口径只在这里读一次（``itad_rate_limit`` / ``itad_min_interval``）；
+    别在别处再拼一个，否则「配置改了但某个入口没跟着改」会静默超速。
+    """
+    from .config import api_key, parse_rate_limit
+    calls, window = parse_rate_limit(cfg["itad_rate_limit"])
+    limiter = RateLimiter(
+        name="itad",
+        max_calls=calls,
+        window_seconds=window,
+        min_interval=float(cfg["itad_min_interval"]),
+    )
+    return ItadClient(
+        api_key=api_key(cfg),
+        limiter=limiter,
+        timeout=float(cfg["request_timeout_seconds"]),
+        pause=float(cfg.get("request_pause_seconds", 0.0)),
+        log=log or (lambda msg: None),
+    )
+
+
 def _party_list(raw) -> list[dict]:
     """把 ``info/v2`` 的 ``publishers`` / ``developers`` 收敛成 ``[{"id", "name"}]``。
 
@@ -266,6 +289,29 @@ class ItadClient(BaseHttpClient):
         if ids:
             self._log(f"[itad] storelow/v2 批量 {batches} 次，命中 {len(lows_map)}/{len(ids)}")
         return lows_map
+
+    def fetch_price_history(self, game_id: str, country: str,
+                            shops: int = STEAM_SHOP_ID,
+                            since: str | None = None) -> list[dict]:
+        """``GET /games/history/v2`` —— **单个**游戏的价格变更流水（2026-10-09 新增）。
+
+        动机：``storelow/v2`` 对**新史低**只回「本次自己」（≈ 本次折扣开始），
+        拿不到「上一次史低」；本接口按时间给出价格变更
+        （``[{timestamp, shop, deal: {price, regular, cut}}]``），可从中推出
+        上一次史低期的开始（见 ``tools/backfill_low_period.py`` 的
+        :func:`low_period_starts`）。
+
+        ⚠️ **只能逐条查**（ITAD 无批量端点），故只适合回填这类一次性任务，且
+        调用方必须自己限流（复用 :class:`~src.ratelimit.RateLimiter`，绝不轮换 IP）。
+        ``since`` 不传时 ITAD 只回**最近 3 个月** —— 而「上一次史低」实测常在
+        1~2 年前（8 个新史低样本间隔 74~769 天），所以回填要显式传 ``since``。
+        返回**按 ITAD 原序、未排序**，消费方自行按 ``timestamp`` 排序。
+        """
+        params: dict = {"id": game_id, "country": country, "shops": shops}
+        if since:
+            params["since"] = since
+        data = self.request("GET", "/games/history/v2", params=params)
+        return data or []
 
     # ------------------------------------------------------------------
     # 批量映射（重构 S1：uuid → appid，替代 info/v2 逐条的第一跳）

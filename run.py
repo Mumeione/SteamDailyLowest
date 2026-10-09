@@ -37,6 +37,7 @@ from src.itad import (
     SWEEP_MODES,
     ItadClient,
     ItadError,
+    build_client as itad_build_client,
 )
 from src.ratelimit import RateLimiter
 from src.state import State
@@ -103,20 +104,8 @@ def write_step_summary(title: str, rows: list[tuple[str, object]]) -> None:
 
 
 def build_client(cfg: dict) -> ItadClient:
-    calls, window = parse_rate_limit(cfg["itad_rate_limit"])
-    limiter = RateLimiter(
-        name="itad",
-        max_calls=calls,
-        window_seconds=window,
-        min_interval=float(cfg["itad_min_interval"]),
-    )
-    return ItadClient(
-        api_key=api_key(cfg),
-        limiter=limiter,
-        timeout=float(cfg["request_timeout_seconds"]),
-        pause=float(cfg["request_pause_seconds"]),
-        log=log,
-    )
+    # 构造口径只留一份（限流参数、超时、pause）—— 见 src.itad.build_client 的注释
+    return itad_build_client(cfg, log=log)
 
 
 def build_steam_client(cfg: dict) -> SteamClient:
@@ -674,6 +663,10 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         item = dict(entry)
         item["title_zh"] = meta.get("title_zh") if meta else None
         item["last_low_at"] = state.last_low_at(entry.get("game_id"), entry.get("expiry"))
+        # 史低期记忆（§3.6 扩展，2026-10-09）：新史低的「距上次史低」来自
+        # game_meta.low_period.prev（上一段史低期的开始）—— storelow/v2 对
+        # 新史低返回空，只有自己攒。平史低不用它（走 last_low_at，更精确）。
+        item["prev_low_at"] = state.prev_low_start(entry.get("game_id"))
         # 厂商 / stats（快照 v3，2026-09-30）：同样来自 meta 合并视图的一等缓存字段。
         # 旧条目尚无这些键 → 一律给 None / []，消费方（快照）不得因此判「异常」。
         item["publishers"] = (meta or {}).get("publishers") or []
@@ -896,7 +889,9 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         log("      " + " · ".join(f"{k}={v}" for k, v in counts.items() if v))
         log(f"      flag 分布：{flag_distribution(normalized)}")
         for entry in hist_low:
-            state.record_seen(entry, now)
+            _, first_time = state.record_seen(entry, now)
+            if first_time:
+                state.record_low_period(entry.get("game_id"), entry.get("start"))
         state.add_run_log(
             {
                 "run_at": now.isoformat(timespec="seconds"),
@@ -948,8 +943,11 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"      即将过期候选（{cfg.get('upcoming_expiry_hours', 48)}h 内到期）：{len(upcoming_entries)} 条")
 
     # 状态库按完整结构写：所有史低都攒库（其余视图以后再开，§1.1）
+    # 首次见到的史低同时滚动更新「史低期记忆」—— 新史低的「距上次史低」数据源（§3.6）
     for entry in hist_low:
-        state.record_seen(entry, now)
+        _, first_time = state.record_seen(entry, now)
+        if first_time:
+            state.record_low_period(entry.get("game_id"), entry.get("start"))
     state.save(now)  # ← 关键：先落盘，别让详情阶段的失败把这一轮的攒库一起带走
     log(f"      状态库已落盘（{len(hist_low)} 条已见记录）：随后即便详情全失败也不会丢")
 
@@ -1140,6 +1138,7 @@ def run_baseline(cfg: dict) -> int:
         _, first_time = state.record_seen(entry, now)
         if first_time:
             new_count += 1
+            state.record_low_period(entry.get("game_id"), entry.get("start"))
 
     log(f"抓取 {len(items)} 条，史低 {len(hist_low)} 条，新写入状态 {new_count} 条，留存清理 {dropped} 条")
     log(f"未取详情、未产出报表。ITAD 请求 {client.calls} 次。")

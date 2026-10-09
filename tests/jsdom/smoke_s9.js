@@ -758,6 +758,24 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
     "占位 " + noImgPicks.length + " / 大卡 " + pickArts.length);
 })();
 
+// ---- 点大卡 → 跳新史低板块 + 自动定位并展开该行（2026-10-09 用户定案 A）----
+// 原来是只跳转，用户「不能一眼找到刚才点击的大卡详情」；现在落地后按 game_id 定位
+// 并展开。取当前渲染页的**最后一张**卡（最容易落在首屏 30 行之外，能压到「加载到位再定位」这条分支）。
+(function () {
+  const win = buildDom().window;
+  const d = win.document;
+  const cards = Array.from(d.querySelectorAll("#picks-track .pick"));
+  const picks = (win.REPORT_DATA || {}).picks || [];
+  const idx = cards.length - 1;
+  const gid = idx >= 0 && picks[idx] ? picks[idx].game_id : null;
+  if (!gid) { check("点大卡 → 定位并展开该行（无大卡数据）", false); return; }
+  cards[idx].click();
+  const row = d.querySelector('#rows .row.open[data-gid="' + gid + '"]');
+  check("点大卡 → 跳新史低板块并定位展开对应行",
+    !d.getElementById("listview").hidden && !!row,
+    row ? "定位到 " + gid : "未定位到 " + gid);
+})();
+
 check("运行期无 JS 报错", errors.length === 0, errors.slice(0, 3).join(" | "));
 
 const failed = results.filter((r) => !r.ok);

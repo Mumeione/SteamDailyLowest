@@ -322,6 +322,47 @@ class StateTest(unittest.TestCase):
         self.assertIsNone(
             self.state.last_low_at("uuid-none", "2026-10-15T17:00:00+00:00"))
 
+    # ---- 史低期记忆（§3.6 扩展，2026-10-09）：新史低的「距上次史低」数据源 ----
+
+    def test_low_period_first_low_has_no_prev(self):
+        """首次史低：cur 记下、prev 为空 —— 该卡维持「本次新史低」。"""
+        self.state.record_low_period("uuid-1", "2026-10-09T01:00:00+00:00")
+        self.assertIsNone(self.state.prev_low_start("uuid-1"))
+
+    def test_low_period_rolls_on_new_period(self):
+        """第二段史低期入账：prev = 上一段开始、cur = 新值 —— 新史低卡的间隔来源。"""
+        self.state.record_low_period("uuid-1", "2026-08-01T01:00:00+00:00")
+        self.state.record_low_period("uuid-1", "2026-10-09T01:00:00+00:00")
+        self.assertEqual(self.state.prev_low_start("uuid-1"), "2026-08-01T01:00:00+00:00")
+
+    def test_low_period_same_start_is_extension_noop(self):
+        """同 start 重复入账 = 折扣期延长（换档续期、同价重挂）：记忆不动 ——
+        免疫 low_time_cache 踩过的键漂移问题（键不含 expiry）。"""
+        self.state.record_low_period("uuid-1", "2026-08-01T01:00:00+00:00")
+        self.state.record_low_period("uuid-1", "2026-10-09T01:00:00+00:00")
+        # 同 cur 再入账（续期重挂）
+        self.state.record_low_period("uuid-1", "2026-10-09T01:00:00+00:00")
+        period = self.state.game_meta["uuid-1"]["low_period"]
+        self.assertEqual(period, {"cur": "2026-10-09T01:00:00+00:00",
+                                  "prev": "2026-08-01T01:00:00+00:00"})
+
+    def test_low_period_older_start_ignored(self):
+        """乱序写入只认更晚的开始时间（多来源并发兜底）。"""
+        self.state.record_low_period("uuid-1", "2026-10-09T01:00:00+00:00")
+        self.state.record_low_period("uuid-1", "2026-08-01T01:00:00+00:00")
+        period = self.state.game_meta["uuid-1"]["low_period"]
+        self.assertEqual(period["cur"], "2026-10-09T01:00:00+00:00")
+        self.assertIsNone(period["prev"])
+
+    def test_low_period_crosses_tz_offsets(self):
+        """start 带不同时区偏移：按绝对时刻比先后，不是字符串比。"""
+        self.state.record_low_period("uuid-1", "2026-10-09T01:00:00+00:00")
+        # 字符串上 "2026-10-09T09:00:00+08:00" > "…T01:00:00+00:00"，
+        # 但绝对时刻相同 —— 不应产生新周期
+        self.state.record_low_period("uuid-1", "2026-10-09T09:00:00+08:00")
+        period = self.state.game_meta["uuid-1"]["low_period"]
+        self.assertEqual(period["cur"], "2026-10-09T01:00:00+00:00")
+
     def test_old_meta_last_low_at_no_longer_read(self):
         """game_meta 里的旧 last_low_at 存量字段不再被读取（改走折扣期暂存）。"""
         self.state.set_meta("uuid-1", 999, {"score": 80, "count": 500}, NOW)

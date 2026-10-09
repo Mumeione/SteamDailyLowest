@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -150,6 +150,18 @@ class BuildCardLastLowText(unittest.TestCase):
         card = build_card(self.entry("N", "2021-06-24T21:52:22+02:00"), NOW)
         self.assertEqual(card["last_low_text"], "本次新史低")
         self.assertIsNone(card["last_low_date"])
+
+    def test_new_low_with_prev_period_shows_days(self):
+        """2026-10-09 起：新史低也有「距上次史低」了 —— 来源是史低期记忆
+        （game_meta.low_period.prev = 上一段史低期的开始）。storelow/v2 对
+        新史低返回空（这个价从没出现过），只能自己攒；记忆没建立时维持
+        「本次新史低」（见上条）。"""
+        e = self.entry("N", None)
+        e["prev_low_at"] = (NOW - timedelta(days=205)).isoformat()
+        card = build_card(e, NOW)
+        self.assertEqual(card["last_low_text"], "205 天")
+        self.assertEqual(card["last_low_date"],
+                         (NOW - timedelta(days=205)).strftime("%Y-%m-%d"))
 
     def test_equal_low_shows_days_and_date(self):
         card = build_card(self.entry("H", "2026-02-21T10:00:00+08:00"), NOW)

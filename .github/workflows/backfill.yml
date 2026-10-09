@@ -1,0 +1,88 @@
+# 通用回填工作流（手动触发，2026-10-09 由 backfill-low-period.yml 升级而来）
+#
+# 定位：**以后所有「一次性 / 偶发」的状态回填都走这里** —— 只加 / 改
+# `tools/backfill_*.py` 脚本，**不动本文件**。真正的回填逻辑一律放脚本里；
+# 本工作流只负责「取状态 → 跑脚本 → 回写 data 分支」这套固定样板
+# （checkout / state-restore / 生成 config / writeback / 并发组），
+# 免得每加一个回填就把这段抄一遍（抄漏一处就是数据事故）。
+#
+# 用法：Actions 页面手动触发（workflow_dispatch）
+#   · script：要跑的脚本名（必须在 tools/ 下、以 backfill_ 开头）——默认史低期回填
+#   · args  ：原样追加到脚本后面的参数 —— 默认 `--state data/state.json`
+# 需要联网的脚本（例：查 ITAD `/games/history/v2` 推上一次史低期）自动拿到
+# config.json + `ITAD_API_KEY`（config.py 支持环境变量覆盖）；纯离线脚本忽略即可。
+#
+# ⚠️ 与 daily / prefetch 共用 state-write 并发组（串行排队防并发写坏状态）；
+#    避开每天 03:14 / 05:21 / 15:14（北京时间）前后手动触发。
+
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "tools/ 下的回填脚本名（以 backfill_ 开头）"
+        required: true
+        default: backfill_low_period.py
+        type: string
+      args:
+        description: "追加到脚本后面的参数（默认指向状态库）"
+        required: false
+        default: "--state data/state.json"
+        type: string
+
+# 顶层清零，job 显式申请最小权限（daily.yml S8 ④ 同款）
+permissions: {}
+
+concurrency:
+  group: state-write
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90     # 逐条查 history/v2（限流 800/300s），~7.7k 目标 ≈ 50 min
+    permissions:
+      contents: write      # 状态回写 data 分支
+    env:
+      ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 取出 data 分支（状态库持久层）
+        uses: actions/checkout@v7
+        with:
+          ref: data
+          path: statedata
+          fetch-depth: 0   # 回写含 pull --rebase，同 daily（review-s8 P1-3）
+
+      - name: 恢复状态文件
+        uses: ./.github/actions/state-restore
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      # 联网脚本用得到（config.py 支持 ITAD_API_KEY 环境变量覆盖）；离线脚本忽略
+      - name: 生成运行配置（key 走 secrets 环境变量）
+        run: cp config.example.json config.json
+
+      # 防路径穿越 + 提前报错：只允许 tools/ 下的 backfill_*.py
+      - name: 校验脚本名
+        run: |
+          set -euo pipefail
+          name="${{ inputs.script }}"
+          case "$name" in
+            backfill_*.py) ;;
+            *) echo "::error::脚本名必须以 backfill_ 开头且为 .py（收到：$name）"; exit 2 ;;
+          esac
+          test -f "tools/$name" || { echo "::error::找不到 tools/$name"; exit 2; }
+
+      - name: 运行回填脚本（tools/${{ inputs.script }}）
+        run: python "tools/${{ inputs.script }}" ${{ inputs.args }}
+
+      - name: 状态回写 data 分支
+        if: always() && hashFiles('data/state.json') != ''
+        uses: ./.github/actions/data-writeback
+        with:
+          message: "state (backfill) $(date -u +%F)"

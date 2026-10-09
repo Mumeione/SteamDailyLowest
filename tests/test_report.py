@@ -930,6 +930,24 @@ class HomeSectionsTest(unittest.TestCase):
         self.assertEqual(w["fame"], report.PICKS_WEIGHTS["fame"])
         self.assertNotIn("bogus", w)
 
+    def test_picks_gap_weight_ranks_older_low_first(self):
+        """大卡档 2026-10-09 新增「间隔」10 分：其余条件相同时，距上次史低更久的
+        排前面。锁住 ``PICKS_WEIGHTS["gap"] == 10`` 且 gap 真的进分（不是只写在
+        注释/文档里）。这里用**平史低**卡（取上次同价）；新史低同样有该值
+        （取史低期记忆，冷启动未建立时才有可能是 None）。"""
+        self.assertEqual(report.picks_weights({})["gap"], 10)
+        pw = report.picks_weights(self.CFG)
+
+        def tie(title, gap):
+            return {"title": title, "title_zh": title, "cut": 50,
+                    "low_class": "tie", "start_days_ago": 1, "days_left": 3,
+                    "reviews": {"score": 90, "count": 500},
+                    "last_low_days": gap, "views": ["active"]}
+
+        ordered = sorted([tie("近", 5), tie("久", 300)],
+                         key=lambda c: report.recommend_sort_key(c, self.CFG, weights=pw))
+        self.assertEqual([c["title"] for c in ordered], ["久", "近"])
+
     def test_recommend_weights_have_no_low_item(self):
         """权重表里**没有**「史低类型」这一项 —— 用户 2026-10-07 明确要求把它删掉
         （「别改大卡的公式，你怎么乱动公式」，有史低项的是 refs §10.2 的**订阅端版**）。"""
@@ -975,10 +993,10 @@ class RecommendScoreTest(unittest.TestCase):
         self.assertLess((huge - small) / huge, 0.15)   # 差不到 15%，不是数量级差
 
     def test_gap_has_no_weight_by_default(self):
-        """**轮播版默认不再给「间隔」权重**（2026-10-07）：池子是新史低，而 `last_low_days`
-        只有平史低才有值 → 原来那 15 分从不参与打分（总分按 85 分归一化），等于把名气/折扣
-        悄悄放大，和文档写的权重对不上（用户：「怎么感觉排出来结果有点不同」）。
-        所以默认权重里 gap = 0，有/没有间隔数据的结果**完全一样**。"""
+        """**轮播版默认不再给「间隔」权重**（2026-10-07）：池子里大量条目没有这个数
+        （新史低在 2026-10-09 前一律无值；平史低才有）→ 那 15 分时常不参与打分（总分按
+        剩余权重归一化），等于把名气/折扣悄悄放大，和文档写的权重对不上（用户：「怎么
+        感觉排出来结果有点不同」）。所以默认权重里 gap = 0，有/没有间隔数据的结果**完全一样**。"""
         self.assertEqual(report.recommend_weights({})["gap"], 0)
         self.assertEqual(report.recommend_score(self.card("有间隔", gap=300)),
                          report.recommend_score(self.card("没间隔", gap=None)))

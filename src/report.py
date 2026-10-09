@@ -292,19 +292,28 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
     days_left = None
     if expiry_dt is not None:
         days_left = classify.days_until(expiry_dt, now)
-    # §3.6 史低天数（「距上次史低」那一行）：new = 这次就是新纪录（没有具体日期）；
-    # tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 low_time_cache）。
+    # §3.6 史低天数（「距上次史低」那一行）：
+    #   tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 low_time_cache）；
+    #   new = 上一次史低期的开始（自有史低期记忆 game_meta.low_period.prev，
+    #   2026-10-09 起）—— storelow/v2 对新史低返回空（这个价从没出现过），
+    #   只能自己攒。记忆没建立起来（首次史低 / 冷启动）→ 维持「本次新史低」。
     # 主文本只放天数保证单行（日期太长会把整行挤成两排），具体日期由
     # 前端悬停/点按显示（last_low_date）。取不到就不渲染这一行（JS 对空值自动跳过），不猜。
     last_low_date = None
     last_low_text = None
-    # 权重公式 v2 的「间隔」项要的是**数值天数**（refs.md §10.2）。
-    # 只在平史低时有意义 —— 新史低的「上次史低」就是本次，天数恒等于折扣已开的天数，
-    # 不是"间隔"，故留空（留空 = 该项不计分，见 recommend_score 的归一化）。
+    # 权重公式「间隔」项要的是**数值天数**（refs.md §10.2）。新史低也有值了
+    # （距上次史低期，来自史低期记忆）；记忆未建立时为 None（该项不计分）。
     last_low_days = None
     if low_class == classify.STEAM_LOW_NEW:
-        # 批 F5：文本由「本次刷新历史记录」改为「本次新史低」（用户定案：只改文本、标签仍为「距上次史低」）
-        last_low_text = "本次新史低"
+        low_at = classify.parse_time(entry.get("prev_low_at"), now.tzinfo)
+        if low_at is not None:
+            last_low_days = max(0, (now.date() - low_at.date()).days)
+            last_low_text = f"{last_low_days} 天"
+            last_low_date = low_at.strftime("%Y-%m-%d")
+        else:
+            # 批 F5 文案（用户定案）：该游戏首次史低 / 记忆未建立时的兜底 ——
+            # 有记忆后主文本与平史低一致（「N 天」），标签统一「上次新史低」。
+            last_low_text = "本次新史低"
     elif low_class == classify.STEAM_LOW_TIE:
         low_at = classify.parse_time(entry.get("last_low_at"), now.tzinfo)
         if low_at is not None:
@@ -337,7 +346,8 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
         "days_tier": days_tier(days_left, cfg),
         "rate_tier": rate_tier(reviews, cfg),
         "last_low_text": last_low_text,
-        # 权重公式 v2「间隔」项用的数值天数（平史低有值，新史低/取不到为 None）
+        # 权重公式 v2「间隔」项用的数值天数（平史低取上次同价、新史低取史低期记忆；
+        # 记忆未建立时为 None，该项不计分）
         "last_low_days": last_low_days,
         # 有日期才渲染悬停/点按交互（new=新纪录没有具体日期）
         "last_low_date": last_low_date,
@@ -906,17 +916,22 @@ def recommend_weights(cfg: dict | None) -> dict:
 #: （都是新史低）排出来的**条目和顺序完全一样** —— 大卡等于新史低板块的前 15 名
 #: 复读。两处的语义本来就不同：
 #:   · **新史低板块** = 今天有什么新史低的榜单 → 名气优先（browse 口径）；
-#:   · **大卡** = 今日最值的门面位 → **折扣力度优先**，名气其次，快到期的
-#:     深折再往前顶（urgent 加档）。
+#:   · **大卡** = 今日最值的门面位 → **折扣力度优先**，名气其次；**距上次史低
+#:     越久**与快到期的深折一起往前顶（gap / urgent 档）。
+#: **「间隔」（gap）2026-10-09 用户定案加入大卡档（10 分：名气 30→25、紧迫
+#: 10→5 各让 5）** ——
+#: 距上次史低越久 = 这次回到史低越难得。**新史低**取「史低期记忆」的 prev
+#: （`game_meta.low_period.prev`，同日补上；冷启动记忆未建立时无值、不计分），
+#: **平史低**取 ITAD 的上次同价时刻 —— 两档都有值。
 #: 想调大卡就改 ``config.json`` 的 ``picks_weights``（只写要改的项，语义同
 #: ``recommend_weights``）；⚠️ 照样**不许加「史低类型」项**（分层取已保证
 #: 新史低优先，加 low 项是重复计分，见 RECOMMEND_WEIGHTS 的红色注释）。
 PICKS_WEIGHTS = {
-    "fame": 30,     # 名气：降到次席（对数压缩口径不变）
-    "cut": 40,      # 折扣：**升到主导** —— 门面位要的是「一眼值」
+    "fame": 25,     # 名气：降到次席（对数压缩口径不变），让出 5 分给间隔
+    "cut": 40,      # 折扣：**主导** —— 门面位要的是「一眼值」
     "review": 15,   # 口碑
-    "gap": 0,       # 间隔：同 RECOMMEND_WEIGHTS，默认不参与
-    "urgent": 10,   # 紧迫：快没的深折往前顶
+    "gap": 10,      # 间隔：新史低取史低期记忆、平史低取上次同价（越久越难得，见上）
+    "urgent": 5,    # 紧迫：让出 5 分给间隔（原 10）
     "fresh": 5,     # 新鲜
 }
 
@@ -972,8 +987,9 @@ def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
       的游戏会把其余项压成噪声（§7.1 实测：彩虹六号 35% 折扣霸榜就是这么来的）
     - 折扣 ``折扣% / 95``
     - 口碑 ``(好评率 − 50) / 40``
-    - 间隔 ``log10(距上次史低天数 + 1) / log10(367)`` —— **只有平史低有这个数**，
-      轮播池全是新史低 → 默认权重给 0，等于不参与（配置里配了才会算）
+    - 间隔 ``log10(距上次史低天数 + 1) / log10(367)`` —— 平史低取上次同价、
+      新史低取史低期记忆（`low_period.prev`；冷启动未建立时无值）；本档默认给 0，
+      等于不参与（配置里配了才会算 —— 见 RECOMMEND_WEIGHTS 的注释）
     - 紧迫 剩 ≤1 天 1.0 / ≤2 天 0.6 / ≤7 天 0.2 / 更久 0
       （原文按小时给档，卡片只有「剩 X 天」的日历天，按天近似）
     - 新鲜 折扣开始 ≤2 天 1.0 / ≤7 天 0.6 / 更早 0
