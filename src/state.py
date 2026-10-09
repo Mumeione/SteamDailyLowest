@@ -162,6 +162,8 @@ class State:
         self.cache = Cache(cache_path if cache_path else self.path.with_name("cache.json"))
         self.dynamic = Dynamic(dynamic_path if dynamic_path else self.path.with_name("dynamic.json"))
         self.tz = tz
+        # low_time_cache 的 game_id 索引（惰性建；写/清后置 None 失效），见 last_low_at
+        self._low_time_idx: dict | None = None
         self.data: dict = {
             "version": STATE_VERSION,
             "updated_at": None,
@@ -312,6 +314,7 @@ class State:
         for key in drop:
             del self.seen_deal[key]
         self._cleanup_expiry_keyed(self.low_time_cache, deadline)
+        self._low_time_idx = None   # 缓存被清理，game_id 索引一并失效
         live_gids = {e.get("game_id") for e in self.seen_deal.values()}
         for gid in dropped_gids:
             if gid and gid not in live_gids:
@@ -542,13 +545,49 @@ class State:
     def low_time_key(game_id: str, expiry: str | None) -> str:
         return f"{game_id}|{expiry or ''}"
 
+    def _low_time_by_game(self) -> dict:
+        """``game_id -> (expiry, ts)`` 索引（惰性建，写/清后失效），expiry 取该游戏
+        已有键里**最新**的折扣期。给 :meth:`last_low_at` 的换档回退用。
+
+        背景（2026-10-09 换档日实测）：键 ``<gid>|<expiry>`` 把「上次史低时间」绑死在
+        折扣期上，而折扣期会被 Steam **延长**（跨周四换档续到下周期）—— 延长后
+        「当日新增 / 即将过期」两条抓取路径都覆盖不到这种老条目，精确查找必 miss，
+        「距上次史低」整行消失（线上热门板块 tie 卡 10/10 丢行、大额折扣 9/10）。
+        """
+        if self._low_time_idx is None:
+            idx: dict = {}
+            for key, ts in self.low_time_cache.items():
+                gid, _, exp = key.partition("|")
+                parsed = classify.parse_time(exp, self.tz) if exp else None
+                prev = idx.get(gid)
+                # 留折扣期最新的那条；解析不了（None）只在没得比时兜底
+                if prev is None or (parsed is not None
+                                    and (prev[0] is None or parsed > prev[0])):
+                    idx[gid] = (parsed, ts)
+            self._low_time_idx = idx
+        return self._low_time_idx
+
     def last_low_at(self, game_id: str, expiry: str | None) -> str | None:
-        return self.low_time_cache.get(self.low_time_key(game_id, expiry))
+        hit = self.low_time_cache.get(self.low_time_key(game_id, expiry))
+        if hit is not None:
+            return hit
+        # 换档回退：折扣期变了导致精确键 miss ⇒ 退回该游戏缓存里折扣期最新的
+        # 一条。「上次史低时间」描述的是**上一次**到这个价的时间，不随当前折扣期
+        # 变，值仍然有效；等哪轮批量重取（当日新增 / 即将过期）覆盖到它时，
+        # 新键写入、自然校正。
+        # ⚠️ 回退是**无条件**的（不区分「折扣期被延长」与「换了新折扣」），这是
+        # 有意的取舍 —— **宁旧勿缺**：真正的换价当天就落在「当日新增」候选里
+        # （开始日/首见日是今天，不分 new/tie），会被 storelow 重取覆盖精确键；
+        # 空窗期留着上一次的值（最多偏一天）比整行空更好。放宽到精确键优先于此
+        # 回退，只在 `fetch_last_low_time=false` 或该批重取失败时才会短暂偏旧。
+        fallback = self._low_time_by_game().get(game_id or "")
+        return fallback[1] if fallback else None
 
     def set_last_low_at(self, game_id: str, expiry: str | None, ts: str) -> None:
         if not ts or not game_id:
             return
         self.low_time_cache[self.low_time_key(game_id, expiry)] = ts
+        self._low_time_idx = None
 
     # ------------------------------------------------------------------
     # 跨区比价（重构 S7 换模型）：**区域原价永久缓存**，键 ``<appid>|<cc>``。

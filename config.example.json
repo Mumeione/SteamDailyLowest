@@ -60,6 +60,9 @@
   "recommend_weights": {
     "fame": 40, "cut": 30, "review": 20, "gap": 0, "urgent": 5, "fresh": 5
   },
+  "picks_weights": {
+    "fame": 30, "cut": 40, "review": 15, "gap": 0, "urgent": 10, "fresh": 5
+  },
   "max_deals": null,
   "run_log_keep": 30
 }

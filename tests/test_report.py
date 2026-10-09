@@ -838,8 +838,9 @@ class HomeSectionsTest(unittest.TestCase):
     def test_section_order_uses_featured_score(self):
         """**行为断言**：新史低板块的「精选」顺序 = 推荐公式（featured_score）降序。
 
-        名气优先是大卡与列表共同的口径（refs §10.2）：高名气 50% 折扣的游戏
-        要排在低名气 90% 折扣的游戏前面（改 `_section_sort` 键序时这里会红）。"""
+        名气优先是「新史低」板块与列表精选共同的口径（refs §10.2；⚠️ 顶部大卡
+        2026-10-09 起已拆到折扣优先档，见 test_picks_order_differs_from_new_low_section）：
+        高名气 50% 折扣的游戏要排在低名气 90% 折扣的游戏前面（改 `_section_sort` 键序时这里会红）。"""
         pool = [
             {"title": "大作小折", "low_class": "new", "cut": 50, "price_int": 100,
              "reviews": {"score": 90, "count": 200000}, "start_days_ago": 1, "days_left": 5},
@@ -851,7 +852,8 @@ class HomeSectionsTest(unittest.TestCase):
 
     def test_featured_score_same_formula_as_recommend(self):
         """featured_score 与 recommend_score 用**同一套公式**（只是不打门槛）——
-        满足门槛的卡片两者必须完全相等，保证列表精选与大卡口径永远一致。"""
+        满足门槛的卡片两者必须完全相等，保证列表精选与「新史低」板块口径一致
+        （⚠️ 顶部大卡 2026-10-09 起改用 PICKS_WEIGHTS，不在这个等式里）。"""
         card = {"title": "G", "cut": 80, "days_left": 2, "start_days_ago": 1,
                 "reviews": {"score": 88, "count": 12000}}
         self.assertAlmostEqual(report.featured_score(card, self.CFG),
@@ -906,6 +908,28 @@ class HomeSectionsTest(unittest.TestCase):
         self.assertEqual([i["title"] for i in picks], [f"新{i}" for i in range(7)]
                          + ["平0", "平1", "平2"])
 
+    def test_picks_order_differs_from_new_low_section(self):
+        """大卡与「新史低」板块**不再同序**（2026-10-09 用户定案拆开）：
+        大卡用折扣优先档（:data:`PICKS_WEIGHTS`），板块保持名气优先 ——
+        「大名气浅折」排板块前面、「小名气深折」排大卡前面，两边正好相反。"""
+        cards = [self.card("大作小折", count=200_000, cut=30),
+                 self.card("小作大折", count=100, cut=95)]
+        picks = report.pick_top(cards, self.CFG)
+        section = report._section_sort("new_low", self.CFG)
+        self.assertEqual([c["title"] for c in picks], ["小作大折", "大作小折"])
+        self.assertEqual([c["title"] for c in sorted(cards, key=section)],
+                         ["大作小折", "小作大折"])
+
+    def test_picks_weights_config_override_and_no_low_item(self):
+        """``picks_weights`` 配置可覆盖（缺项沿用 :data:`PICKS_WEIGHTS`、未知项
+        忽略）；⚠️ 同样**不许有「史低类型」项** —— 分层取已保证新史低优先，
+        往权重表里加 low 是重复计分（RECOMMEND_WEIGHTS 同款红线）。"""
+        self.assertNotIn("low", report.PICKS_WEIGHTS)
+        w = report.picks_weights({"picks_weights": {"cut": 99, "bogus": 5}})
+        self.assertEqual(w["cut"], 99.0)
+        self.assertEqual(w["fame"], report.PICKS_WEIGHTS["fame"])
+        self.assertNotIn("bogus", w)
+
     def test_recommend_weights_have_no_low_item(self):
         """权重表里**没有**「史低类型」这一项 —— 用户 2026-10-07 明确要求把它删掉
         （「别改大卡的公式，你怎么乱动公式」，有史低项的是 refs §10.2 的**订阅端版**）。"""
@@ -914,7 +938,8 @@ class HomeSectionsTest(unittest.TestCase):
 
 
 class RecommendScoreTest(unittest.TestCase):
-    """refs.md §10.2 权重公式 v2（轮播版，名气优先）。
+    """refs.md §10.2 权重公式 v2（轮播版，名气优先）——
+    现为**「新史低」板块 / 列表精选**的口径（顶部大卡 2026-10-09 起拆到 `PICKS_WEIGHTS`）。
 
     钉四件事：① 门槛挡掉没数据/低口碑的；② 名气优先但**不是线性**（对数列压，
     156 万评价不能把其余项压成噪声）；③ **缺间隔分时归一化**，不是当 0 分；

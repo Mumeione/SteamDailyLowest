@@ -770,7 +770,8 @@ def _section_sort(key: str, cfg: dict | None = None):
     两个板块等于一个板块。现在的口径：
 
     · **新史低** = 推荐公式（:func:`featured_score`，refs §10.2 名气优先）——
-      与大卡同口径，这里保留公式（大卡池子就是从新史低分层取的，语义一致）。
+      注意 2026-10-09 起大卡改用专属权重档（:data:`PICKS_WEIGHTS`，折扣优先），
+      与本板块**刻意不同**（两处同序 = 大卡复读板块，用户要求拆开）。
     · **即将到期** = 「到期近 → 远」：公式的「紧迫」项只有 5 分，压不过名气（40 分），
       按公式排会把「剩 0 天的小游戏」排到「剩 2 天的大作」后面 —— 这个板块的全部
       意义就是「快没了」，紧迫必须优先。
@@ -828,14 +829,17 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
     return out
 
 
-#: 顶部大卡（轮播）的推荐权重 —— refs.md **§10.2 的 v2「轮播版」**（名气优先）。
+#: **「新史低」板块 / 列表精选的**推荐权重 —— refs.md **§10.2 的 v2「轮播版」**（名气优先）。
+#: ⚠️ **2026-10-09 起顶部大卡已拆到独立档 :data:`PICKS_WEIGHTS`（折扣优先），
+#: 这里不再管大卡**（用户裁决：两处同序 = 大卡复读板块前 15 名，见该表注释）。
 #: 每项先归一到 0~1 再乘权重，满分 100；改档位优先改 ``config.json`` 的
 #: ``recommend_weights``（只写要改的那几项即可），不必动代码。
 #: 缺数据的项**不计分、按剩余权重归一化**（见 recommend_score 末尾）。
 #: ⚠️ **这里没有「史低类型」这一项，是故意的** —— refs §10.2 的轮播版当初就不给，
 #: 理由写在表里：「池子全是新史低，无区分度」。2026-10-07 池子放宽成「新史低 +
 #: 平史低」之后我一度补过一项 `low`，用户明确要求**改回来**（原话：「别改大卡的公式，
-#: 你怎么乱动公式，你测一下效果就行了」）—— 所以**别再往这里加 low**。
+#: 你怎么乱动公式，你测一下效果就行了」）—— 所以**别再往这里加 low**（:data:`PICKS_WEIGHTS`
+#: 同一红线）。
 #: 有「史低」那一项的是**订阅端版**（史低 10 分，见 refs §10.2 右列）。
 RECOMMEND_WEIGHTS = {
     "fame": 40,     # 名气：对数压缩，20 万评价封顶
@@ -883,13 +887,43 @@ def _clamp01(value: float) -> float:
     return 0.0 if value < 0 else (1.0 if value > 1 else float(value))
 
 
-def recommend_weights(cfg: dict | None) -> dict:
-    """配置里的权重覆盖默认档（缺的项沿用默认，不要求写全）。"""
-    weights = dict(RECOMMEND_WEIGHTS)
-    for key, value in ((cfg or {}).get("recommend_weights") or {}).items():
-        if key in weights and value is not None:
-            weights[key] = float(value)
+def _resolve_weights(defaults: dict, cfg: dict | None, key: str) -> dict:
+    """按 ``cfg[key]`` 覆盖 ``defaults`` —— 缺项沿用默认、未知项忽略、``None`` 忽略。"""
+    weights = dict(defaults)
+    for name, value in ((cfg or {}).get(key) or {}).items():
+        if name in weights and value is not None:
+            weights[name] = float(value)
     return weights
+
+
+def recommend_weights(cfg: dict | None) -> dict:
+    """「新史低」板块 / 列表精选的权重（``recommend_weights`` 配置覆盖默认档）。"""
+    return _resolve_weights(RECOMMEND_WEIGHTS, cfg, "recommend_weights")
+
+
+#: 顶部大卡（「今日最值」）的**专属权重档**（2026-10-09 用户定案）：
+#: 大卡与「新史低」板块此前共用同一套 :data:`RECOMMEND_WEIGHTS`，同一批池子
+#: （都是新史低）排出来的**条目和顺序完全一样** —— 大卡等于新史低板块的前 15 名
+#: 复读。两处的语义本来就不同：
+#:   · **新史低板块** = 今天有什么新史低的榜单 → 名气优先（browse 口径）；
+#:   · **大卡** = 今日最值的门面位 → **折扣力度优先**，名气其次，快到期的
+#:     深折再往前顶（urgent 加档）。
+#: 想调大卡就改 ``config.json`` 的 ``picks_weights``（只写要改的项，语义同
+#: ``recommend_weights``）；⚠️ 照样**不许加「史低类型」项**（分层取已保证
+#: 新史低优先，加 low 项是重复计分，见 RECOMMEND_WEIGHTS 的红色注释）。
+PICKS_WEIGHTS = {
+    "fame": 30,     # 名气：降到次席（对数压缩口径不变）
+    "cut": 40,      # 折扣：**升到主导** —— 门面位要的是「一眼值」
+    "review": 15,   # 口碑
+    "gap": 0,       # 间隔：同 RECOMMEND_WEIGHTS，默认不参与
+    "urgent": 10,   # 紧迫：快没的深折往前顶
+    "fresh": 5,     # 新鲜
+}
+
+
+def picks_weights(cfg: dict | None) -> dict:
+    """大卡权重：``picks_weights`` 配置覆盖（缺项沿用 :data:`PICKS_WEIGHTS`）。"""
+    return _resolve_weights(PICKS_WEIGHTS, cfg, "picks_weights")
 
 
 def _recommend_parts(card: dict, cfg: dict | None = None) -> dict:
@@ -914,9 +948,14 @@ def _recommend_parts(card: dict, cfg: dict | None = None) -> dict:
     return parts
 
 
-def _weighted_total(parts: dict, cfg: dict | None = None) -> float:
-    """按权重加权并**归一化到 0~100** —— 缺数据的项不计分、按「可用权重之和」折算。"""
-    weights = recommend_weights(cfg)
+def _weighted_total(parts: dict, cfg: dict | None = None,
+                    weights: dict | None = None) -> float:
+    """按权重加权并**归一化到 0~100** —— 缺数据的项不计分、按「可用权重之和」折算。
+
+    ``weights`` 缺省用 :func:`recommend_weights`（板块/精选口径）；
+    大卡传 :func:`picks_weights`（专属档，见 :data:`PICKS_WEIGHTS`）。
+    """
+    weights = weights if weights is not None else recommend_weights(cfg)
     total = sum(weights[key] for key in parts)
     if total <= 0:
         return 0.0
@@ -924,7 +963,8 @@ def _weighted_total(parts: dict, cfg: dict | None = None) -> float:
 
 
 def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
-    """顶部大卡的推荐分（0~100）。**不满足前置门槛返回 ``None``** = 不进推荐位。
+    """推荐公式的分数（0~100）—— **「新史低」板块 / 列表精选的「名气优先」档**
+    (:data:`RECOMMEND_WEIGHTS`)。**不满足前置门槛返回 ``None``** = 不进推荐位。
 
     打分项归一（refs.md §10.2 轮播版；**默认不含「间隔」** —— 见 RECOMMEND_WEIGHTS 的注释）：
 
@@ -941,7 +981,8 @@ def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
     ⚠️ **缺数据的项不计分，并把总分按"可用权重之和"归一化回 100** ——
     这样「有数据的项」不会被平白稀释，也不会因为缺一项就系统性吃亏。
     （分项与加权拆在 :func:`_recommend_parts` / :func:`_weighted_total`，
-    ``featured_score`` 复用同一套算式，保证两处口径永远一致。）
+    ``featured_score``（板块精选）复用同一套算式；**顶部大卡 2026-10-09 起改用
+    :data:`PICKS_WEIGHTS`（折扣优先），两处口径刻意不同**，别再当成同一套。）
     """
     count = review_count(card)
     rate = review_score(card)
@@ -960,17 +1001,22 @@ def featured_score(card: dict, cfg: dict | None = None) -> float:
     2026-10-07 用户：「精选用公式，refs 文档中有参考公式，根据这个推断修正精选的公式」。
     列表页里「详情待补 / 低口碑」的条目也要能排（不能像大卡那样直接不进），所以
     复用 :func:`_recommend_parts` + :func:`_weighted_total`：缺数据的项照常计 0、
-    按剩余权重归一 —— 口径与大卡**永远一致**（改权重两处一起变）。
+    按剩余权重归一 —— 口径与**「新史低」板块**一致（同一 :data:`RECOMMEND_WEIGHTS` 档，
+    改权重两处一起变）；⚠️ **顶部大卡 2026-10-09 起已拆到 :data:`PICKS_WEIGHTS`
+    （折扣优先），与本函数不再同口径**。
     """
     return _weighted_total(_recommend_parts(card, cfg), cfg)
 
 
-def recommend_sort_key(card: dict, cfg: dict | None = None) -> tuple:
+def recommend_sort_key(card: dict, cfg: dict | None = None,
+                       weights: dict | None = None) -> tuple:
     """推荐位排序键：分高在前；平手比 折扣% → 评价数 → 价格低 → appid。
 
     最后一项（appid）是为了**结果稳定可复现** —— 不加的话每次跑出来顺序会抖。
+    ``weights`` 传 :func:`picks_weights` 时即大卡排序键（分值按大卡专属权重算）。
     """
-    score = recommend_score(card, cfg)
+    score = _weighted_total(_recommend_parts(card, cfg), cfg, weights) \
+        if weights is not None else recommend_score(card, cfg)
     return (
         -(score if score is not None else -1.0),
         -(card.get("cut") or 0),
@@ -984,8 +1030,8 @@ def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     """首页顶部「今日最值」大卡横排的候选（前端每页 5 张、可左右翻页）。
 
     池子 = 近 N 天（``home_new_low_days``）的 **新史低 + 平史低** ∩ 还在折扣期内，
-    **分层取**；打分走 §10.2 权重公式 v2（名气/折扣/口碑/紧迫/新鲜 + 前置门槛，
-    **不含「史低类型」** —— 见 RECOMMEND_WEIGHTS 的注释）。
+    **分层取**；打分走 §10.2 权重公式 v2 的**大卡专属档** :data:`PICKS_WEIGHTS`
+    （折扣优先，见其注释；门槛照旧，**不含「史低类型」**）。
 
     ⚠️ **分层取**（用户 2026-10-07 定稿：「优先新史低，没有才显示平史低」）：
     1. 先取近 N 天的**新史低**（过门槛 + 打分排序）；
@@ -1013,15 +1059,22 @@ def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     # 平史低，不要强行显示 15 个」。
     want = max(HOME_PICKS_PAGE, int(cfg.get("home_picks", HOME_PICKS_DEFAULT)))
     pool = [c for c in cards if _is_fresh(c, days) and _is_live(c)]
+    # 大卡专属权重档：算一次给排序键用（别塞进 key 的 lambda 里逐次重算）
+    pw = picks_weights(cfg)
 
     def ranked(low_class: str) -> list[dict]:
-        """该史低类型里按推荐分排好的候选（门槛挡掉的一律不出现）。"""
+        """该史低类型里按**大卡专属权重**排好的候选（门槛挡掉的一律不出现）。
+
+        ⚠️ 打分用 :func:`picks_weights`（折扣优先档），不是板块的推荐档 ——
+        否则大卡就是「新史低板块前 N 名」的复读（2026-10-09 用户定案拆开）。
+        门槛（好评率/评价数）仍按大卡原口径，与权重无关。
+        """
         same = [c for c in pool if c.get("low_class") == low_class]
         scored = [c for c in same if recommend_score(c, cfg) is not None]
         if not scored:
             same.sort(key=featured_sort_key)
             return same
-        scored.sort(key=lambda c: recommend_sort_key(c, cfg))
+        scored.sort(key=lambda c: recommend_sort_key(c, cfg, weights=pw))
         return scored
 
     new_ok = ranked(classify.STEAM_LOW_NEW)

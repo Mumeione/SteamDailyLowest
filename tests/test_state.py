@@ -276,8 +276,13 @@ class StateTest(unittest.TestCase):
         self.state.set_last_low_at("uuid-1", expiry, "2026-06-01T12:00:00+02:00")
         self.assertEqual(self.state.last_low_at("uuid-1", expiry),
                          "2026-06-01T12:00:00+02:00")
-        # expiry 是键的一部分：同一游戏的新折扣不继承旧值
-        self.assertIsNone(self.state.last_low_at("uuid-1", "2026-10-28T19:00:00+02:00"))
+        # 2026-10-09 语义更新：精确键 miss 回退到该游戏折扣期最新的缓存 ——
+        # 防折扣期被延长 / 跨换档后键漂移导致「距上次史低」整行消失（实测热门
+        # 板块 tie 卡 10/10 丢行）。真正的新折扣开抢当天就是「当日新增」候选
+        # （开始日或首见日是今天，不分 new/tie），会被 storelow 重取写入新键，
+        # 最终产物走精确键；回退只兜空窗，值 宁旧勿缺。
+        self.assertEqual(self.state.last_low_at("uuid-1", "2026-10-28T19:00:00+02:00"),
+                         "2026-06-01T12:00:00+02:00")
 
     def test_low_time_cache_cleanup_with_seen_deal(self):
         expiry_old = (NOW - timedelta(days=10)).isoformat()
@@ -287,6 +292,35 @@ class StateTest(unittest.TestCase):
         self.state.cleanup_expired(NOW, retention_days=7)
         self.assertIsNone(self.state.last_low_at("uuid-old", expiry_old))
         self.assertEqual(self.state.last_low_at("uuid-keep", expiry_keep), "ts-keep")
+
+    def test_last_low_at_falls_back_when_expiry_drifts(self):
+        """折扣期被 Steam 延长（跨周四换档续期）后，精确键 miss ⇒ 回退到该游戏
+        已有缓存里折扣期最新的那条（2026-10-09 换档日实测：热门/大额折扣的
+        tie 卡因键漂移 10/10 整行丢「距上次史低」）。值描述的是上一次到该价的
+        时间，不随折扣期变，仍有效。"""
+        self.state.set_last_low_at("uuid-1", "2026-10-08T17:00:00+00:00", "ts-old")
+        # 折扣期续到下周期：expiry 变了，精确键查不到，但行不能整行消失
+        self.assertEqual(self.state.last_low_at("uuid-1", "2026-10-15T17:00:00+00:00"),
+                         "ts-old")
+
+    def test_last_low_at_exact_key_beats_fallback(self):
+        """回退只兜底：新折扣期重取过（新键存在）⇒ 精确键优先于回退。"""
+        self.state.set_last_low_at("uuid-1", "2026-10-08T17:00:00+00:00", "ts-old")
+        self.state.set_last_low_at("uuid-1", "2026-10-15T17:00:00+00:00", "ts-new")
+        self.assertEqual(self.state.last_low_at("uuid-1", "2026-10-15T17:00:00+00:00"),
+                         "ts-new")
+
+    def test_last_low_at_fallback_picks_latest_expiry(self):
+        """同游戏有多条历史键时，回退取折扣期**最新**的那条（最接近现状）。"""
+        self.state.set_last_low_at("uuid-1", "2026-09-24T17:00:00+00:00", "ts-a")
+        self.state.set_last_low_at("uuid-1", "2026-10-08T17:00:00+00:00", "ts-b")
+        self.assertEqual(self.state.last_low_at("uuid-1", "2026-10-15T17:00:00+00:00"),
+                         "ts-b")
+
+    def test_last_low_at_no_entry_no_fallback(self):
+        """从没抓过的游戏：不因回退造出数据（宁缺不猜，与前端口径一致）。"""
+        self.assertIsNone(
+            self.state.last_low_at("uuid-none", "2026-10-15T17:00:00+00:00"))
 
     def test_old_meta_last_low_at_no_longer_read(self):
         """game_meta 里的旧 last_low_at 存量字段不再被读取（改走折扣期暂存）。"""
