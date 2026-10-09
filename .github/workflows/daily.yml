@@ -33,6 +33,10 @@
 #
 # 每月 2 日的 14 7 UTC，预抓与 orphan 清理会同时命中：二者都进 state-write 并发组串行排队，
 # 且 orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
+#
+# ⚠️ 本文件**不跑测试**：pytest / check_payload / jsdom 冒烟在 checks.yml（2026-10-09）。
+#   分工是「daily = 发布（要打真实请求）· checks = 契约锁（零网络）」，
+#    别往这里加测试步骤 —— 那会让每次发布多背一套依赖，而且失败语义混在一起。
 
 name: daily
 

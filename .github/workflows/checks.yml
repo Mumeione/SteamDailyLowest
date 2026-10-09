@@ -1,0 +1,81 @@
+# 契约锁（架构检查卡片 03）—— 仓库花力气建了一批机械校验，但此前**一行都没接进 CI**：
+#   · tests/            pytest（判定 / 渲染 / 状态库 / 传输底座…）
+#   · tools/check_payload.py   报表产物的跨端字面量双向比对（low_class / views / 日期协议 / agg 键序）
+#   · tests/jsdom/smoke_s9.js  app.js 的 DOM 行为冒烟（无浏览器环境下的主力手段）
+# 结果就是「记得跑才锁」——改错了不红，锁等于不存在。这里给它们通电：
+# 每次推 main / 开 PR 都跑一遍，一条命令红就整条红。
+#
+# ⚠️ 与 daily.yml 分开是有意的：daily 是**发布**流程（抓取 → 报表 → Pages），
+# 它跑一次要打上百次真实请求；这里的四道锁**零网络**（报表用状态库本地重渲染），
+# 失败语义也不同（那边失败 = 页面没更新，这边失败 = 代码有问题）。
+#
+# 报表怎么来：check_payload 与冒烟都要读 output/，而 output/ 不入库 ——
+# 所以先从 data 分支恢复状态库，再用 tools/render_report.py **本地重渲染**
+# （--at latest：参照日期取状态库里最新一条数据，不写死日期，免随时间腐烂）。
+# 数据陈旧不影响这几道锁：它们验的是结构 / 协议 / 行为，不是当天内容。
+#
+# cron 字段说明（本文件不设 schedule，仅 rrule 无关）：
+#   触发 = push(main) · pull_request · workflow_dispatch
+
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions: {}
+
+# 同一分支的旧运行没有意义（这是纯校验，不是发布），直接取消重跑
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read       # 只读：checkout main + data 分支
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 取出 data 分支（渲染测试报表要用的状态库）
+        uses: actions/checkout@v7
+        with:
+          ref: data
+          path: statedata
+
+      - name: 恢复状态文件
+        uses: ./.github/actions/state-restore
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        # pyyaml 只给 tools/check_workflow_yaml.py 用（本 job 会顺手校验三个 workflow）
+        run: pip install -r requirements.txt pytest
+
+      - name: 0) workflow YAML 严格校验（重复键直接报错；不带参数 = 校验目录下全部）
+        run: python tools/check_workflow_yaml.py
+
+      - name: 1) 单元测试（判定 / 渲染 / 状态库 / 传输底座）
+        run: python -m pytest -q
+
+      - name: 2) 本地重渲染测试报表（零网络请求）
+        run: python tools/render_report.py --at latest
+
+      - name: 3) 报表产物契约检查（跨端字面量双向比对）
+        run: python tools/check_payload.py
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: 4) 前端冒烟（jsdom：DOM 行为 / 分片加载 / 筛选序列）
+        # 版本与本地对齐（jsdom ^30）；本地跑法：NODE_PATH=<node_modules> node tests/jsdom/smoke_s9.js
+        run: |
+          npm install --no-save --no-audit --no-fund "jsdom@^30"
+          node tests/jsdom/smoke_s9.js
