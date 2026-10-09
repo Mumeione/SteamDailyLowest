@@ -705,16 +705,6 @@ def write_all_shards(output_dir: Path, all_cards: list[dict], cfg: dict) -> dict
     return manifest
 
 
-#: 首页四板块的键与顺序 —— **从 :data:`SECTIONS` 注册表派生**（code-audit-2026-10-09 #5）。
-#: 注册表定义在文件下方（紧随各板块的判据 / 排序函数），此处仅留说明。
-#: ⚠️ **池子必须是「全部」视图那批卡片（``all_cards`` / ``all_shown``）** ——
-#: 绝不能用 ``seen_deal`` 全量（里面有同一游戏的历史价格变体，条数会放大十几倍）。
-#: ⚠️ 这里**不再写「入组条件」文案** —— 原先每个板块带一句 `criteria`（"评价数 ≥ 10000"、
-#: "折扣 ≥ 80%"），阈值是写死的字面量：改了 `notable_review_count` 之后页面还在说
-#: 10000，等于撒谎；而且**前端从头到尾没渲染过它**（refs B6 只要条数）。板块口径改在
-#: 「关于网站」页由 :func:`criteria_notes` 从配置生成，那里才是唯一来源。
-
-
 #: 默认阈值的**唯一来源** = :data:`src.config.DEFAULTS`（2026-10-09 收编）。
 #: 这几个名字是**只读别名**，保留它们是为了不改动几十处调用点；值一律从单表取，
 #: 绝不再在这里写第二遍字面量（曾经 10000 / 80 / 7 / 48 在两处各写一遍，
@@ -859,7 +849,13 @@ SECTIONS = [
 ]
 _SECTIONS_BY_KEY = {s["key"]: s for s in SECTIONS}
 
-#: 首页四板块（键 + label，顺序即 nav 与分片顺序）—— 上表的派生视图。
+#: 首页四板块（键 + label，顺序即 nav 与分片顺序）—— :data:`SECTIONS` 的派生视图。
+#: ⚠️ **池子必须是「全部」视图那批卡片（``all_cards`` / ``all_shown``）** ——
+#: 绝不能用 ``seen_deal`` 全量（里面有同一游戏的历史价格变体，条数会放大十几倍）。
+#: ⚠️ 这里**不再写「入组条件」文案** —— 原先每个板块带一句 `criteria`（"评价数 ≥ 10000"、
+#: "折扣 ≥ 80%"），阈值是写死的字面量：改了 `notable_review_count` 之后页面还在说
+#: 10000，等于撒谎；而且**前端从头到尾没渲染过它**（refs B6 只要条数）。板块口径改在
+#: 「关于网站」页由 :func:`criteria_notes` 从配置生成，那里才是唯一来源。
 HOME_SECTIONS = [{"key": s["key"], "label": s["label"]} for s in SECTIONS]
 
 

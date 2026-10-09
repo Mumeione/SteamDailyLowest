@@ -109,7 +109,9 @@ def jsdom_env(node: str) -> tuple[dict | None, str | None]:
         "      ② 指向已有的 node_modules：\n"
         "         set SDL_NODE_MODULES=<含 jsdom 的 node_modules 目录>   (Windows cmd)\n"
         "         export SDL_NODE_MODULES=<...>/node_modules            (bash)\n"
-        "      临时不跑这道就加 --skip-smoke（但那张网会少一块）"
+        "      临时不跑这道就加 --skip-smoke（但那张网会少一块）\n"
+        "      ⚠️ 注意：`--skip-smoke` **只跳过冒烟**；pytest 里的 tests/test_parity.py\n"
+        "      同样要 node + jsdom（跑真前端判据做跨语言对拍），故仍需上述二选一。"
     )
     return None, hint
 
@@ -117,24 +119,27 @@ def jsdom_env(node: str) -> tuple[dict | None, str | None]:
 def build_steps(args) -> list[Step]:
     """组装要跑的道次（顺序即依赖顺序：渲染必须在报表契约检查之前）。"""
     py = sys.executable
+    # node + jsdom 环境：**冒烟与 pytest 都要**（code-audit-2026-10-09 #7 起，
+    # tests/test_parity.py 会 subprocess 调 node 跑 tests/jsdom/parity_filters.js，
+    # 属 pytest 步骤的一部分）—— 故这里算一次、两边共用，别只给冒烟。
+    node = which_node()
+    node_env = jsdom_env(node)[0] if node else None
     steps = [
         Step("workflow", "workflow YAML 严格校验",
              [py, "tools/check_workflow_yaml.py"], timeout=120),
         Step("pytest", "单元 / 集成测试",
-             [py, "-m", "pytest", "-q"], timeout=900),
+             [py, "-m", "pytest", "-q"], timeout=900, env=node_env),
         Step("render", "本地重渲染报表（零网络）",
              [py, "tools/render_report.py", "--at", "latest"], timeout=600),
         Step("payload", "报表契约前后端比对",
              [py, "tools/check_payload.py"], needs="render", timeout=300),
     ]
-    node = which_node()
     if node is None:
         steps.append(Step("smoke", "前端行为冒烟（缺 node）", [], needs="render"))
     else:
-        env, _ = jsdom_env(node)
         steps.append(Step("smoke", "前端行为冒烟",
                           [node, "tests/jsdom/smoke_s9.js"],
-                          needs="render", timeout=600, env=env))
+                          needs="render", timeout=600, env=node_env))
     if args.only:
         wanted = set(args.only)
         unknown = wanted - {s.slug for s in steps}

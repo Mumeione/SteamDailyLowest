@@ -1207,6 +1207,25 @@ class SectionRegistryGuardTest(unittest.TestCase):
         # 「全部折扣」这一个常量 label 仍允许（伪板块，无服务端来源）
         self.assertIn('__all__: "全部折扣"', code)
 
+    def test_implied_filter_keys_are_real_sections(self):
+        """filter_specs 里 `implied` 引用的板块 key 必须真实存在。
+
+        `implied` 是 #5 收敛后**仅存的一处板块 key 字面量**（filter_specs 组装
+        「本板块已隐含」的筛选项）—— 改板块 key 时它会静默失配，这条把它锁住。
+        """
+        keys = {s["key"] for s in report.SECTIONS} | {"__all__"}
+        cards = [{"low_class": "new", "start_days_ago": 1, "cut": 90,
+                  "reviews": {"score": 90, "count": 20000}, "views": ["active"]}]
+        seen = 0
+        for group in report.filter_specs(CFG, cards):
+            for opt in group["options"]:
+                for key in (opt.get("implied") or []):
+                    self.assertIn(key, keys, (group["key"], opt["value"]))
+                    seen += 1
+        # 空循环恒真 = 没锁（smoke_s9 钉过的反模式）：`implied` 一个都没扫到就说明
+        # filter_specs 改了形状、这条守卫已经悄悄失效。
+        self.assertGreater(seen, 0, "没扫到任何 implied —— 守卫已失效（filter_specs 形状变了？）")
+
 
 class TopbarTest(unittest.TestCase):
     """S9-2 顶栏：站点名标识 + 手机端导航折叠按钮（refs.md B1）。

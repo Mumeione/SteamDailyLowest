@@ -1400,4 +1400,15 @@
   }
 
   renderAlert();
+
+  // 测试 seam（code-audit-2026-10-09 #7）：把纯判据暴露给 Node 端跨语言对拍脚本。
+  // ⚠️ 开关与 API 用**两个不同的键**（免得「既是开关又是对象」读起来费解）：
+  //    宿主显式置 `window.__SDL_TEST_HOOK__ = true` 才会挂 `window.__SDL_TEST_API__`；
+  //    浏览器里恒不挂载 → 这段一行不执行。
+  if (typeof window !== "undefined" && window.__SDL_TEST_HOOK__) {
+    window.__SDL_TEST_API__ = {
+      cardPredicate: cardPredicate,
+      setFilters: function (f) { state.filters = f; }
+    };
+  }
 })();
