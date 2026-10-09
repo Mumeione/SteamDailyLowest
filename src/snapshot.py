@@ -82,7 +82,7 @@ def build_snapshot(entries: list[dict], now: datetime, cfg: dict,
                    fx: dict | None = None) -> dict:
     """把（已 merge_details + 已按 appid 去重 + 已过 is_shown 分档）的条目组装成快照。
 
-    ``low_class`` 在这里**现算**（不落库）：输入条目已由 ``merge_details()`` 带上
+    ``low_class`` 在这里**现算**（不落库）：输入条目已由 ``pipeline.merge_details()`` 带上
     ``last_low_at``，直接套 :func:`classify.steam_low_class` 即可 ——
     与报表卡片（``report.build_card``）用的是同一个函数、同一份依据，不存在第二套口径。
     时区按计划书取 ``classify.zone(cfg["timezone"])``，``now`` 失去 tzinfo 时也能兜住。

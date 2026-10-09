@@ -265,7 +265,7 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
     ``last_low_at`` / ``prev_low_at``：**显式参数**（架构检查卡片 02）。这两个时刻原
     先只靠「上游按约定塞进 entry 的 dict 键」维系（低层判定读不到就静默降级成
     「平史低 / 无数据」），是本模块最热改动区的隐式契约。生产唯一入口
-    ``run.merge_details`` 两个键都会写，所以传不传等价；把它们放到签名上是为了让
+    ``pipeline.merge_details`` 两个键都会写，所以传不传等价；把它们放到签名上是为了让
     「这两个值从哪来」不再靠注释维系，新调用方也能直接喂。不传时回落到 entry
     同名键（兼容旧调用与测试）。
     """

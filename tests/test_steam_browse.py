@@ -13,8 +13,11 @@ GetItems 是 Valve **未公开**接口，**字段名漂移是主要风险**（sp
 来源键对照（实测样例见 `.workbuddy/tmp/review_api.txt` §1.3）：
 ``appid`` / ``name`` / ``success`` / ``reviews.summary_filtered.{percent_positive,
 review_count}`` / ``basic_info.{publishers,developers}[].{name,creator_clan_account_id}``
-/ ``purchase_options[].{final_price_in_cents,original_price_in_cents}``
-/ ``release.steam_release_date`` / ``platforms`` / ``tags[].{tagid,weight}``。
+/ ``release.steam_release_date``。
+
+⚠️ 2026-10-09（卡片 08）：``purchase_options`` / ``platforms`` / ``tags`` 三个来源键
+**已从契约里移除**（生产零消费方，``data_request`` 里对应开关也关了）——
+本文件既锁「DATA_REQUEST 不再请求它们」，也锁「响应里带了也一律无视」。
 """
 
 from __future__ import annotations
@@ -118,11 +121,12 @@ class ParseItemTest(unittest.TestCase):
         # 厂商收敛成 {"id", "name"}；缺 creator_clan_account_id 的项 id 为 None
         self.assertEqual(meta.publishers, [{"id": 33118426, "name": "Nacon"}])
         self.assertEqual(meta.developers, [{"id": None, "name": "Artefacts Studio"}])
-        # 价格取 final 最低的一项，字符串转 int
-        self.assertEqual(meta.price, {"final": 599, "initial": 2999})
         self.assertEqual(meta.release_date, 1716480182)
-        self.assertEqual(meta.platforms, {"windows": True, "steam_deck_compat_category": 3})
-        self.assertEqual(meta.tags, [{"tagid": 29482, "weight": 1079}])
+        # 夹具里带着 purchase_options / platforms / tags（模拟老请求或服务端补全）——
+        # 解析层一律无视，GameMeta 里也没有对应字段（卡片 08 已裁掉）
+        self.assertFalse(hasattr(meta, "price"))
+        self.assertFalse(hasattr(meta, "platforms"))
+        self.assertFalse(hasattr(meta, "tags"))
 
     def test_invalid_appid_skipped_not_raised(self):
         """无效 appid：success != 1 / appid 非法 → None（跳过），不抛错。"""
@@ -163,31 +167,56 @@ class ParseItemTest(unittest.TestCase):
         self.assertEqual(meta.reviews, {"score": 0, "count": 12})
 
     def test_missing_optional_sections(self):
-        """reviews / basic_info / purchase_options / release / platforms / tags 全缺：
-        对应字段给 None / 空列表，不抛错。"""
+        """reviews / basic_info / release 全缺：对应字段给 None / 空列表，不抛错。"""
         bare = {"appid": 570, "name": "Dota 2", "success": 1}
         meta = parse_store_item(bare)
         self.assertIsNone(meta.reviews)
         self.assertEqual(meta.publishers, [])
         self.assertEqual(meta.developers, [])
-        self.assertIsNone(meta.price)
         self.assertIsNone(meta.release_date)
-        self.assertIsNone(meta.platforms)
-        self.assertEqual(meta.tags, [])
 
-    def test_price_garbage_options_ignored(self):
+    def test_unrequested_fields_in_response_are_ignored(self):
+        """响应带了未请求的字段（老请求 / 服务端补全）不炸、也不进结果。"""
         meta = parse_store_item({**FULL_ITEM, "purchase_options": [
-            {"final_price_in_cents": "abc"},
-            {"original_price_in_cents": "100"},      # 缺 final
-            {"final_price_in_cents": "2500", "original_price_in_cents": "5000"},
-        ]})
-        self.assertEqual(meta.price, {"final": 2500, "initial": 5000})
+            {"final_price_in_cents": "abc"},           # 脏数据
+            {"final_price_in_cents": "2500"},
+        ], "tags": "not-a-list", "platforms": [1, 2], "ratings": {"esrb": "M"}})
+        self.assertEqual(meta.appid, 1658920)
+        self.assertEqual(meta.name, "Crown Wars: The Black Prince")
 
-    def test_price_missing_original_falls_back_to_final(self):
-        meta = parse_store_item({**FULL_ITEM, "purchase_options": [
-            {"final_price_in_cents": "0"},
-        ]})
-        self.assertEqual(meta.price, {"final": 0, "initial": 0})
+
+class DataRequestCropTest(unittest.TestCase):
+    """data_request 裁剪的**反向锁**（卡片 08）。
+
+    关掉的开关必须**显式存在且为关闭态** —— 直接删键会让服务端按自己的默认值返回
+    （不可假设为「关」），所以两个方向都要锁：别顺手加回来、也别漏写。
+    """
+
+    OFF_SWITCHES = {
+        "include_all_purchase_options": False,
+        "include_platforms": False,
+        "include_ratings": False,
+        "include_assets": False,
+        "include_screenshots": False,
+        "include_trailers": False,
+        "include_full_description": False,
+    }
+
+    def test_consumed_switches_are_on(self):
+        for key in ("include_basic_info", "include_reviews", "include_release"):
+            self.assertIs(DATA_REQUEST.get(key), True, key)
+
+    def test_zero_consumer_switches_are_explicitly_off(self):
+        for key, expected in self.OFF_SWITCHES.items():
+            self.assertIn(key, DATA_REQUEST, f"{key} 不能删键，要显式关")
+            self.assertIs(DATA_REQUEST[key], expected, key)
+        self.assertEqual(DATA_REQUEST.get("include_tag_count"), 0)
+
+    def test_no_unknown_switches(self):
+        """键名写错 = 静默无效（服务端不认识的键一律忽略），所以锁全集。"""
+        self.assertEqual(set(DATA_REQUEST), set(self.OFF_SWITCHES) | {
+            "include_basic_info", "include_reviews", "include_release",
+            "include_tag_count"})
 
 
 class FetchTest(unittest.TestCase):

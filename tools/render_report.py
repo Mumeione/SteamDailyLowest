@@ -31,14 +31,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from run import (  # noqa: E402
-    build_stats,
-    count_backlog,
-    log,
-    render_pass,
-)
 from src import classify  # noqa: E402
 from src import enrich  # noqa: E402
+# ⚠️ 渲染层从 **src.pipeline** 拿，不从入口 module（卡片 05）：入口只放编排 / CLI，
+#    零网络的预览工具 import 它会让「哪层是哪层」糊掉。老式写法仍可用（入口转发导
+#    出了这几个名字），但新代码别再用 —— tests/test_pipeline.py 有机械锁。
+from src.pipeline import build_stats, count_backlog, log, render_pass  # noqa: E402
 from src.config import ConfigError, load_config, resolve_path  # noqa: E402
 from src.state import State  # noqa: E402
 
@@ -107,7 +105,7 @@ def graft_compare_from_cache(state, cfg: dict, entries: list[dict], fx: dict | N
 
     ⚠️ 存在理由（2026-10-08 决策，回应 check-report 的「修时要一并考虑」）：
     曾经它在渲染前预注入 compare、**掩盖了** run.py 的回灌缺失（线上 compare 全空、
-    本地却看得到）；该回归已由 run.render_pass 的 `compare_by_appid` 回灌修复。
+    本地却看得到）；该回归已由 pipeline.render_pass 的 `compare_by_appid` 回灌修复。
     本函数仍需保留 —— 本地预览不做 Steam 真查（费额度、要 key），没有它本地就
     完全看不到比价行版式。
 

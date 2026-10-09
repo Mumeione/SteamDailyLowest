@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""流水线集成测试：`run.render_pass` → `report.render` → 写出来的 data.js。
+"""流水线集成测试：`pipeline.render_pass` → `report.render` → 写出来的 data.js。
 
 不发任何网络请求（用临时的 state + output 目录）。
 存在的意义：单测只能证明各模块对，**接起来对不对**要靠这里。
@@ -340,6 +340,49 @@ class RenderPassTest(unittest.TestCase):
         self.assertEqual(len(new_low["items"]), 1)
         self.assertEqual(new_low["items"][0]["tier"], classify.TIER_PENDING)
         self.assertEqual(new_low["items"][0]["tier_label"], "详情待补")
+
+
+class LayeringTest(unittest.TestCase):
+    """渲染层与 CLI 入口分层的机械锁（2026-10-09 卡片 05）。
+
+    渲染层（``src.pipeline``）原先长在 ``run.py`` 里，于是零网络的本地预览工具
+    ``tools/render_report.py`` 为了拿 render_pass 必须 import 1400 行的**入口** module。
+    这里用子进程验「单独 import src.pipeline **不会**把 run.py 牵出来」——
+    真被牵出来（比如有人在 pipeline 里 import run）就红。
+    """
+
+    def test_pipeline_importable_without_run_module(self):
+        import subprocess
+        code = (
+            "import sys\n"
+            "import src.pipeline\n"
+            "leaked = [m for m in sys.modules if m == 'run']\n"
+            "assert not leaked, f'src.pipeline 不该牵出 {leaked}'\n"
+            "print('ok')\n"
+        )
+        proc = subprocess.run([sys.executable, "-c", code],
+                              cwd=str(Path(__file__).resolve().parent.parent),
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("ok", proc.stdout)
+
+    def test_render_report_does_not_import_run(self):
+        """预览工具也不许再 import run（它只要渲染层）。
+
+        ⚠️ 先剥注释再判：这条校验的注释里就写着「老写法仍可用」，不剥的话
+        校验会被自己的说明文字骗红（CSS @media 那条踩过同一个坑）。
+        """
+        src = (Path(__file__).resolve().parent.parent
+               / "tools" / "render_report.py").read_text(encoding="utf-8")
+        code = "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+        self.assertNotIn("import run", code)
+        self.assertIn("from src.pipeline import", code)
+
+    def test_run_still_reexports_render_layer(self):
+        """run.py 转发导出老名字 —— 老调用点与测试照常 `from run import render_pass`。"""
+        import run
+        for name in ("render_pass", "merge_details", "build_stats", "count_backlog", "log"):
+            self.assertTrue(callable(getattr(run, name, None)), name)
 
 
 if __name__ == "__main__":

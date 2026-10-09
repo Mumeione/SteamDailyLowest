@@ -354,6 +354,23 @@ def is_shown(tier: str) -> bool:
     return tier in (TIER_QUALITY, TIER_NOTABLE, TIER_PENDING)
 
 
+def is_new_today(entry: dict, now: datetime) -> bool:
+    """条目级「当日新增」判定（双口径的原子版，§4.2）。
+
+    折扣开始日是今天，或**首次见到**是今天 —— 与 :func:`timestamp_is_today` +
+    ``first_seen_at`` 兜底那两条主口径一致，供拿不到本轮 candidates 的调用方
+    （欠账计数、预抓）按条目自己判。
+
+    原先叫 ``run._is_new_today``，长在 orchestrator 里（卡片 07/05：它是一条**判定**，
+    不是编排）。``now`` 必须带时区（比较的是本地日历日）。
+    """
+    start = parse_time(entry.get("start"), now.tzinfo)
+    if start is not None and start.astimezone(now.tzinfo).date() == now.date():
+        return True
+    first = parse_time(entry.get("first_seen_at"), now.tzinfo)
+    return first is not None and first.astimezone(now.tzinfo).date() == now.date()
+
+
 def merge_tier(meta: dict | None, cfg: dict) -> tuple[str, int | None, dict | None]:
     """由 ``game_meta`` 条目决定**进列表的档位**与卡片要用的 ``appid`` / ``reviews``。
 
@@ -385,7 +402,7 @@ def is_shown_meta(meta: dict | None, cfg: dict) -> bool:
     所以**不能**把「没抓过详情」当 PENDING 放行 —— 那会让回填给永远不展示的
     冷门条目白花配额。
 
-    调用方：``run.count_backlog`` 与 ``tools/backfill_low_period.select_targets``
+    调用方：``pipeline.count_backlog`` 与 ``tools/backfill_low_period.select_targets``
     （原先两边各写一遍 ``is_shown(tier_of(...))``，口径靠注释维系）。
     """
     return is_shown(tier_of((meta or {}).get("reviews"), cfg))

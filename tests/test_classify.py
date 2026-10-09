@@ -356,7 +356,7 @@ class DaysUntilTest(unittest.TestCase):
 
 
 class MergeTierTest(unittest.TestCase):
-    """「进列表」档位组装（卡片 07：从 run.merge_details 归位到这里）。
+    """「进列表」档位组装（卡片 07：从 pipeline.merge_details 归位到这里）。
 
     锁三件事：unlisted 必须归 COLD（**不能**归 PENDING，否则以展示档复入列表）、
     没抓过详情归 PENDING、其余按评价数据判档；顺带返回卡片要用的 appid / reviews。

@@ -27,8 +27,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 
 from . import classify
 
@@ -133,8 +135,35 @@ class Dynamic:
         }
 
     @property
-    def entries(self) -> dict:
-        return self.data["entries"]
+    def entries(self) -> Mapping:
+        """动态条目（game_id → reviews / stats / fetched_at / 失败计数）—— **只读视图**。
+
+        写入走 :meth:`set_entry` / :meth:`drop_entry`（State 的 set_meta /
+        set_detail_failed / set_title_zh / drop_dyn 都经由它们）。语义与限制
+        同 ``State.seen_deal``（只读、浅只读）。
+        """
+        return MappingProxyType(self.data["entries"])
+
+    def set_entry(self, game_id: str, entry: dict) -> None:
+        """**受控写口**：按原样写一条动态条目（与只读的 :attr:`entries` 配对）。
+
+        生产侧不直接用（走 State 的 set_meta / set_detail_failed 等），
+        但测试夹具与一次性脚本需要一个「塞一条现成的」入口 —— 那就是这里，
+        而不是 ``state.dynamic.data["entries"][gid] = ...``。
+        """
+        self.data["entries"][game_id] = entry
+
+    def ensure_entry(self, game_id: str) -> dict:
+        """取一条**可变的**动态条目（不存在就建空的并挂上，返回库里那个 dict）。
+
+        与只读 :attr:`entries` 配对：纯读用只读视图，**读-改-写**走这里 ——
+        ``setdefault`` 返回的就是库里那个对象，改完不必（也没必要）再赋值回去。
+        """
+        return self.data["entries"].setdefault(game_id, {})
+
+    def drop_entry(self, game_id: str) -> None:
+        """删除一条动态条目（不存在的 game_id 静默跳过）。"""
+        self.data["entries"].pop(game_id, None)
 
     def load(self) -> "Dynamic":
         if not self.path.exists():
@@ -173,6 +202,15 @@ class State:
         self.tz = tz
         # low_time_cache 的 game_id 索引（惰性建；写/清后置 None 失效），见 last_low_at
         self._low_time_idx: dict | None = None
+        #: **原始载荷**（state.json 的顶层对象）—— 读写用，见下面的约定：
+        #: ⚠️ 生产代码**不要直接改它**（也别改 ``self.dynamic.data`` / ``self.cache.data``）：
+        #:   · ``data["seen_deal"]`` / ``data["game_meta"]`` 有配套语义（幂等键、首见时间、
+        #:     留存清理、失败标记），必须走具名方法（record_seen / set_meta / set_appid /
+        #:     set_title_zh / set_low_period / set_unlisted / set_compare_original …）；
+        #:   · 对外只读视图是 :attr:`seen_deal` / :attr:`game_meta` /
+        #:     :attr:`low_time_cache` / :attr:`compare_cache` / :attr:`Dynamic.entries`。
+        #: 允许直接用的只有两类：**代码自迁移**（load 里重整旧格式）与**测试夹具**
+        #: （要造一条不符合任何方法前置条件的原始行）。
         self.data: dict = {
             "version": STATE_VERSION,
             "updated_at": None,
@@ -241,7 +279,7 @@ class State:
             legacy_dyn = {k: entry.pop(k) for k in _DYN_KEYS if k in entry}
             if legacy_dyn:
                 dyn_found = True
-                target = self.dynamic.entries.setdefault(gid, {})
+                target = self.dynamic.ensure_entry(gid)
                 for k, v in legacy_dyn.items():
                     target.setdefault(k, v)
         if dyn_found:
@@ -268,7 +306,7 @@ class State:
         if now is not None:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
         for key, entry in list(self.seen_deal.items()):
-            self.seen_deal[key] = classify.slim_deal(entry)
+            self.data["seen_deal"][key] = classify.slim_deal(entry)
         atomic_write_json(self.path, self.data)
         self.dynamic.save(now)
         self.cache.save(now)
@@ -277,8 +315,20 @@ class State:
     # seen_deal：幂等 + 兜底口径 + 其余视图的攒库
     # ------------------------------------------------------------------
     @property
-    def seen_deal(self) -> dict:
-        return self.data["seen_deal"]
+    def seen_deal(self) -> Mapping:
+        """已见折扣（幂等键 → 条目）—— **只读视图**（2026-10-09 卡片 04）。
+
+        ⚠️ 返回的是 :class:`~types.MappingProxyType`，**赋值 / 删除会直接抛
+        ``TypeError``** —— 写入必须走具名方法（:meth:`record_seen` 负责幂等键构造与
+        首见时间、:meth:`cleanup_expired` 负责留存清理）。从前这里直接返回内部 dict
+        本体，调用方一句 ``state.seen_deal[k] = v`` 就能绕过全部配套语义
+        （``tools/backfill_low_period`` 直写 game_meta 那次就是这么长出并行口径的）。
+
+        ⚠️ **浅只读**：条目内部仍是原 dict，``state.seen_deal[k]["x"] = 1`` 不会报错。
+        要改内容请用对应方法，别往里塞字段。
+        ⚠️ 夹具 / 一次性脚本若要往原始载荷里塞行，走 :attr:`data`（见那里的说明）。
+        """
+        return MappingProxyType(self.data["seen_deal"])
 
     def has_seen(self, game_id: str, price_int, expiry) -> bool:
         return classify.deal_key(game_id, price_int, expiry) in self.seen_deal
@@ -296,7 +346,7 @@ class State:
             entry = classify.slim_deal(deal)
             entry["first_seen_at"] = stamp
             entry["last_seen_at"] = stamp
-            self.seen_deal[key] = entry
+            self.data["seen_deal"][key] = entry
             return key, True
         entry["last_seen_at"] = stamp
         return key, False
@@ -319,20 +369,24 @@ class State:
             expiry = classify.parse_time(entry.get("expiry"), self.tz)
             if expiry is not None and expiry < deadline:
                 drop.append(key)
-        dropped_gids = {self.seen_deal[key].get("game_id") for key in drop}
+        dropped_gids = {self.data["seen_deal"][key].get("game_id") for key in drop}
         for key in drop:
-            del self.seen_deal[key]
-        self._cleanup_expiry_keyed(self.low_time_cache, deadline)
+            del self.data["seen_deal"][key]
+        # ⚠️ 传的是**原始载荷里的那张表**（要删键）—— 别传只读视图 self.low_time_cache
+        self._cleanup_expiry_keyed(self.cache.data["low_time_cache"], deadline)
         self._low_time_idx = None   # 缓存被清理，game_id 索引一并失效
         live_gids = {e.get("game_id") for e in self.seen_deal.values()}
         for gid in dropped_gids:
             if gid and gid not in live_gids:
-                self.dynamic.entries.pop(gid, None)
+                self.dynamic.drop_entry(gid)
         return len(drop)
 
     @staticmethod
     def _cleanup_expiry_keyed(cache: dict, deadline: datetime) -> int:
         """清掉缓存键里 expiry 早于 deadline 的条目（键格式 ``<id>|<expiry>``）。
+
+        参数必须是**可变的原始表**（``self.cache.data["low_time_cache"]``）——
+        传只读视图会 TypeError（卡片 04 的改造把两者分开了）。
 
         expiry 缺失或解析不了的键无法与折扣期绑定，一并清掉 —— 暂存可重建，
         留着只会缓慢积累。
@@ -351,8 +405,16 @@ class State:
     # game_meta（不变层） + dynamic.json（动态层） + 合并视图
     # ------------------------------------------------------------------
     @property
-    def game_meta(self) -> dict:
-        return self.data["game_meta"]
+    def game_meta(self) -> Mapping:
+        """不变层缓存（game_id → appid / title_zh / 厂商 / release_date / unlisted / low_period）
+        —— **只读视图**（2026-10-09 卡片 04）。
+
+        写入走具名方法：:meth:`set_appid` / :meth:`set_title_zh` /
+        :meth:`set_release_date` / :meth:`set_unlisted` /
+        :meth:`set_low_period`（回填写口）/ :meth:`set_meta`。语义与限制同
+        :attr:`seen_deal`（只读、浅只读）。
+        """
+        return MappingProxyType(self.data["game_meta"])
 
     def meta(self, game_id: str) -> dict | None:
         """合并视图：不变层（game_meta）+ 动态层（dynamic.json）。
@@ -367,12 +429,16 @@ class State:
         return base
 
     def dyn(self, game_id: str) -> dict | None:
-        """原始动态条目（不合并），供派生欠账判定数据年龄。"""
+        """原始动态条目（不合并），供派生欠账判定数据年龄。
+
+        ⚠️ 返回的是**库里的那个 dict**（可写）—— 只读的 :attr:`Dynamic.entries`
+        是另一条路（映射视图）。要改内容用具名方法（set_detail_failed / set_meta…）。
+        """
         return self.dynamic.entries.get(game_id)
 
     def drop_dyn(self, game_id: str) -> None:
         """删除整个动态条目（unlisted 收敛 / 留存清理用）。"""
-        self.dynamic.entries.pop(game_id, None)
+        self.dynamic.drop_entry(game_id)
 
     # 注：原 `detail_fetched_recently(game_id, now, ttl_days)` 已删（2026-10-09 卡片 04）
     # —— 它只被自己那条单测调过，生产/工具零引用；新鲜度判定的唯一出处是
@@ -393,7 +459,7 @@ class State:
             return
         entry = self.game_meta.get(game_id) or {}
         entry["appid"] = int(appid)
-        self.game_meta[game_id] = entry
+        self.data["game_meta"][game_id] = entry
 
     # ---- release_date（不变层）：GetItems 顺带返回，新游判定用（spec 决策 16）----
     def set_release_date(self, game_id: str, ts) -> None:
@@ -407,7 +473,7 @@ class State:
         entry = self.game_meta.get(game_id) or {}
         if entry.get("release_date") is None:
             entry["release_date"] = ts
-            self.game_meta[game_id] = entry
+            self.data["game_meta"][game_id] = entry
 
     # ---- unlisted 标记（不变层）：未入列表条目（spec 决策 17）----
     def unlisted(self, game_id: str) -> dict | None:
@@ -426,7 +492,7 @@ class State:
             "at": now.isoformat(timespec="seconds"),
             "start": start,
         }
-        self.game_meta[game_id] = entry
+        self.data["game_meta"][game_id] = entry
 
     def clear_unlisted(self, game_id: str) -> bool:
         """摘除标记（翻案转正常记录）；返回是否真的摘了。"""
@@ -445,10 +511,9 @@ class State:
         """
         if not game_id:
             return
-        entry = self.dynamic.entries.setdefault(game_id, {})
+        entry = self.dynamic.ensure_entry(game_id)
         entry["detail_failed_at"] = now.isoformat(timespec="seconds")
         entry["detail_attempts"] = int(entry.get("detail_attempts") or 0) + 1
-        self.dynamic.entries[game_id] = entry
 
     def detail_recently_failed(self, game_id: str, now: datetime, cooldown_days: int) -> bool:
         """详情是否在冷却期内失败过（派生欠账时排除，避免每轮重试坏条目）。"""
@@ -478,13 +543,12 @@ class State:
         if appid:
             entry = self.game_meta.get(game_id) or {}
             entry["appid"] = appid
-            self.game_meta[game_id] = entry
-        dyn = self.dynamic.entries.setdefault(game_id, {})
+            self.data["game_meta"][game_id] = entry
+        dyn = self.dynamic.ensure_entry(game_id)
         dyn["reviews"] = reviews
         dyn["fetched_at"] = now.isoformat(timespec="seconds")
         if stats is not None:
             dyn["stats"] = stats
-        self.dynamic.entries[game_id] = dyn
         # 新字段的写入规则与回填完全一致 —— 复用 set_meta_extras，别再抄一份
         # if-is-not-None（两处逻辑漂移过一次：code-review 2026-09-30）
         self.set_meta_extras(game_id, publishers=publishers, developers=developers)
@@ -507,11 +571,9 @@ class State:
                 entry["publishers"] = publishers
             if developers is not None:
                 entry["developers"] = developers
-            self.game_meta[game_id] = entry
+            self.data["game_meta"][game_id] = entry
         if stats is not None:
-            dyn = self.dynamic.entries.setdefault(game_id, {})
-            dyn["stats"] = stats
-            self.dynamic.entries[game_id] = dyn
+            self.dynamic.ensure_entry(game_id)["stats"] = stats
 
     # ------------------------------------------------------------------
     # 中文名：永久缓存（Steam 的本地化标题不会变，没必要每次重拉）
@@ -531,7 +593,7 @@ class State:
         entry = self.game_meta.get(game_id) or {}
         entry["title_zh"] = title
         entry["title_zh_at"] = (now or datetime.now()).isoformat(timespec="seconds")
-        self.game_meta[game_id] = entry
+        self.data["game_meta"][game_id] = entry
 
     # ------------------------------------------------------------------
     # 上次史低时间（§3.6）：**折扣期暂存**（2026-09-27 起不再放 game_meta）。
@@ -542,8 +604,13 @@ class State:
     # 就等下一轮 storelow 重取补上，一天内自愈）。
     # ------------------------------------------------------------------
     @property
-    def low_time_cache(self) -> dict:
-        return self.cache.data["low_time_cache"]
+    def low_time_cache(self) -> Mapping:
+        """折扣期暂存（``game_id|expiry`` → 上次史低时间）—— **只读视图**（卡片 04）。
+
+        写入走 :meth:`set_last_low_at`；跨换档的读取回退由 :meth:`last_low_at` 负责
+        —— 直接翻这张表会绕过「精确键 miss 就回退到该游戏最新一条」的语义。
+        """
+        return MappingProxyType(self.cache.data["low_time_cache"])
 
     @staticmethod
     def low_time_key(game_id: str, expiry: str | None) -> str:
@@ -590,7 +657,7 @@ class State:
     def set_last_low_at(self, game_id: str, expiry: str | None, ts: str) -> None:
         if not ts or not game_id:
             return
-        self.low_time_cache[self.low_time_key(game_id, expiry)] = ts
+        self.cache.data["low_time_cache"][self.low_time_key(game_id, expiry)] = ts
         self._low_time_idx = None
 
     # ------------------------------------------------------------------
@@ -634,7 +701,7 @@ class State:
             return
         meta = self.game_meta.get(game_id) or {}
         meta["low_period"] = {"cur": cur, "prev": prev}
-        self.game_meta[game_id] = meta
+        self.data["game_meta"][game_id] = meta
 
     def prev_low_start(self, game_id: str | None) -> str | None:
         """该游戏上一次史低期的开始时间（无记忆返回 None —— 首次史低/冷启动）。"""
@@ -656,8 +723,14 @@ class State:
     # expiry，被 expiry 清理扫到会因后缀解析不了而误删（S7 头号坑）。
     # ------------------------------------------------------------------
     @property
-    def compare_cache(self) -> dict:
-        return self.cache.data["compare_cache"]
+    def compare_cache(self) -> Mapping:
+        """区域原价永久缓存（``appid|cc`` → ``{initial, currency, fetched_at}``）
+        —— **只读视图**（卡片 04）。
+
+        读用 :meth:`compare_entry` / :meth:`compare_original`（前者一次给出原价与币种），
+        写走 :meth:`set_compare_original`（它带「真查即校准 / 值未变不刷时间戳」语义）。
+        """
+        return MappingProxyType(self.cache.data["compare_cache"])
 
     @staticmethod
     def compare_key(appid: int, cc: str) -> str:
@@ -695,7 +768,7 @@ class State:
         entry = self.compare_cache.get(key)
         if entry and entry.get("initial") == initial:
             return None
-        self.compare_cache[key] = {
+        self.cache.data["compare_cache"][key] = {
             "initial": initial,
             "currency": currency,
             "fetched_at": now.isoformat(timespec="seconds"),

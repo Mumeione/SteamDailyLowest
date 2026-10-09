@@ -39,7 +39,9 @@ def make_state(tmp: Path, n_good: int = 5, n_pending: int = 1,
     now = datetime(2026, 9, 22, 3, 0, 0)
     for i in range(n_good):
         gid = f"uuid-{i:02d}"
-        state.seen_deal[f"{gid}|1000|2026-09-30"] = {
+        # 夹具直写原始载荷层（卡片 04：seen_deal 已是只读视图）——这里刻意让
+        # 键里的 expiry 与条目 expiry 不一致、并指定 last_seen_at，record_seen 造不出这种行。
+        state.data["seen_deal"][f"{gid}|1000|2026-09-30"] = {
             "game_id": gid,
             "title": f"Game {i}",
             "price_int": 1000 + i,
@@ -51,7 +53,7 @@ def make_state(tmp: Path, n_good: int = 5, n_pending: int = 1,
             state.set_title_zh(gid, f"游戏{i}", now)
     for i in range(n_pending):
         gid = f"pending-{i}"
-        state.seen_deal[f"{gid}|500|2026-09-30"] = {
+        state.data["seen_deal"][f"{gid}|500|2026-09-30"] = {
             "game_id": gid,
             "title": f"Pending {i}",
             "price_int": 500,

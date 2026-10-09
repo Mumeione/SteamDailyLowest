@@ -487,5 +487,70 @@ class StateTest(unittest.TestCase):
         self.assertEqual(reloaded.dynamic.entries, {})
 
 
+class ReadOnlyViewsTest(unittest.TestCase):
+    """外泄字典已退回**只读视图**的机械锁（2026-10-09 卡片 04）。
+
+    这些 property 从前返回内部 dict 本体：调用方一句 ``state.game_meta[gid] = x``
+    就能绕过整套配套语义（幂等键、首见时间、失败标记、留存清理）——
+    ``tools/backfill_low_period`` 直写 game_meta 就是这么长出一条并行口径的。
+    现在赋值/删除会直接抛 ``TypeError``，写路径收敛到具名方法。
+    """
+
+    READ_ONLY = ("seen_deal", "game_meta", "low_time_cache", "compare_cache")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = State(Path(self.tmp.name) / "state.json", tz=TZ).load()
+
+    def test_top_level_writes_are_rejected(self):
+        for name in self.READ_ONLY:
+            view = getattr(self.state, name)
+            with self.assertRaises(TypeError, msg=name):
+                view["k"] = {}
+            with self.assertRaises(TypeError, msg=name):
+                del view["k"]
+        with self.assertRaises(TypeError):
+            self.state.dynamic.entries["g"] = {}
+
+    def test_views_are_live_windows_not_snapshots(self):
+        """视图是活窗口（不是拷贝）—— 具名方法写完立刻读得到，也不该有拷贝开销。"""
+        self.state.set_appid("g", 7)
+        self.assertIn("g", self.state.game_meta)
+        self.assertEqual(self.state.game_meta["g"]["appid"], 7)
+        self.state.record_low_period("g", "2026-09-17T12:00:00Z")
+        self.assertEqual(self.state.game_meta["g"]["low_period"]["cur"],
+                         "2026-09-17T12:00:00Z")
+
+    def test_controlled_ports_still_write(self):
+        """只读的是「字典本身」，具名写口照常工作。"""
+        self.state.set_appid("g", 7)
+        self.state.set_low_period("g", "2026-09-17T12:00:00Z", "2024-08-31T12:00:00Z")
+        self.state.set_compare_original(7, "UA", 2500, "UAH", NOW)
+        self.state.set_last_low_at("g", "2026-09-28T19:00:00+02:00", "2021-06-24T21:52:22+02:00")
+
+        self.assertEqual(self.state.prev_low_start("g"), "2024-08-31T12:00:00Z")
+        self.assertEqual(self.state.compare_original(7, "UA"), 2500)
+        self.assertEqual(self.state.compare_entry(7, "UA")["currency"], "UAH")
+        self.assertEqual(
+            self.state.last_low_at("g", "2026-09-28T19:00:00+02:00"),
+            "2021-06-24T21:52:22+02:00")
+
+    def test_dynamic_entry_helpers(self):
+        self.state.dynamic.set_entry("g", {"reviews": {"score": 90, "count": 9}})
+        self.assertEqual(self.state.dynamic.entries["g"]["reviews"]["score"], 90)
+        self.state.dynamic.ensure_entry("g")["fetched_at"] = "2026-09-21T03:00:00+08:00"
+        self.assertEqual(self.state.dyn("g")["fetched_at"], "2026-09-21T03:00:00+08:00")
+        self.state.dynamic.drop_entry("g")
+        self.assertNotIn("g", self.state.dynamic.entries)
+
+    def test_nested_mutation_still_possible(self):
+        """**浅只读**（有意）：嵌套字段仍可改。深拷贝每次读都要复制大字典，不值当；
+        真需要改内容请用具名方法，这条只是把现状写进测试、别以为是「全只读」。"""
+        self.state.set_appid("g", 7)
+        self.state.game_meta["g"]["appid"] = 8
+        self.assertEqual(self.state.game_meta["g"]["appid"], 8)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,9 +73,9 @@ def game_meta(appid: int, name: str = "某游戏", score: int | None = 80,
         appid=appid, name=name, reviews=reviews,
         publishers=publishers if publishers is not None else [{"id": 7, "name": "Pub"}],
         developers=[{"id": None, "name": "Dev"}],
-        price={"final": 1000, "initial": 10000},
         release_date=1700000000,
-        platforms={"windows": True}, tags=[],
+        # 注：price / platforms / tags 已于 2026-10-09（卡片 08）从 GameMeta 删除
+        # —— 生产零消费方，data_request 里对应开关也关了。
     )
 
 
@@ -227,7 +227,11 @@ class FetchDetailsTest(unittest.TestCase):
         # 两个都造成「无 fetched_at」的欠账态（否则 meta_valid 会把它们跳过）：
         # uuid-0 只有 appid、没有厂商；uuid-1 预置 ITAD 口径厂商 + stats
         self.state.set_appid("uuid-0", 100)
-        self.state.game_meta["uuid-1"] = {
+        # 夹具**故意造一个没有 fetched_at 的原始条目**（任何具名写口都会刷 fetched_at，
+        # 就构不成欠账态了）→ 直接写原始载荷层，见 State.data 的说明。
+        # 顺带保留 game_meta 里放 stats 的旧格式（S6 拆层前的布局），
+        # State.meta() 的合并视图照样读得到。
+        self.state.data["game_meta"]["uuid-1"] = {
             "appid": 101,
             "publishers": [{"id": 369, "name": "SEGA"}],
             "stats": {"rank": 5},

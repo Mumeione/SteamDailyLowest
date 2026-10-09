@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """Steam 批量元数据客户端：``IStoreBrowseService/GetItems/v1``（重构 S1）。
 
-职责：**主元数据源** —— 一次批量拿「中文名 + 好评率 + 评价数 + 厂商 + 现价 +
-发行日 + 平台 + 标签」，替代逐条 ``info/v2``
-（重构方案 `.scratch/refactor-2026q4/spec.md` §3.1，决策 3）。
+职责：**主元数据源** —— 一次批量拿「中文名 + 好评率 + 评价数 + 厂商 + 发行日」，
+替代逐条 ``info/v2``（重构方案 `.scratch/refactor-2026q4/spec.md` §3.1，决策 3）。
+⚠️ 2026-10-09（卡片 08）：原先把价格 / 平台 / 标签也一起拉下来，但**没有一个生产
+消费方**（价格用 ITAD 现价、报表不展示平台与标签）—— 已从 :data:`DATA_REQUEST`
+与解析层一并裁掉，响应体随之变小。要恢复先看 :data:`DATA_REQUEST` 的注释。
 限流与「五种响应分开处理」在 :mod:`src.httpclient`。
 
 ⚠️ **api.steampowered.com 与 store.steampowered.com 是否共用限流桶判定不了**
@@ -51,19 +53,29 @@ URL_BUDGET = 7000
 #: context.steam_realm（全球商店区，探针实测值）
 STEAM_REALM = 1
 
-#: data_request 开关（与探针实测通过的形态一致）。
-#: ⚠️ 按需返回：没开的字段返回里是 null，不是空对象。
+#: data_request 开关 —— **只开有生产消费方的**（2026-10-09 裁剪，架构检查卡片 08）。
+#:
+#: 消费者是 ``run._write_browse_meta``：它只取 ``appid`` / ``name`` / ``reviews`` /
+#: ``publishers`` / ``developers`` / ``release_date``，别的字段没人读 ——
+#: 开着等于给每批 250 条白背响应体（GetItems 是 GET，250 条/批，一天几十批）。
+#:
+#: ⚠️ 按需返回：没开的字段在响应里是 null，不是空对象。
+#: ⚠️ **必须显式写 False / 0，不能直接删键** —— 服务端对缺省键的默认值不可假设
+#:    （删掉 `include_platforms` 反而可能让它按默认开着）。测试锁了「这几个键存在
+#:    且为关闭态」，防的是「顺手加回来」与「漏写变成默认开」两种反向漂移。
 DATA_REQUEST = {
-    "include_basic_info": True,
-    "include_reviews": True,
-    "include_release": True,
-    "include_all_purchase_options": True,
-    "include_platforms": True,
-    "include_tag_count": 8,
-    "include_assets": False,
-    "include_ratings": True,
-    "include_screenshots": False,   # 体积大，关
-    "include_trailers": False,      # 体积大，关
+    "include_basic_info": True,          # → basic_info.publishers / developers
+    "include_reviews": True,             # → reviews.summary_filtered（好评率 + 评价数）
+    "include_release": True,             # → release.steam_release_date（新游 TTL 判定）
+    # ---- 以下四个曾开着但**零消费方**（只有字段锁定测试在维护），已关 ----
+    "include_all_purchase_options": False,   # → price（卡片价格一律用 ITAD 的现价）
+    "include_platforms": False,              # → platforms（报表不展示平台）
+    "include_tag_count": 0,                  # → tags（报表不展示标签）
+    "include_ratings": False,                # → ratings（GameMeta 里压根没这个字段）
+    # ---- 一直关着的（体积大 / 有替代来源）----
+    "include_assets": False,             # 封面用 ITAD 的 boxart（见 report.boxart_code）
+    "include_screenshots": False,        # 体积大
+    "include_trailers": False,           # 体积大
     "include_full_description": False,
 }
 
@@ -95,15 +107,11 @@ class GameMeta:
     reviews: dict | None
     publishers: list
     developers: list
-    #: 最低现价 ``{"final": 分, "initial": 分}``（context 国区货币的「分」单位，
-    #: 来自 purchase_options 里 final 最低的一项）；无价格信息 None
-    price: dict | None
     #: Steam 发行时间戳（秒）
     release_date: int | None
-    #: 原样透传（如 ``{"windows": true, "steam_deck_compat_category": 3}``）
-    platforms: dict | None
-    #: ``[{"tagid": int, "weight": int}]``，条数由 ``include_tag_count`` 控制
-    tags: list
+    # 注：原 ``price`` / ``platforms`` / ``tags`` 三个字段已删（2026-10-09 卡片 08）——
+    # 生产零消费方（价格一律用 ITAD 的现价、报表不展示平台与标签），
+    # 对应的 ``data_request`` 开关也已关掉，留着只会是「永远是 None/[]」的死数据。
 
 
 def parse_store_item(item) -> GameMeta | None:
@@ -120,16 +128,15 @@ def parse_store_item(item) -> GameMeta | None:
     if appid <= 0:
         return None
     basic = item.get("basic_info") if isinstance(item.get("basic_info"), dict) else {}
+    # 只解析 data_request 里开着的字段（见 DATA_REQUEST 注释）；
+    # 响应里即使带了别的内容（老请求 / 服务端补全）也一律无视。
     return GameMeta(
         appid=appid,
         name=item.get("name"),
         reviews=_reviews(item.get("reviews")),
         publishers=_party_list(basic.get("publishers")),
         developers=_party_list(basic.get("developers")),
-        price=_lowest_price(item.get("purchase_options")),
         release_date=_release_date(item.get("release")),
-        platforms=item.get("platforms") if isinstance(item.get("platforms"), dict) else None,
-        tags=_tags(item.get("tags")),
     )
 
 
@@ -168,47 +175,12 @@ def _party_list(raw) -> list:
     return out
 
 
-def _lowest_price(raw) -> dict | None:
-    """``purchase_options`` 混排本体/豪华版/捆绑包 → 取 ``final_price_in_cents`` 最低的一项。
-
-    价格字段实测是**字符串**（如 ``"1730"``），缺原价的按现价兜底。
-    """
-    best: dict | None = None
-    for opt in raw or []:
-        if not isinstance(opt, dict):
-            continue
-        try:
-            final = int(opt["final_price_in_cents"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        raw_initial = opt.get("original_price_in_cents")
-        try:
-            initial = int(raw_initial) if raw_initial is not None else final
-        except (TypeError, ValueError):
-            initial = final
-        if best is None or final < best["final"]:
-            best = {"final": final, "initial": initial}
-    return best
-
-
 def _release_date(raw) -> int | None:
     ts = (raw or {}).get("steam_release_date")
     try:
         return int(ts) if ts is not None else None
     except (TypeError, ValueError):
         return None
-
-
-def _tags(raw) -> list:
-    out: list = []
-    for tag in raw or []:
-        if not isinstance(tag, dict) or tag.get("tagid") is None:
-            continue
-        try:
-            out.append({"tagid": int(tag["tagid"]), "weight": tag.get("weight")})
-        except (TypeError, ValueError):
-            continue
-    return out
 
 
 def _encoded_len(s: str) -> int:

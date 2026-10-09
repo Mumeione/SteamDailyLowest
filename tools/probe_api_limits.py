@@ -18,11 +18,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import uuid as uuidlib
 from pathlib import Path
 
 import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# data_request **只有一份**（2026-10-09 卡片 08）：探针测的是「生产那套请求形态」
+# 的参数边界，自己再抄一份必然漂移（生产裁掉价格/平台/标签之后，探针还在按老的
+# 响应体测批大小 —— 量出来的结论对不上生产）。要改请求形态就改客户端那一处。
+from src.steam_browse import DATA_REQUEST  # noqa: E402
 
 # 必须带 UA：不带会被拒/超时（项目已实测 HTTP 000）
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -38,21 +46,6 @@ def sanitize(text: str, secret: str | None) -> str:
     if not secret:
         return text
     return text.replace(secret, "***ITAD_KEY***")
-
-DATA_REQUEST = {
-    "include_basic_info": True,
-    "include_reviews": True,
-    "include_release": True,
-    "include_all_purchase_options": True,
-    "include_platforms": True,
-    "include_tag_count": 8,
-    "include_assets": False,
-    "include_ratings": True,
-    "include_screenshots": False,
-    "include_trailers": False,
-    "include_full_description": False,
-}
-
 
 class Probe:
     """带请求计数上限的探针运行器。"""

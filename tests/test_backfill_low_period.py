@@ -89,7 +89,7 @@ class SelectTargetsTest(unittest.TestCase):
 
     def _game(self, gid, score, count):
         self.state.data["seen_deal"][gid] = {"game_id": gid}
-        self.state.dynamic.entries[gid] = {"reviews": {"score": score, "count": count}}
+        self.state.dynamic.set_entry(gid, {"reviews": {"score": score, "count": count}})
 
     def test_only_shown_tiers_and_dedup(self):
         self._game("q", 90, 500)       # quality
@@ -105,7 +105,7 @@ class BackfillTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state = State(Path(self.tmp.name) / "state.json", tz=TZ)
         self.state.data["seen_deal"]["g"] = {"game_id": "g"}
-        self.state.dynamic.entries["g"] = {"reviews": {"score": 90, "count": 500}}
+        self.state.dynamic.set_entry("g", {"reviews": {"score": 90, "count": 500}})
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -122,8 +122,8 @@ class BackfillTest(unittest.TestCase):
                          {"cur": "2026-09-17T12:00:00Z", "prev": "2024-08-31T12:00:00Z"})
 
     def test_skips_when_prev_present(self):
-        self.state.game_meta["g"] = {"low_period": {
-            "cur": "2026-09-17T12:00:00Z", "prev": "2024-01-01T12:00:00Z"}}
+        # 用受控写口（game_meta 已是只读视图，卡片 04）
+        self.state.set_low_period("g", "2026-09-17T12:00:00Z", "2024-01-01T12:00:00Z")
         rows = [row("2024-08-31T12:00:00Z", 5000), row("2026-09-17T12:00:00Z", 740)]
         stats = backfill(self.state, self._fetch(rows), CFG, TZ)
         self.assertEqual((stats["filled"], stats["skipped_complete"]), (0, 1))
@@ -138,7 +138,7 @@ class BackfillTest(unittest.TestCase):
 
     def test_cold_games_are_not_fetched(self):
         self.state.data["seen_deal"]["cold"] = {"game_id": "cold"}
-        self.state.dynamic.entries["cold"] = {"reviews": {"score": 90, "count": 5}}
+        self.state.dynamic.set_entry("cold", {"reviews": {"score": 90, "count": 5}})
         seen = []
         backfill(self.state, lambda gid: seen.append(gid) or [], CFG, TZ)
         self.assertEqual(seen, ["g"])                # 冷门条目一条都不查
@@ -147,7 +147,7 @@ class BackfillTest(unittest.TestCase):
         for i in range(5):
             gid = f"g{i}"
             self.state.data["seen_deal"][gid] = {"game_id": gid}
-            self.state.dynamic.entries[gid] = {"reviews": {"score": 90, "count": 500}}
+            self.state.dynamic.set_entry(gid, {"reviews": {"score": 90, "count": 500}})
         seen = []
 
         def fetch(gid):

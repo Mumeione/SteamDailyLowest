@@ -196,7 +196,7 @@ def fill_compare(state, cfg: dict, entry: dict, fx: dict | None, *,
     结果）就用「外区原价缓存 × 国区折扣比例」估算（:func:`estimate_compare`）。
     条目已有 ``compare`` 或补不出任何区域时不动、返回 False。
 
-    **这是「估算谁吃」的唯一出处**（2026-10-09 架构检查卡片 05）：``run.render_pass``
+    **这是「估算谁吃」的唯一出处**（2026-10-09 架构检查卡片 05）：``pipeline.render_pass``
     与 ``tools/render_report`` 的本地预览从前各写一遍遍历，差别只在「真查结果从哪来」
     —— 线上是本轮 enrich 的结果，本地预览不发任何网络请求所以**完全没有**（连真查
     覆盖的条目也用缓存估算，好让预览完全离线可看）。差异点做成参数，别在调用点
