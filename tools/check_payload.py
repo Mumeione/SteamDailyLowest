@@ -28,10 +28,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src import classify  # noqa: E402
+from src import classify, report  # noqa: E402
 
 OUT = ROOT / "data" / "probe" / "report_check.txt"
 SHOW = 8
+#: 跨端协议校验用：分片第 0 片带的预聚合表（dim 是四个维度的**唯一出处**）
+LATEST = ROOT / "output" / "latest.json"
 
 
 def main() -> int:
@@ -49,17 +51,38 @@ def main() -> int:
     # 「全部折扣」那套分片 = 全量池（tier 分组 + 折扣降序），覆盖统计用它。
     # 分片是 (window.ALL_S = window.ALL_S || {})["<slot>"] = {...}; 形态，非纯 JSON。
     items: list[dict] = []
+    shard0: dict = {}
     for path in sorted(all_dir.glob("__all___*.js")):
-        items.extend(json.loads(
-            path.read_text(encoding="utf-8").split("] = ", 1)[1].rstrip().rstrip(";"))["items"])
+        shard = json.loads(
+            path.read_text(encoding="utf-8").split("] = ", 1)[1].rstrip().rstrip(";"))
+        items.extend(shard["items"])
+        if path.name == "__all___0.js":
+            shard0 = shard
+    agg = shard0.get("agg") or {}
+    dims = agg.get("dim") or {}
+    agg_counts = agg.get("counts") or {}
+
+    # 概览 / 色点只在 latest.json 里（2026-10-09 卡片 08：data.js 不再下发死键）
+    latest = {}
+    if LATEST.exists():
+        try:
+            latest = json.loads(LATEST.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            latest = {}
+    stats_obj = latest.get("overview") or {}
 
     lines: list[str] = []
     lines.append("=" * 72)
-    lines.append("报表内容自检（output/data.js）")
+    lines.append("报表内容自检（output/data.js + output/all/ + output/latest.json）")
     lines.append("=" * 72)
-    lines.append("overview: " + json.dumps(payload.get("overview"), ensure_ascii=False))
-    lines.append("fx      : " + json.dumps(payload.get("fx"), ensure_ascii=False))
-    lines.append("steam   : " + json.dumps(payload.get("steam"), ensure_ascii=False))
+    lines.append("overview（latest.json）: " + json.dumps(stats_obj, ensure_ascii=False))
+    lines.append("low_points（latest.json）: "
+                 + json.dumps(latest.get("low_points"), ensure_ascii=False))
+    # data.js 不该再带前端不读的键（卡片 08：死键已移出）
+    dead_keys = [k for k in ("overview", "fx", "steam", "sweep", "low_points",
+                             "filter_defaults", "generated_at_text") if k in payload]
+    lines.append("data.js 无死键："
+                 + ("是 ✓" if not dead_keys else f"否 ✗ 残留 {dead_keys}"))
 
     lines.append("")
     lines.append("--- 全量池（来自 all/__all___*.js 分片）---")
@@ -140,13 +163,72 @@ def main() -> int:
                  + ("是 ✓" if not strange else f"否 ✗ 多出 {strange}"))
 
     lines.append("")
+    lines.append("--- 跨端协议字面量（卡片 03：把「改名单 → 前端静默错」变成红）---")
+    # 这三条协议原先**没有任何锁**：Python 侧改个名字，前端不报错、只是行为悄悄变，
+    # 要等人工发现。做法与上面 low_class 那条一样 —— 双向字面量比对 + 数据级对拍。
+    view_keys = set(classify.VIEW_KEYS)
+    js_views = set(re.findall(r"views\.(?:indexOf|includes)\(\s*[\"']([^\"']*)[\"']", js))
+    view_strange = sorted(js_views - view_keys)
+    lines.append(f"  classify.VIEW_KEYS: {sorted(view_keys)}")
+    lines.append(f"  app.js 里 views 判定用的: {sorted(js_views)}")
+    lines.append("  views 判定用到了 Python 不认识的成员："
+                 + ("否 ✓" if not view_strange else f"是 ✗ {view_strange}"))
+    lines.append("  views 判定确实被抓到（写法没换）："
+                 + ("是 ✓" if js_views else "否 ✗（前端改了读法，本条校验已失效）"))
+    # 数据级：分片卡片里出现的 views 成员必须都在 VIEW_KEYS 里
+    bad_views = sorted({v for i in items for v in (i.get("views") or [])
+                        if v not in view_keys})
+    lines.append("  卡片 views 取值都在 VIEW_KEYS 内："
+                 + ("是 ✓" if not bad_views else f"否 ✗ {bad_views}"))
+
+    # ---- 日期协议（"dN" / "0" / "all"）：服务端拼、前端 parseDateSpec 解 ----
+    date_vals = dims.get("date") or []
+    shapes = set()
+    for v in date_vals:
+        shapes.add("all" if v == "all" else ("days" if v.startswith("d") else "exact"))
+    handled = {
+        "all": bool(re.search(r'value\s*===\s*["\']all["\']', js)),
+        "days": bool(re.search(r'charAt\(0\)\s*===\s*["\']d["\']', js)),
+        "exact": bool(re.search(r"parseInt\(value,\s*10\)", js)),
+    }
+    date_missing = sorted(s for s in shapes if not handled.get(s))
+    lines.append(f"  agg 的 date 档位: {date_vals}（形状 {sorted(shapes)}）")
+    lines.append(f"  app.js parseDateSpec 认得: {sorted(k for k, ok in handled.items() if ok)}")
+    lines.append("  Python 产出的每种形状前端都能解析："
+                 + ("是 ✓" if not date_missing else f"否 ✗ 缺 {date_missing}"))
+    lines.append("  日期档位里一定有「全部」："
+                 + ("是 ✓" if "all" in date_vals else "否 ✗"))
+
+    # ---- 预聚合计数表的键序：Python AGG_KEY_ORDER ↔ JS aggCount 的数组顺序 ----
+    py_order = list(report.AGG_KEY_ORDER)
+    # ⚠️ app.js 里 ``var parts`` 不止一处（行卡的评价行也用同名变量）——
+    # 只认那个「由 f.<维度> 拼出来」的数组，否则会抓到无关的那个、静默跳过校验。
+    js_arr = next((m.group(1) for m in re.finditer(r"var parts = \[([^\]]*)\]", js)
+                   if re.search(r"\bf\.\w+", m.group(1))), None)
+    js_order = re.findall(r"f\.(\w+)", js_arr) if js_arr else []
+    lines.append(f"  Python AGG_KEY_ORDER: {py_order}")
+    lines.append(f"  app.js aggCount 拼键顺序: {js_order or '(没抓到)'}")
+    lines.append("  键序两边一致："
+                 + ("是 ✓" if js_order == py_order else "否 ✗（改键序 = 改协议）"))
+    # 数据级对拍：每个 agg 键按 AGG_KEY_ORDER 拆开，逐段必须落在对应维度的取值集合里
+    dim_lists = {k: (dims.get(k) or []) for k in py_order}
+    bad_agg_keys = []
+    for k in list(agg_counts)[:5000]:
+        parts = k.split("|")
+        if len(parts) != len(py_order) or any(
+                parts[i] not in dim_lists[name] for i, name in enumerate(py_order)):
+            bad_agg_keys.append(k)
+    lines.append(f"  agg 键都能按该顺序拆对（抽样 {min(len(agg_counts), 5000)} 条）："
+                 + ("是 ✓" if not bad_agg_keys else f"否 ✗ {bad_agg_keys[:3]}"))
+
+    lines.append("")
     lines.append("--- 概览色点 vs 当日新增进列表（必须自洽）---")
-    points = payload.get("low_points") or {}
+    points = latest.get("low_points") or {}
     lines.append("  low_points: " + json.dumps(points, ensure_ascii=False))
     points_sum = sum(int(v) for v in points.values())
-    # low_points 的池子是「当日新增」（data.js），不是 all.js 的「全部」池 ——
+    # low_points 的池子是「当日新增」，不是 all/ 分片的「全部」池 ——
     # 当日新增进列表条数由 overview.new_today_shown 给出（= 传进 render 的 items 条数）
-    new_today_shown = (payload.get("overview") or {}).get("new_today_shown")
+    new_today_shown = stats_obj.get("new_today_shown")
     lines.append(f"  色点合计 {points_sum} / 当日新增进列表 {new_today_shown}"
                  f" -> {'一致' if points_sum == new_today_shown else '★不一致★'}")
 
@@ -162,7 +244,7 @@ def main() -> int:
     for tier in [t for t, _ in tier_counts.most_common()]:
         bucket = [i for i in items if i.get("tier") == tier]
         counts = Counter(i.get("start_text") for i in bucket if i.get("start_text"))
-        # 与 src/report.py::build_groups 同一口径：取频次最高，并列时取较晚的那个
+        # 口径：取频次最高，并列时取较晚的那个（比较的是定宽字符串，字典序即时序）
         majority = max(counts, key=lambda text: (counts[text], text)) if counts else None
         lines.append(f"  {tier}: 组内多数派={majority} · 分布={dict(counts)}")
 
@@ -186,7 +268,13 @@ def main() -> int:
     ok = (ok and not left and not bad_class
           and points_sum == new_today_shown and not leaks
           and not not_in_js and not strange
-          and set(tier_counts) <= set(classify.TIER_LABELS))
+          and set(tier_counts) <= set(classify.TIER_LABELS)
+          # 跨端协议（卡片 03）
+          and bool(js_views) and not view_strange and not bad_views
+          and not date_missing and "all" in date_vals
+          and js_order == py_order and not bad_agg_keys
+          # data.js 不带死键（卡片 08）
+          and not dead_keys)
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"结果已写入 {OUT}")
     return 0 if ok else 2

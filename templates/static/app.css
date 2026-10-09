@@ -3,14 +3,21 @@
  * 结构：变量与阶梯 → 顶栏 → 消息区 → 筛选行/抽屉 → 首页大卡 → 四板块
  *       → 行列表（核心）→ 板块列表页 → 浮动按钮/精简模式 → 关于网站 → 空状态
  *
- * ⚠️ **三档视口，只有两条边界**（用户 2026-10-07：只要手机/平板/PC 三档）：
- *     手机 = ≤ mobile_breakpoint_px（**600**，曾为 768 —— 别照抄注释，以 payload 为准），**只考虑竖屏**
- *     平板 = 601 ~ tablet_breakpoint_px（1100），横竖屏都要好用
- *     PC  = > 1100，只有横屏
- *   这两个值在 config.json / payload 里下发，本文件的 @media **必须与它们一致**，
+ * ⚠️ **三档视口语义，但 CSS 里只有一条 @media 边界**（E1 定案 2026-10-07/08）：
+ *     手机   = ≤ mobile_breakpoint_px（**600**；曾为 768，别照抄老注释，以 payload 为准），只考虑竖屏
+ *     平板/PC = > 600（601 起），**共用同一套规则** —— 所以 1100 那条边界
+ *               （tablet_breakpoint_px）**故意不出现在本文件里**。
+ *   平板与 PC 的差异交给**容器查询**按真实内容宽判，而不是按视口再切一刀：
+ *     · 行卡片的一行/两行结构  → `@container row (480px)`
+ *     · 板块一列/两列          → `@container home (min-width:636px)`
+ *       （阈值 == 「大卡 4 列」的内容宽 4×(PICK_MIN+PICK_GAP)−12，见下文注释；
+ *        冒烟有机械校验，两边各写一份数字会静默失配）
+ *   ⚠️ 容器类型挂在 `.home` 上、不能挂 `main.wrap`：container-type 自带 layout
+ *      containment，会劫持里面 `position:fixed` 的 `#drawer`。
+ *   断点值在 config.json / payload 里下发，本文件的 @media **必须与它一致**，
  *   冒烟测有机械校验（tests/jsdom/ 的「CSS @media 边界 == payload 断点」）；
  *   工具脚本（make_preview.py）也从 payload 读，别再各写一份（批 F3 踩过）。
- *   布局尽量交给 grid/flex 自适应而不是加断点 —— 档位越多越难维护。
+ *   布局尽量交给 grid/flex/容器查询自适应而不是加断点 —— 档位越多越难维护。
  *
  * ⚠️ **纯悬停效果（`:hover`）一律包进 `@media (hover: hover)`**（2026-10-08）：
  *   触屏浏览器把 tap 当 hover 并**粘住到下一次 tap 别处**（实测 390×844：点站名后
@@ -946,10 +953,9 @@ body.compact .days-final {
 .drawer-foot { padding: var(--sp-3) var(--sp-4); }
 .drawer-foot .chip { flex: 0 0 auto; padding: 7px 20px; }
 
-/* ---- PC 档（≥1101）----
-   筛选面板与按钮 2026-10-08 起全端统一右下角浮层（见上），本档不再有专属定位。
-   行卡片的一行结构由 @container 按**行宽**判断（见上文 480px 那条）：
-   768 单列的行宽 707px 也走一行，PC 两列 532px 同样走一行。 */
+/* ⚠️ 这里曾有一个「PC 档（≥1101）」的小节，E1 定案（2026-10-08 全端统一右下角浮层、
+   行结构交给 @container 按行宽判断）之后它已**只剩空壳**，2026-10-09 删除。
+   平板与 PC 不再有任何专属规则 —— 要按内容宽分档就加 @container，不要加 @media。 */
 
 /* 减少动态效果时不位移，只保留阴影变化 */
 @media (prefers-reduced-motion: reduce) {

@@ -355,5 +355,68 @@ class DaysUntilTest(unittest.TestCase):
         self.assertEqual(classify.days_until(expiry, self.NOW), 7)
 
 
+class MergeTierTest(unittest.TestCase):
+    """「进列表」档位组装（卡片 07：从 run.merge_details 归位到这里）。
+
+    锁三件事：unlisted 必须归 COLD（**不能**归 PENDING，否则以展示档复入列表）、
+    没抓过详情归 PENDING、其余按评价数据判档；顺带返回卡片要用的 appid / reviews。
+    """
+
+    CFG = {"min_review_count": 100, "notable_review_count": 10000, "min_positive_ratio": 0.7}
+
+    def test_unlisted_is_cold_not_pending(self):
+        """unlisted 的动态数据已被主动丢弃（决策 17）→ 冷门，不是「详情待补」。"""
+        meta = {"unlisted": {"start": "2026-09-01T00:00:00Z"}, "appid": 42,
+                "reviews": {"score": 95, "count": 50000}}
+        tier, appid, reviews = classify.merge_tier(meta, self.CFG)
+        self.assertEqual(tier, classify.TIER_COLD)
+        self.assertEqual(appid, 42)          # appid 仍要给（卡片缩略图要现拼链接）
+        self.assertIsNone(reviews)
+
+    def test_unlisted_wins_over_missing_fetched_at(self):
+        """顺序硬约束：unlisted 的 fetched_at 可能是空的，判在 PENDING 之前才对。"""
+        tier, _, _ = classify.merge_tier(
+            {"unlisted": {"start": "x"}, "fetched_at": None}, self.CFG)
+        self.assertEqual(tier, classify.TIER_COLD)
+
+    def test_no_meta_or_no_fetched_at_is_pending(self):
+        for meta in (None, {}, {"appid": 1}):
+            tier, appid, reviews = classify.merge_tier(meta, self.CFG)
+            self.assertEqual(tier, classify.TIER_PENDING, meta)
+            self.assertIsNone(appid)
+            self.assertIsNone(reviews)
+
+    def test_fetched_meta_falls_through_to_tier_of(self):
+        meta = {"fetched_at": "2026-10-01T00:00:00Z", "appid": 7,
+                "reviews": {"score": 90, "count": 5000}}
+        self.assertEqual(classify.merge_tier(meta, self.CFG),
+                         (classify.TIER_QUALITY, 7, {"score": 90, "count": 5000}))
+        low = dict(meta, reviews={"score": 40, "count": 500})
+        self.assertEqual(classify.merge_tier(low, self.CFG)[0], classify.TIER_OTHER)
+
+
+class IsShownMetaTest(unittest.TestCase):
+    """「按已知评价数据够不够格进列表」—— 回填与欠账计数共用的判据（卡片 07）。"""
+
+    CFG = {"min_review_count": 100, "notable_review_count": 10000, "min_positive_ratio": 0.7}
+
+    def test_quality_and_notable_pass(self):
+        self.assertTrue(classify.is_shown_meta(
+            {"reviews": {"score": 90, "count": 500}}, self.CFG))
+        self.assertTrue(classify.is_shown_meta(
+            {"reviews": {"score": 60, "count": 20000}}, self.CFG))
+
+    def test_cold_and_other_fail(self):
+        self.assertFalse(classify.is_shown_meta(
+            {"reviews": {"score": 90, "count": 50}}, self.CFG))      # 评价太少
+        self.assertFalse(classify.is_shown_meta(
+            {"reviews": {"score": 60, "count": 500}}, self.CFG))     # 不达标
+        self.assertFalse(classify.is_shown_meta(None, self.CFG))
+
+    def test_missing_detail_is_not_treated_as_pending(self):
+        """没抓过详情 ≠ PENDING 放行：回填不给「永远不展示」的条目白花配额。"""
+        self.assertFalse(classify.is_shown_meta({"appid": 1}, self.CFG))
+
+
 if __name__ == "__main__":
     unittest.main()

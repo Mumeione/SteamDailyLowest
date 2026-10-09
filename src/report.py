@@ -18,20 +18,11 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import announcements, classify
+from .config import DEFAULTS
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = ROOT / "templates"
 STATIC_DIR = TEMPLATES_DIR / "static"
-
-#: 分组的默认折叠状态（§7.2：分组默认展开，卡片一律折叠）
-#: 标签与「条件」文案一律由 :func:`group_specs` 从配置生成 ——
-#: 写死「优质」这类评价性词会误导（70% 好评率本来就不等于"优质"），
-#: 而且阈值一改文案就对不上了。
-GROUP_COLLAPSED = {
-    classify.TIER_QUALITY: False,
-    classify.TIER_NOTABLE: True,
-    classify.TIER_PENDING: True,
-}
 
 #: ⚠️ 2026-10-08：**视图按钮已整段退场** —— `VIEWS` / `LAZY_VIEWS` / `payload["views"]`
 #: 连同 `render(upcoming_items=…, extra_counts=…)` 一起删除。S9 首页四板块 + 导航栏
@@ -45,33 +36,21 @@ GROUP_COLLAPSED = {
 
 
 def group_specs(cfg: dict) -> list[dict]:
-    """由配置生成分组标题与「入组条件」（§3.5）。
+    """档位顺序与标签（§3.5）—— 「高热度」在前、然后「好评达标」、「详情待补」。
 
-    标题刻意用**中性描述**而不是「优质」—— 70% 好评率是 Steam 的「多半好评」档，
-    叫「优质」会让人误判。条件文案直接来自配置，改阈值时页面自动跟着变。
+    标签刻意用**中性描述**而不是「优质」—— 70% 好评率是 Steam 的「多半好评」档，
+    叫「优质」会让人误判。
+
+    ⚠️ 2026-10-09（卡片 08）：原先这里还带 ``criteria`` / ``collapsed`` 两个字段
+    （给已退场的分组页做组标题与折叠态），**生产一个都不读**，只有测试在维护它们 ——
+    阈值文案的唯一来源本来就是「关于网站」页的 :func:`criteria_notes`。已删。
+    ``cfg`` 参数保留：调用方（tier_labels / pool_items）签名一致，改起来更省事。
     """
-    pct = int(round(float(cfg.get("min_positive_ratio", 0.7)) * 100))
-    min_count = int(cfg.get("min_review_count", 100))
-    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
+    del cfg
     return [
-        {
-            "key": classify.TIER_NOTABLE,
-            "label": "高热度 · 口碑不一",
-            "criteria": f"评价数 ≥ {notable:,}，不看好评率",
-            "collapsed": GROUP_COLLAPSED[classify.TIER_NOTABLE],
-        },
-        {
-            "key": classify.TIER_QUALITY,
-            "label": "好评达标",
-            "criteria": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}",
-            "collapsed": GROUP_COLLAPSED[classify.TIER_QUALITY],
-        },
-        {
-            "key": classify.TIER_PENDING,
-            "label": "详情待补",
-            "criteria": "本轮还没取到详情，下次运行会自动补上",
-            "collapsed": GROUP_COLLAPSED[classify.TIER_PENDING],
-        },
+        {"key": classify.TIER_NOTABLE, "label": "高热度 · 口碑不一"},
+        {"key": classify.TIER_QUALITY, "label": "好评达标"},
+        {"key": classify.TIER_PENDING, "label": "详情待补"},
     ]
 
 
@@ -101,14 +80,16 @@ def fx_display(cfg: dict, fx: dict | None) -> dict | None:
 #: 「60 好评和 90 好评一个颜色、剩 7 天和剩 2 天也是一个颜色」→ 都要分档。
 #: 阈值仍集中在配置（`good_positive_ratio` / `min_positive_ratio` / `bad_positive_ratio`
 #: / `upcoming_expiry_hours` / `home_new_low_days`），前端只挂类名，不再自己写一份。
-GOOD_POSITIVE_RATIO = 0.9
+#: ⚠️ 三个阈值都只是 :data:`src.config.DEFAULTS` 的**别名**，不是第二张表
+#: （2026-10-09 收编）：改默认值只改 config.py 一处。
+GOOD_POSITIVE_RATIO = DEFAULTS["good_positive_ratio"]
 #: 「差评」档的门槛（Steam 商店口径：40~69% 是「褒贬不一」、<40% 是「差评」）。
 #: ⚠️ 这两档**只可能由「高热度 · 口碑不一」组（评价数 ≥ notable，不看好评率）的卡产生**
 #: （「好评达标」组被 ≥70% 展示门槛挡住）；但那张卡**可以同时是**新史低 / 临期 / 大额折扣，
 #: 所以 mid / low **可能出现在任何板块** —— 配色的意义就是在任何位置都能认出来。
 #: （2026-10-07 review 纠正：旧注释写「只会出现在热门游戏板块」，那是**分组**口径不是
 #: **板块**口径 —— COD 类大作踩新史低时照样进「新史低」板块，好感分档不硬砍。）
-BAD_POSITIVE_RATIO = 0.4
+BAD_POSITIVE_RATIO = DEFAULTS["bad_positive_ratio"]
 
 
 def rate_tier(reviews: dict | None, cfg: dict | None = None) -> str | None:
@@ -269,13 +250,29 @@ def clean_title_zh(title_zh: str | None, title: str | None) -> str | None:
     return title_zh
 
 
+#: 「参数没传」的哨兵 —— 与「显式传了 None」区分开（见 build_card 的两个史低时刻参数）
+_MISSING = object()
+
+
 def build_card(entry: dict, now: datetime, labels: dict | None = None,
-               cfg: dict | None = None) -> dict:
+               cfg: dict | None = None, *,
+               last_low_at=_MISSING, prev_low_at=_MISSING) -> dict:
     """把状态库条目（已合并详情）拼成卡片数据。
 
     ``cfg`` 只用于**配色分档的阈值**（好评率 / 剩余天数，见 rate_tier / days_tier）——
     不传就用模块默认值，所以老的调用与测试照常工作。
+
+    ``last_low_at`` / ``prev_low_at``：**显式参数**（架构检查卡片 02）。这两个时刻原
+    先只靠「上游按约定塞进 entry 的 dict 键」维系（低层判定读不到就静默降级成
+    「平史低 / 无数据」），是本模块最热改动区的隐式契约。生产唯一入口
+    ``run.merge_details`` 两个键都会写，所以传不传等价；把它们放到签名上是为了让
+    「这两个值从哪来」不再靠注释维系，新调用方也能直接喂。不传时回落到 entry
+    同名键（兼容旧调用与测试）。
     """
+    if last_low_at is _MISSING:
+        last_low_at = entry.get("last_low_at")
+    if prev_low_at is _MISSING:
+        prev_low_at = entry.get("prev_low_at")
     currency = entry.get("currency")
     appid = entry.get("appid")
     reviews = entry.get("reviews")
@@ -305,7 +302,7 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
     # （距上次史低期，来自史低期记忆）；记忆未建立时为 None（该项不计分）。
     last_low_days = None
     if low_class == classify.STEAM_LOW_NEW:
-        low_at = classify.parse_time(entry.get("prev_low_at"), now.tzinfo)
+        low_at = classify.parse_time(prev_low_at, now.tzinfo)
         if low_at is not None:
             last_low_days = max(0, (now.date() - low_at.date()).days)
             last_low_text = f"{last_low_days} 天"
@@ -315,7 +312,7 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
             # 有记忆后主文本与平史低一致（「N 天」），标签统一「上次新史低」。
             last_low_text = "本次新史低"
     elif low_class == classify.STEAM_LOW_TIE:
-        low_at = classify.parse_time(entry.get("last_low_at"), now.tzinfo)
+        low_at = classify.parse_time(last_low_at, now.tzinfo)
         if low_at is not None:
             # 批 E 第二轮：主文本就是「N 天」（标签侧已改为「距上次史低」，
             # 再写「N 天前」语义重复）；具体日期由前端悬停/点按显示
@@ -416,36 +413,23 @@ def featured_sort_key(card: dict) -> tuple:
     )
 
 
-def _majority_start(items: list[dict]) -> str | None:
-    """组内「折扣开始」按**多数派**上提（批 E spec E5 / 2026-09-25 实测口径）。
+def pool_items(cards: list[dict], cfg: dict) -> list[dict]:
+    """「全部折扣」分片的**池顺序**：按 :func:`group_specs` 的档位分组 + 组内折扣降序。
 
-    并列时取较晚的，保证组头不会显示得比实际更早
-    （比较的是 ``%Y-%m-%d %H:%M`` 定宽字符串，字典序即时序）。
+    生产要的一直只有这个**扁平列表**（``all_section_orders`` 的 ``__all__`` 池）。
+    从前它由 ``build_groups`` 组装 —— 那个函数额外产出一层带 ``criteria`` /
+    ``collapsed`` / ``count`` / ``start_text`` 的分组结构，**生产一个字段都不读**，
+    只在测试里被维护（删掉它，复杂度就消失：卡片本身已有 ``start_text``，
+    页面上也没有「组标题」这个位置了）。空白档位不进池（老行为，保持一致）。
     """
-    starts = [item["start_text"] for item in items if item.get("start_text")]
-    counts = Counter(starts)
-    return max(counts, key=lambda text: (counts[text], text)) if counts else None
-
-
-def build_groups(items: list[dict], cfg: dict) -> list[dict]:
-    groups = []
+    pool: list[dict] = []
     for spec in group_specs(cfg):
-        group_items = [item for item in items if item["tier"] == spec["key"]]
+        group_items = [item for item in cards if item["tier"] == spec["key"]]
         if not group_items:
             continue
         group_items.sort(key=lambda i: (-(i["cut"] or 0), i["title"] or ""))
-        groups.append(
-            {
-                "key": spec["key"],
-                "label": spec["label"],
-                "criteria": spec["criteria"],
-                "collapsed": spec["collapsed"],
-                "count": len(group_items),
-                "start_text": _majority_start(group_items),
-                "items": group_items,
-            }
-        )
-    return groups
+        pool.extend(group_items)
+    return pool
 
 
 #: all.js 卡片瘦身（2026-10-08，问题1：分类页懒加载的 all.js 达 6.3MB）——
@@ -523,20 +507,50 @@ ALL_SHARD_SIZE = 200
 ALL_SHARD_GLOBAL = "ALL_S"
 
 
+def _cut_bands(cfg: dict) -> list[int]:
+    """折扣区间档位（升序去重）—— 唯一出处，别再各写一遍 ``sorted({50, big, 90})``。
+
+    50% = 「有点折扣」的直觉线；``big_cut_percent``（默认 80%）是「大额折扣」板块的
+    同一根线；90% = 「几乎白送」。**70% 已由用户去掉**（夹在 50 与 80 之间、
+    区分度最低）。用 set 去重：把 big_cut 调成 50 或 90 也不会出重复选项。
+    """
+    return sorted({50, int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT)), 90})
+
+
+def _review_bands(cfg: dict) -> list[int]:
+    """好评数量档位（升序去重）—— 唯一出处，供 agg 与抽屉选项共用。"""
+    return sorted({500, 5000, int(cfg.get("notable_review_count", DEFAULT_NOTABLE))})
+
+
+def _date_bands(cfg: dict) -> list[dict]:
+    """日期档位 ``[{value, label}]``（升序）—— 协议值 ``0/1/2/dN/all``。
+
+    **唯一出处**：:func:`filter_dim_values`（前端查表键）与 :func:`filter_specs`
+    （抽屉选项）都从这里取，两边不可能再漂移 —— 曾经两处各拼一份，加档位时
+    容易只改一边（查表 miss 会静默退回分片遍历）。冒烟另有「抽屉选项值 ==
+    payload 的 agg 维度」对拍兜底。
+    """
+    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
+    return [
+        {"value": "0", "label": "今天"},
+        {"value": "1", "label": "昨天"},
+        {"value": "2", "label": "前天"},
+        {"value": f"d{days}", "label": f"近 {days} 天"},
+        {"value": "all", "label": "全部"},
+    ]
+
+
 def filter_dim_values(cfg: dict) -> dict[str, list[str]]:
     """列表页筛选四个维度的**全部选项值**（前端预聚合计数的查表键）。
 
-    ⚠️ 与 :func:`filter_specs` 的选项**必须逐项一致** —— 那边加/改一个档位，
-    这里不改的话，用户选到那个档位时查表会 miss、退回分片遍历（结果仍对，
-    但「共 N 条」要等分片到齐）。有单测锁两边同步。
+    ⚠️ 与 :func:`filter_specs` 的选项**必须逐项一致** —— 现在两边都从
+    :func:`_date_bands` / :func:`_cut_bands` / :func:`_review_bands` 取，同源了；
+    单测与冒烟各有一道对拍。
     """
-    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
-    big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
-    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
     return {
-        "date": ["0", "1", "2", f"d{days}", "all"],
-        "cut": ["all"] + [str(v) for v in sorted({50, big, 90})],
-        "reviews": ["all"] + [str(v) for v in sorted({500, 5000, notable})],
+        "date": [o["value"] for o in _date_bands(cfg)],
+        "cut": ["all"] + [str(v) for v in _cut_bands(cfg)],
+        "reviews": ["all"] + [str(v) for v in _review_bands(cfg)],
         "only_new": ["all", "new"],
     }
 
@@ -547,10 +561,8 @@ def _agg_rows(members: list[dict], cfg: dict, key: str) -> list[tuple]:
     不做的话就是 160 个组合 × N 张卡次重复取字段（expiring 一轮 116 万次）。
     """
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
-    big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
-    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
-    cuts = sorted({50, big, 90})
-    revs = sorted({500, 5000, notable})
+    cuts = _cut_bands(cfg)          # 档位只在 _cut_bands / _review_bands 里算一次
+    revs = _review_bands(cfg)
     rows = []
     for card in members:
         ago = card.get("start_days_ago")
@@ -573,6 +585,12 @@ def _agg_rows(members: list[dict], cfg: dict, key: str) -> list[tuple]:
             card.get("low_class") == classify.STEAM_LOW_NEW,
         ))
     return rows
+
+
+#: 预聚合计数表的**键序契约**（唯一出处）：键 = 各维度的值按这个顺序 ``join("|")``。
+#: 前端 app.js 的 ``aggCount`` 按同一顺序拼键查表 —— 改顺序等于改协议，
+#: 两边必须同步（tools/check_payload.py 有机械对拍：Python 这份顺序 ↔ JS 的数组顺序）。
+AGG_KEY_ORDER = ("date", "cut", "reviews", "only_new")
 
 
 def section_agg(members: list[dict], cfg: dict, key: str) -> dict:
@@ -604,7 +622,9 @@ def section_agg(members: list[dict], cfg: dict, key: str) -> dict:
                                 if live and (b & bit) and ct >= ci and rt >= ri
                                 and (oi == 0 or isn))
                         cache[ck] = n
-                    counts["|".join((d, cuts[ci], revs[ri], news[oi]))] = n
+                    combo = {"date": d, "cut": cuts[ci],
+                             "reviews": revs[ri], "only_new": news[oi]}
+                    counts["|".join(combo[name] for name in AGG_KEY_ORDER)] = n
     return {"dim": dims, "counts": counts}
 
 
@@ -625,10 +645,7 @@ def all_section_orders(all_cards: list[dict], cfg: dict) -> dict[str, list[dict]
         members.sort(key=_section_sort(key, cfg))
         orders[key] = members
     # ⚠️ 这里**不瘦身**：`write_all_shards` 会统一瘦一次，瘦两遍会把 art 抹成 None
-    pool: list[dict] = []
-    for group in build_groups(all_cards, cfg):
-        pool.extend(group["items"])
-    orders["__all__"] = pool
+    orders["__all__"] = pool_items(all_cards, cfg)
     return orders
 
 
@@ -701,19 +718,19 @@ HOME_SECTIONS = [
 ]
 
 
-#: 默认阈值的**唯一来源**：10000 / 80 / 7 / 48 原先在 `_in_section` /
-#: `criteria_notes` / `filter_specs` 三处各写一遍字面量，改默认值要散着改
-#: （review-s9-01 补充审查 #4）。配置里没有时才用这些。
-DEFAULT_HOME_DAYS = 7
-DEFAULT_BIG_CUT = 80
-DEFAULT_NOTABLE = 10000
-DEFAULT_UPCOMING_HOURS = 48
-#: 四板块预览栏位的**上限**（节日满额）与**最低栏位**（平时整齐度）——
-#: 唯一来源在这里，配置键 `home_section_preview` / `home_section_preview_min`。
-#: 2026-10-08 用户问「最低设置多少个，3 还是 4 还是 5」→ 取 **5**：与大卡单排
-#: 5 张同高、页面节奏统一；3 偏空、4 不对称。口径见 :func:`build_sections`。
-DEFAULT_HOME_SECTION_PREVIEW = 10
-DEFAULT_HOME_SECTION_FLOOR = 5
+#: 默认阈值的**唯一来源** = :data:`src.config.DEFAULTS`（2026-10-09 收编）。
+#: 这几个名字是**只读别名**，保留它们是为了不改动几十处调用点；值一律从单表取，
+#: 绝不再在这里写第二遍字面量（曾经 10000 / 80 / 7 / 48 在两处各写一遍，
+#: 改一个默认值要散着改，两张表还能悄悄不一致）。
+DEFAULT_HOME_DAYS = DEFAULTS["home_new_low_days"]
+DEFAULT_BIG_CUT = DEFAULTS["big_cut_percent"]
+DEFAULT_NOTABLE = DEFAULTS["notable_review_count"]
+DEFAULT_UPCOMING_HOURS = DEFAULTS["upcoming_expiry_hours"]
+#: 四板块预览栏位的**上限**（节日满额）与**最低栏位**（平时整齐度）—— 口径见
+#: :func:`build_sections`。2026-10-08 用户问「最低设置多少个，3 还是 4 还是 5」
+#: → 取 **5**：与大卡单排 5 张同高、页面节奏统一；3 偏空、4 不对称。
+DEFAULT_HOME_SECTION_PREVIEW = DEFAULTS["home_section_preview"]
+DEFAULT_HOME_SECTION_FLOOR = DEFAULTS["home_section_preview_min"]
 
 
 def _is_fresh(card: dict, days: int) -> bool:
@@ -758,7 +775,8 @@ def _in_section(key: str, card: dict, cfg: dict) -> bool:
 
 def section_keys(card: dict, cfg: dict) -> list[str]:
     """这张卡片属于哪几个板块（同一游戏可跨板块，允许重复）。
-    写进 all.js 的每张卡（``card["sections"]``），前端按它筛出板块的完整列表。"""
+    写进每张卡的 ``card["sections"]``（分片 ``all/<key>_<n>.js`` 与 data.js 都带），
+    前端按它筛出板块的完整列表。"""
     return [spec["key"] for spec in HOME_SECTIONS if _in_section(spec["key"], card, cfg)]
 
 
@@ -805,7 +823,7 @@ def _section_sort(key: str, cfg: dict | None = None):
 
 def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
     """首页四板块。``items`` 放前 K 条，完整条数放 ``count``，
-    前端「查看更多」按需展开（数据在 all.js 里）。
+    前端「查看更多」按需展开（数据在 ``all/<key>_<n>.js`` 分片里，按需懒加载）。
 
     ⚠️ **栏位统一、随池量动态**（2026-10-08 用户定案）—— 明天大促结束后
     新史低池量回落，固定 10 条会放不满、四板块参差。四板块共用**同一个**
@@ -884,10 +902,10 @@ HOME_PICKS_PAGE = 5
 #: ⚠️ 别拿大促期间的数据来"验证"平时条数 —— 大促那几天新史低一天上千条
 #: （refs §6.2 实测 09-26→10-05：24/16/13/28/29/47/**1943**/4/2/4），上限天天填满；
 #: 平时一天只有个位数，回落到一页 5 张才是常态。
-HOME_PICKS_DEFAULT = 15
+HOME_PICKS_DEFAULT = DEFAULTS["home_picks"]
 #: 前置门槛（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
-RECOMMEND_MIN_RATE = 70
-RECOMMEND_MIN_COUNT = 100
+RECOMMEND_MIN_RATE = DEFAULTS["recommend_min_rate"]
+RECOMMEND_MIN_COUNT = DEFAULTS["recommend_min_count"]
 #: 名气 / 间隔 的封顶值（达到即满分）
 RECOMMEND_FAME_CAP = 200_000
 RECOMMEND_GAP_CAP_DAYS = 366
@@ -1105,8 +1123,8 @@ def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
 
 
 #: 站点链接默认值（配置里可覆盖，`config.example.json` 有这两个键）
-DEFAULT_REPO_URL = "https://github.com/Mumeione/SteamDailyLowest"
-DEFAULT_ACTIONS_URL = DEFAULT_REPO_URL + "/actions"
+DEFAULT_REPO_URL = DEFAULTS["site_repo_url"]
+DEFAULT_ACTIONS_URL = DEFAULTS["site_actions_url"]
 
 
 def site_links(cfg: dict) -> dict:
@@ -1149,12 +1167,9 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
     notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
-    # 折扣区间：**没有 70%**（用户 2026-10-07「折扣区间去掉 70%」）——
-    # 50% 是「有点折扣」的直觉线，big_cut（默认 80%）是「大额折扣」板块的同一根线，
-    # 90% 是「几乎白送」。70% 夹在 50 与 80 之间、区分度最低，故去掉。
-    # ⚠️ 用 set 去重：若哪天把 big_cut_percent 调成 50 或 90，这里不会出现重复选项。
-    cuts = sorted({50, big, 90})
-    counts = sorted({500, 5000, notable})
+    # 折扣区间 / 好评数量的档位与 agg 维度共用同一份计算（_cut_bands / _review_bands）
+    cuts = _cut_bands(cfg)
+    counts = _review_bands(cfg)
     # 置灰统计：只算「开始时间已知」的卡片 —— 前端 dateOk 对未知 start 一律返回 false，
     # 口径必须一致，否则会出现「选项没置灰但点进去是空的」
     agos = [c.get("start_days_ago") for c in (cards or [])]
@@ -1199,15 +1214,14 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
             o["implied_note"] = f"本板块已要求 ≥ {notable:,}"
         rev_opts.append(o)
 
+    # 日期选项直接从 _date_bands 取（与 filter_dim_values 的 agg 维度同源），
+    # 只补各自的 `disabled`（「这一天没有数据」）；「全部」永不留空，恒可选。
+    date_opts = [dict(o, disabled=False if o["value"] == "all" else dead(o["value"]))
+                 for o in _date_bands(cfg)]
+
     return [
         {"key": "sort", "label": "排序", "options": sort_opts},
-        {"key": "date", "label": "日期", "options": [
-            {"value": "0", "label": "今天", "disabled": dead("0")},
-            {"value": "1", "label": "昨天", "disabled": dead("1")},
-            {"value": "2", "label": "前天", "disabled": dead("2")},
-            {"value": f"d{days}", "label": f"近 {days} 天", "disabled": dead(f"d{days}")},
-            {"value": "all", "label": "全部", "disabled": False},
-        ]},
+        {"key": "date", "label": "日期", "options": date_opts},
         {"key": "cut", "label": "折扣区间", "options": cut_opts},
         {"key": "reviews", "label": "好评数量", "options": rev_opts},
         {"key": "only_new", "label": "史低类型", "options": [
@@ -1348,7 +1362,24 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         # 五个视图 —— 留着就是死数据（review-s9-01 #4）。
     }
 
-    data_js = "window.REPORT_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n"
+    # ---- data.js 只放**前端真的会读**的键（2026-10-09，卡片 08）----
+    # 之前是把整个 payload 塞进去，于是 data.js 里躺着 overview / fx / steam / sweep /
+    # low_points / filter_defaults / generated_at_text —— 前端 app.js 一个都不读
+    # （概览数字与汇率是**服务端渲染**进 index/about 的；筛选默认值走模板自己的
+    # ``window.FILTER_DEFAULTS``）。首屏多背几十 KB 的死数据，且让人误以为改它们有用。
+    # 覆盖统计要用的 overview / low_points 已在 latest.json 里（机器读的伴生产物）。
+    # ⚠️ 新增键之前先确认 app.js 有消费者，否则又变成死数据。
+    data_payload = {
+        "generated_at": payload["generated_at"],
+        "assets_version": payload["assets_version"],
+        "stale_banner_hours": payload["stale_banner_hours"],
+        "stale_warn_hours": payload["stale_warn_hours"],
+        "sections": payload["sections"],
+        "picks": payload["picks"],
+        "pick_page": payload["pick_page"],
+        "list": payload["list"],
+    }
+    data_js = "window.REPORT_DATA = " + json.dumps(data_payload, ensure_ascii=False) + ";\n"
     (output_dir / "data.js").write_text(data_js, encoding="utf-8")
 
     paths = {
@@ -1371,6 +1402,9 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "generated_at": payload["generated_at"],
         "sweep": payload["sweep"],
         "overview": stats,
+        #: 史低构成（色点）—— data.js 已不再下发（前端不读，摘要由模板渲染）；
+        #: 放在这里给 tools/check_payload.py 做「色点之和 == 进列表条数」的自洽校验。
+        "low_points": low_points,
         #: 字段名与含义严格对应：`new_today_raw` 是真实新增量（可能远大于进列表的条数），
         #: 这里列出的是**实际进列表**的条目，故叫 `shown`
         "shown": [

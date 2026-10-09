@@ -85,6 +85,30 @@ DEFAULTS: dict = {
     "tablet_breakpoint_px": 1100,
     "max_deals": None,
     "run_log_keep": 30,
+    # ---- 首页 / 大卡 / 列表的阈值（2026-10-09 收编）----
+    # ⚠️ 这几个键原先**只活在 report.py 的 DEFAULT_* 常量与读点字面量里**，
+    # 不在本表：`home_new_low_days` / `big_cut_percent` 等在 config.example.json 里
+    # 有、用户的 config.json 里没有 ⇒ 实际生效的是 report.py 那份第二张表。
+    # 结果是「改一个 48 要动 5 处」，而且两张表可以悄悄不一致。
+    # 现在这里是**唯一来源**：report.py 的同名常量只是 `DEFAULTS[...]` 的别名。
+    "home_new_low_days": 7,
+    "big_cut_percent": 80,
+    "home_picks": 15,
+    "home_section_preview": 10,
+    "home_section_preview_min": 5,
+    "list_batch": 30,
+    "list_auto_max": 300,
+    "bad_positive_ratio": 0.4,
+    # 精选/大卡打分的「前置门槛」（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
+    "recommend_min_rate": 70,
+    "recommend_min_count": 100,
+    # 两张权重表**不在配置里定义默认值**：默认档是 report.py 的 PICKS_WEIGHTS /
+    # RECOMMEND_WEIGHTS 代码常量，配置只做「按名覆盖缺项」（见 report._resolve_weights）。
+    # 这里显式登记为 None，是为了让「谁会被读」这件事在单表里可见（示例配置里就有这两个键）。
+    "recommend_weights": None,
+    "picks_weights": None,
+    "site_repo_url": "https://github.com/Mumeione/SteamDailyLowest",
+    "site_actions_url": "https://github.com/Mumeione/SteamDailyLowest/actions",
 }
 
 # 环境变量覆盖表：env 名 -> 配置键

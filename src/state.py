@@ -49,10 +49,14 @@ def _is_cc_suffix(suffix: str) -> bool:
     return len(suffix) == 2 and suffix.isalpha() and suffix.isupper()
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
-    """紧凑 JSON + 原子写（先写临时文件再替换），State 与 Cache 共用。"""
+def atomic_write_text(path: Path, text: str) -> None:
+    """原子写文本：先写同目录临时文件（+ fsync）再 ``os.replace`` 换上去。
+
+    中途断电 / 被 kill 都不会留下「半个文件」—— 状态库与报表快照都靠它
+    （2026-10-09 卡片 05：从前 ``snapshot`` 与 ``tools/sync_state_from_remote``
+    各自手抄了一份同款实现，改一处漏两处）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -64,6 +68,11 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
         raise
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    """紧凑 JSON（``separators=(",", ":")``）+ :func:`atomic_write_text`。"""
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 class Cache:
@@ -102,7 +111,7 @@ class Cache:
     def save(self, now: datetime | None = None) -> None:
         if now is not None:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
-        _atomic_write_json(self.path, self.data)
+        atomic_write_json(self.path, self.data)
 
 
 class Dynamic:
@@ -149,7 +158,7 @@ class Dynamic:
     def save(self, now: datetime | None = None) -> None:
         if now is not None:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
-        _atomic_write_json(self.path, self.data)
+        atomic_write_json(self.path, self.data)
 
 
 class State:
@@ -260,7 +269,7 @@ class State:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
         for key, entry in list(self.seen_deal.items()):
             self.seen_deal[key] = classify.slim_deal(entry)
-        _atomic_write_json(self.path, self.data)
+        atomic_write_json(self.path, self.data)
         self.dynamic.save(now)
         self.cache.save(now)
 
@@ -609,19 +618,28 @@ class State:
         """
         if not game_id or not start:
             return
-        meta = self.game_meta.get(game_id)
-        if meta is None:
-            meta = {}
-            self.game_meta[game_id] = meta
-        period = meta.get("low_period") or {}
+        # 「时刻 t 是否开启一段史低期」的判定收在 classify.roll_low_period（同一份
+        # 规则回填也吃）—— 这里只负责把新 cur 落到 game_meta，并滚动 prev。
+        period = (self.game_meta.get(game_id) or {}).get("low_period") or {}
         cur = period.get("cur")
-        if cur == start:
+        new_cur = classify.roll_low_period(cur, start, self.tz)
+        if new_cur is None:
             return
-        parsed_new = classify.parse_time(start, self.tz)
-        parsed_cur = classify.parse_time(cur, self.tz) if cur else None
-        if parsed_new is None or (parsed_cur is not None and parsed_new <= parsed_cur):
+        self.set_low_period(game_id, new_cur, cur)
+
+    def set_low_period(self, game_id: str, cur: str | None, prev: str | None) -> None:
+        """**受控写口**：直接落一对 ``(cur, prev)``（回填专用）。
+
+        ⚠️ 回填**必须走这里**，别自己写 ``state.game_meta[gid]["low_period"]`` ——
+        那就是绕过 :meth:`record_low_period` 的乱序/重复保护，在状态库外面复刻
+        一条「何时能写」的并行口径（架构检查卡片 04）。语义与增量路径一致：
+        ``prev`` 传旧 cur，首次史低传 None。
+        """
+        if not game_id:
             return
-        meta["low_period"] = {"cur": start, "prev": cur}
+        meta = self.game_meta.get(game_id) or {}
+        meta["low_period"] = {"cur": cur, "prev": prev}
+        self.game_meta[game_id] = meta
 
     def prev_low_start(self, game_id: str | None) -> str | None:
         """该游戏上一次史低期的开始时间（无记忆返回 None —— 首次史低/冷启动）。"""

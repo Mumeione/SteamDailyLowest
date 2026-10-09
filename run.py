@@ -29,7 +29,14 @@ from pathlib import Path
 from typing import Callable
 
 from src import classify, enrich, report, snapshot
-from src.config import ConfigError, api_key, load_config, parse_rate_limit, resolve_path
+from src.config import (
+    DEFAULTS,
+    ConfigError,
+    api_key,
+    load_config,
+    parse_rate_limit,
+    resolve_path,
+)
 from src.httpclient import Blocked, HttpError
 from src.itad import (
     SWEEP_FULL,
@@ -38,6 +45,12 @@ from src.itad import (
     ItadClient,
     ItadError,
     build_client as itad_build_client,
+)
+from src.classify import (   # 领域判定归位 classify（卡片 07）；此处只做转发/复用
+    discount_active,
+    entry_needs_detail,
+    refresh_ttl_days,
+    unlisted_frozen,
 )
 from src.ratelimit import RateLimiter
 from src.state import State
@@ -54,6 +67,20 @@ SCOPE_NEW = "new"          # 当日新增：跳过冷却与折扣活跃闸门
 SCOPE_STALE = "stale"      # 折扣活跃，但动态数据过了四档 TTL
 SCOPE_REJUDGE = "rejudge"  # unlisted 翻案重判：start 变了才进来，跳折扣活跃闸门
 SCOPE_TITLE = "title"      # 只补中文名（S9 clean_title_zh），不动评价数据
+
+
+#: 需要写进 ``run_log.errors`` 的传输异常事件类型（限流 / 封禁 / 软限流 / 服务端故障 / 网络）
+ERROR_EVENT_KINDS = ("429", "403", "soft_null", "5xx", "network")
+
+
+def transport_errors(*clients) -> list[dict]:
+    """汇总若干客户端里**需要留痕**的异常事件（run_log 的 ``errors`` 字段）。
+
+    从前这段列表推导在 run_log 写入处抄了三遍（daily 的 ITAD + Steam + GetItems、
+    prefetch 的三条线）—— 加一种事件类型要改三处、漏一处就少一种告警（卡片 05）。
+    """
+    return [event for client in clients for event in client.events
+            if event.get("kind") in ERROR_EVENT_KINDS]
 
 
 def log(message: str) -> None:
@@ -127,86 +154,8 @@ def build_steam_client(cfg: dict) -> SteamClient:
     )
 
 
-def discount_active(entry: dict, now: datetime) -> bool:
-    """条目是否折扣活跃（spec 决策 16：``start ≤ now ≤ expiry``）。
-
-    边界解析不了的按**活跃**处理 —— 宁多刷不漏刷；非折扣期一律不刷新
-    （用户 2026-10-05 裁决：不进列表就没有消费方）。
-    """
-    expiry = classify.parse_time(entry.get("expiry"), now.tzinfo)
-    if expiry is not None and expiry < now:
-        return False
-    start = classify.parse_time(entry.get("start"), now.tzinfo)
-    if start is not None and start > now:
-        return False
-    return True
-
-
-def refresh_ttl_days(entry: dict, state: State, cfg: dict, now: datetime) -> int:
-    """折扣感知的刷新 TTL（spec 决策 16，四档）：
-
-    新游（release_date ≤ ``new_game_days``）1 天 → 到期窗口（expiry −
-    ``upcoming_expiry_hours`` 起）1 天 → 折扣期普通条目 ``discount_refresh_days``
-    （3 天）。调用方保证条目折扣活跃（非折扣期根本不进派生）。
-    game_id 从 ``entry`` 派生（review-s6 P2 Data Clumps：它总是结伴出现，
-    不该单独占一个参数）。
-    """
-    ng_days = int(cfg.get("new_game_days", 30) or 0)
-    meta = state.meta(entry.get("game_id")) or {}
-    rd = meta.get("release_date")
-    if ng_days > 0 and rd:
-        try:
-            released = datetime.fromtimestamp(int(rd), tz=now.tzinfo)
-            if abs((now - released).total_seconds()) <= ng_days * 86400:
-                return int(cfg.get("new_game_refresh_days", 1))
-        except (TypeError, ValueError, OSError, OverflowError):
-            pass
-    expiry = classify.parse_time(entry.get("expiry"), now.tzinfo)
-    if expiry is not None:
-        window = timedelta(hours=int(cfg.get("upcoming_expiry_hours", 48)))
-        if now >= expiry - window:
-            return int(cfg.get("expiry_refresh_days", 1))
-    return int(cfg.get("discount_refresh_days", 3))
-
-
-def unlisted_frozen(entry: dict, mark: dict | None) -> bool:
-    """unlisted 冻结判定（决策 17）：标记存在且仍是**同一折扣期**（start 一致）。
-
-    :func:`entry_needs_detail` 与 :func:`detail_targets` 的 backlog 循环共用
-    这一份 —— review-s6 P2：原来两处各写一遍，改口径容易漏一处。
-    """
-    return mark is not None and (entry.get("start") or "") == (mark.get("start") or "")
-
-
-def entry_needs_detail(entry: dict, state: State, cfg: dict, now: datetime,
-                       *, is_new: bool = False) -> bool:
-    """单条目级「要不要发详情请求」（S6 折扣感知口径，detail_targets 的原子判定）。
-
-    - unlisted 冻结（同一折扣期内，``start`` 与标记一致）→ False；
-    - 非当日新增且**非折扣活跃** → False（非折扣期不刷新）；
-    - 冷却期内失败过 → False（**当日新增不冷却**，报表核心每轮重试）；
-    - 其余按动态数据年龄 vs :func:`refresh_ttl_days` 判定（没抓过 → True）。
-    """
-    game_id = entry.get("game_id")
-    if not game_id:
-        return False
-    mark = state.unlisted(game_id)
-    if unlisted_frozen(entry, mark):
-        return False   # 同一折扣期内冻结（决策 17）
-    if not is_new:
-        if not discount_active(entry, now):
-            return False
-        if state.detail_recently_failed(
-                game_id, now, int(cfg.get("detail_retry_cooldown_days", 3))):
-            return False
-    dyn = state.dyn(game_id)
-    if not dyn or dyn.get("fetched_at") is None:
-        return True
-    fetched = classify.parse_time(dyn.get("fetched_at"), now.tzinfo)
-    if fetched is None:
-        return True
-    ttl_days = refresh_ttl_days(entry, state, cfg, now)
-    return (now - fetched) >= timedelta(days=ttl_days)
+# 详情刷新口径（决策 16/17）已归位 src/classify（卡片 07）：run.py 只做编排。
+# 「要不要给这个条目发详情请求」的四个判定在那边是唯一出处，回填等消费方直接复用。
 
 
 def _is_new_today(entry: dict, now: datetime) -> bool:
@@ -246,14 +195,8 @@ def detail_targets(candidates: list[dict], state: State,
                    and entry_needs_detail(e, state, cfg, now, is_new=True)]
     new_ids = {e.get("game_id") for e in candidates}
 
-    latest: dict[str, dict] = {}
-    for entry in state.seen_deal.values():
-        gid = entry.get("game_id")
-        if not gid or gid in new_ids:
-            continue
-        prev = latest.get(gid)
-        if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
-            latest[gid] = entry
+    # 去重逻辑只有 latest_entries 一份（卡片 05）；这里只是把「当日新增」摘出去
+    latest = {e["game_id"]: e for e in latest_entries(state, exclude=new_ids)}
 
     backlog: list[dict] = []
     rejudge = 0
@@ -279,16 +222,23 @@ def detail_targets(candidates: list[dict], state: State,
     }
 
 
-def latest_entries(state: State) -> list[dict]:
+def latest_entries(state: State, exclude: set[str] | None = None) -> list[dict]:
     """每个 game_id 取最近出现的一条 seen_deal（多版本折扣去重）。
 
     供无本轮扫描的场合使用（S8 起 prefetch 不再扫折扣列表，条目池直接来自
     状态库）；daily 仍传本轮 hist_low，与视图口径保持一致。
+
+    ``exclude``：要跳过的 game_id（``detail_targets`` 用它把「当日新增」摘出来，
+    避免同一游戏既进「当日新增」又进「欠账」）。返回顺序 = 首次出现顺序。
+
+    这段去重原先在仓库里有三份拷贝（本函数 / ``detail_targets`` 内联 /
+    ``run_probe`` 内联），口径改一次要改三处 —— 现在只有这一份（卡片 05）。
     """
     latest: dict[str, dict] = {}
+    skip = exclude or set()
     for entry in state.seen_deal.values():
         gid = entry.get("game_id")
-        if not gid:
+        if not gid or gid in skip:
             continue
         prev = latest.get(gid)
         if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
@@ -332,7 +282,7 @@ def apply_listing(state: State, targets: list[dict], cfg: dict, now: datetime) -
         dyn = state.dyn(gid)
         if not dyn or dyn.get("fetched_at") is None:
             continue   # 本轮没抓到（预算截断 / 失败），维持原状
-        if classify.is_shown(classify.tier_of(dyn.get("reviews"), cfg)):
+        if classify.is_shown_meta(dyn, cfg):   # 「按已知评价数据够不够格」单点（卡片 07）
             if state.clear_unlisted(gid):
                 relisted += 1
         else:
@@ -661,6 +611,11 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
     for entry in entries:
         meta = state.meta(entry.get("game_id"))
         item = dict(entry)
+        # 「进列表」的档位组装在这一句里（classify.merge_tier，卡片 07）：
+        # unlisted → COLD（决策 17，不能归 PENDING，否则以展示档复入列表）、
+        # 没抓过详情 → PENDING、其余按评价数据判 quality/notable/cold/other。
+        # 顺带回填卡片要用的 appid / reviews —— 三个字段本来就是同一判定的产物。
+        item["tier"], item["appid"], item["reviews"] = classify.merge_tier(meta, cfg)
         item["title_zh"] = meta.get("title_zh") if meta else None
         item["last_low_at"] = state.last_low_at(entry.get("game_id"), entry.get("expiry"))
         # 史低期记忆（§3.6 扩展，2026-10-09）：新史低的「距上次史低」来自
@@ -672,20 +627,6 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         item["publishers"] = (meta or {}).get("publishers") or []
         item["developers"] = (meta or {}).get("developers") or []
         item["stats"] = (meta or {}).get("stats")
-        # S6 决策 17：unlisted 条目的动态数据已被丢弃 —— 必须归「冷门 / 无数据」
-        # 而不是「详情待补」，否则会以 PENDING 档重新进列表（PENDING 是展示档）。
-        if meta and meta.get("unlisted"):
-            item["appid"] = meta.get("appid")
-            item["reviews"] = None
-            item["tier"] = classify.TIER_COLD
-        elif not meta or not meta.get("fetched_at"):
-            item["appid"] = None
-            item["reviews"] = None
-            item["tier"] = classify.TIER_PENDING
-        else:
-            item["appid"] = meta.get("appid")
-            item["reviews"] = meta.get("reviews")
-            item["tier"] = classify.tier_of(item["reviews"], cfg)
         merged.append(item)
     return merged
 
@@ -769,7 +710,6 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     # 两个板块的真实性**（每日抓取的意义是防打折中途降价）；其余板块的历史条目
     # 用「外区原价永久缓存 × 国区折扣比例」估算（原价缓存就是为此备料，见
     # enrich.estimate_compare）—— 零额外 Steam 请求。
-    countries = [c for c in (cfg.get("compare_countries") or []) if c]
     compare_by_appid: dict[int, list[dict]] = {}
     for entry in shown + upcoming_shown:
         appid = entry.get("appid")
@@ -787,14 +727,8 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
         _, _, all_shown = build_view(all_entries)
         all_cards = []
         for entry in all_shown:
-            cmp_rows = compare_by_appid.get(entry.get("appid"))
-            if cmp_rows:
-                entry["compare"] = cmp_rows   # build_card 从 entry["compare"] 取值
-            else:
-                # 估算行（真查没覆盖的历史条目；缺 appid/价格/缓存时函数自己返回 []）
-                est = enrich.estimate_compare(state, entry, countries, fx)
-                if est:
-                    entry["compare"] = est
+            # 真查命中回灌、否则估算 —— 判断只有一份（enrich.fill_compare，卡片 05）
+            enrich.fill_compare(state, cfg, entry, fx, truth_by_appid=compare_by_appid)
             card = report.build_card(entry, now, labels, cfg)
             card["views"] = [
                 key for key in classify.VIEW_KEYS
@@ -940,7 +874,8 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     upcoming_entries = [
         e for e in hist_low if classify.in_view("upcoming", e, now, cfg)
     ]
-    log(f"      即将过期候选（{cfg.get('upcoming_expiry_hours', 48)}h 内到期）：{len(upcoming_entries)} 条")
+    log(f"      即将过期候选（{cfg.get('upcoming_expiry_hours', DEFAULTS['upcoming_expiry_hours'])}h"
+        f" 内到期）：{len(upcoming_entries)} 条")
 
     # 状态库按完整结构写：所有史低都攒库（其余视图以后再开，§1.1）
     # 首次见到的史低同时滚动更新「史低期记忆」—— 新史低的「距上次史低」数据源（§3.6）
@@ -1025,7 +960,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         log(f"[7/{total_steps}] 完整版报表已覆盖：进列表 {final['shown']} 条（分档 {final['tier']}）"
             f"；即将过期进列表 {final['upcoming_shown']} 条；全部视图数据 {final.get('all_shown', 0)} 条")
 
-        errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+        errors = transport_errors(client)
         state.add_run_log(
             {
                 "run_at": now.isoformat(timespec="seconds"),
@@ -1064,10 +999,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
                 "limiter": client.limiter.stats(),
                 "steam_limiter": steam_client.limiter.stats(),
                 "steam_browse_limiter": browse_client.limiter.stats(),
-                "errors": errors + [e for e in steam_client.events
-                                    if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
-                + [e for e in browse_client.events
-                   if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")],
+                "errors": errors + transport_errors(steam_client, browse_client),
             },
             keep=int(cfg.get("run_log_keep", 30)),
         )
@@ -1276,6 +1208,8 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
             appid = int(state.meta(game_id).get("appid"))
             try:
                 info = steam.info(appid, cc=cfg.get("country", "CN"))
+            except Blocked:
+                raise   # 滥用封禁：中止本轮（main 记 3），不按「中文名失败」降级硬扛
             except HttpError as exc:
                 log(f"[warn] 中文名取失败，下次运行再补：{entry.get('title')}（{exc}）")
                 title_errors += 1
@@ -1294,9 +1228,7 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
         f"（失败 {title_errors} 个，Steam 请求 {steam.calls} 次）；"
         f"目录还差 {backlog} 条。未产出报表。")
 
-    errors = [e for e in client.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
-    errors += [e for e in steam.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
-    errors += [e for e in browse.events if e.get("kind") in ("429", "403", "soft_null", "5xx", "network")]
+    errors = transport_errors(client, steam, browse)
     state.add_run_log(
         {
             "run_at": now.isoformat(timespec="seconds"),
@@ -1378,16 +1310,9 @@ def run_probe(cfg: dict, *, state: State | None = None,
         steam = build_probe_steam_client(cfg)
 
     # ---- 抽样：按 game_id 取最近一次出现的折扣，要求缓存里有 appid + 好评率 ----
-    latest: dict[str, dict] = {}
-    for entry in state.seen_deal.values():
-        gid = entry.get("game_id")
-        if not gid:
-            continue
-        prev = latest.get(gid)
-        if prev is None or (entry.get("last_seen_at") or "") > (prev.get("last_seen_at") or ""):
-            latest[gid] = entry
+    # 去重逻辑只有 latest_entries 一份（卡片 05）
     candidates = [
-        e for e in latest.values()
+        e for e in latest_entries(state)
         if state.has_appid(e["game_id"]) and (state.meta(e["game_id"]) or {}).get("reviews")
     ]
     candidates.sort(key=lambda e: e.get("last_seen_at") or "", reverse=True)

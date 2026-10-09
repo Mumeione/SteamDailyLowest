@@ -18,9 +18,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import requests  # noqa: E402
+
 from run import fetch_last_low_times  # noqa: E402
 from src import classify  # noqa: E402
-from src.itad import ItadClient  # noqa: E402
+from src.itad import ItadClient, ItadError  # noqa: E402
 from src.report import build_card  # noqa: E402
 from src.state import State  # noqa: E402
 
@@ -129,14 +131,29 @@ class FetchLastLowTimes(unittest.TestCase):
         self.assertEqual(fetch_last_low_times(client, self.state, [],
                                               {"country": "CN", "fetch_last_low_time": True}, NOW), 0)
 
-    def test_itad_error_swallowed(self):
-        class Boom:
-            def fetch_storelow(self, *a, **k):
-                from src.itad import ItadError
-                raise ItadError("挂了")
-        n = fetch_last_low_times(Boom(), self.state, [{"game_id": "x"}],
+    def test_transport_failure_wrapped_and_swallowed(self):
+        """传输层真实失败被包装成 ItadError，因而被 fetch_last_low_times 吞掉。
+
+        修前 transport 只抛底座 ``HttpError``，``except ItadError`` 从不由真实失败命中
+        —— 「失败不阻断本轮」的契约其实失效（一次网络打嗝就穿透到 run_daily 记退出码 5，
+        整轮完整渲染 + 快照全跳过）。这里直接打 ``ItadClient.request``（真传输 seam），
+        锁住「出口按宿主类型包装」这件事（架构检查卡片 01）。
+        """
+        class FailingSession:
+            def request(self, *a, **k):
+                raise requests.RequestException("boom")
+
+        client = ItadClient(
+            api_key="k",
+            limiter=SimpleNamespace(acquire=lambda: None, wait=lambda s: None,
+                                    slow_down=lambda: None, stats=lambda: {}),
+            session=FailingSession(), max_attempts=2, sleep=lambda s: None,
+        )
+        with self.assertRaises(ItadError):        # 出口包装：宿主类型，不是裸 HttpError
+            client.request("GET", "/games/history/v2")
+        n = fetch_last_low_times(client, self.state, [{"game_id": "x"}],
                                  {"country": "CN", "fetch_last_low_time": True}, NOW)
-        self.assertEqual(n, 0)  # 失败不阻断本轮
+        self.assertEqual(n, 0)                    # 失败不阻断本轮
 
 
 class BuildCardLastLowText(unittest.TestCase):

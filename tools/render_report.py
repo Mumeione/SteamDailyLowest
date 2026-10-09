@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,16 +115,11 @@ def graft_compare_from_cache(state, cfg: dict, entries: list[dict], fx: dict | N
     它是 `game_meta` 的字段、由 `merge_details` 在渲染时才合并进去（2026-10-07 踩过：
     直接用 `entry["appid"]` 结果一条都补不上）。
     """
-    countries = [c for c in (cfg.get("compare_countries") or []) if c]
     added = 0
     for entry in entries:
-        if entry.get("compare"):
-            continue                      # 已有真查结果的（上一次产物的回收）不动
-        # 估算公式收敛到 enrich.estimate_compare（2026-10-08）：生产 run.py 对
-        # 非真查板块用同一个函数补估算行，两处口径永远一致，这里只管遍历与计数。
-        est = enrich.estimate_compare(state, entry, countries, fx, appid=appid_of(entry))
-        if est:
-            entry["compare"] = est
+        # 「真查命中就回灌、否则估算」的判断只有一份（enrich.fill_compare，卡片 05）；
+        # 本工具不传 truth_by_appid —— 它零网络请求，全部走缓存估算。
+        if enrich.fill_compare(state, cfg, entry, fx, appid=appid_of(entry)):
             added += 1
     if added:
         log(f"[info] 比价行由 cache.json 的区域原价推算补上：{added} 条"
@@ -147,6 +142,33 @@ def resolve_output_dir(cfg: dict) -> Path:
     return out_dir
 
 
+def latest_state_date(state: State, tz):
+    """状态库里**最新一条**折扣数据所属的日期（本地 data 与今天脱节时用它）。
+
+    存在的理由（2026-10-09，架构检查卡片 03）：CI 要跑 check_payload / 前端冒烟，
+    就必须先零网络产出一份报表，而 CI 拉到的 data 分支最新一天未必是「今天」
+    （跑得晚、时区、Actions 排队都会差一天）—— 写死一个日期会随天数腐烂。
+    `--at latest` 让「参照哪一天」由数据自己决定。
+
+    取 ``start``（折扣开始日）与 ``first_seen_at`` 的较大者：两条主口径
+    （:func:`pick_today_from_state` 的 timestamp_is_today 与首见兜底）都覆盖到。
+    """
+    newest = None
+    for entry in state.seen_deal.values():
+        start = classify.parse_time(entry.get("start"), tz)
+        if start is not None:
+            day = start.astimezone(tz).date()
+            newest = day if newest is None or day > newest else newest
+        first = (entry.get("first_seen_at") or "")[:10]
+        if first:
+            try:
+                day = datetime.strptime(first, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            newest = day if newest is None or day > newest else newest
+    return newest
+
+
 
 
 
@@ -159,9 +181,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="全本地只重渲染测试报表（零网络请求）")
     parser.add_argument("--config", default=None, help="配置文件路径（默认 config.json）")
     parser.add_argument(
-        "--at", default=None, metavar="YYYY-MM-DD",
+        "--at", default=None, metavar="YYYY-MM-DD|latest",
         help="把「今天」固定成某一天，用那天落盘的数据重建当日新增。"
              "本地 data/ 不是当天时必用（否则 0 候选、退出码 1）——"
+             "传 latest 则取状态库里最新一条数据所属的日期（CI 用，不写死日期）；"
              "报表是测试产物，不影响线上。",
     )
     args = parser.parse_args(argv)
@@ -173,19 +196,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     tz = classify.zone(cfg["timezone"])
-    if args.at:
+    # 状态库先加载：--at latest 要从它身上取参照日期
+    state = State(resolve_path(cfg, "state_path"), tz=tz).load()
+    if args.at == "latest":
+        day = latest_state_date(state, tz)
+        if day is None:
+            log("[错误] 状态库里没有任何带时间的条目，--at latest 取不到参照日期")
+            return 1
+        # 取那天 20:00（晚于主跑 03:14 CST，确保那天的条目都已入库）
+        now = datetime.combine(day, time(20, 0), tzinfo=tz)
+        log(f"参照日期取状态库最新一条数据：{day.isoformat()}（--at latest）")
+    elif args.at:
         try:
             # 取当天 20:00（晚于主跑 03:14 CST，确保那天的条目都已入库）
             now = datetime.strptime(args.at, "%Y-%m-%d").replace(hour=20, tzinfo=tz)
         except ValueError:
-            log(f"[错误] --at 需要 YYYY-MM-DD 格式，收到：{args.at}")
+            log(f"[错误] --at 需要 YYYY-MM-DD 或 latest，收到：{args.at}")
             return 2
     else:
         now = datetime.now(tz)
     today = now.date()
     log(f"参照时刻：{now.isoformat(timespec='minutes')}")
 
-    state = State(resolve_path(cfg, "state_path"), tz=tz).load()
     candidates = pick_today_from_state(state, tz, today)
     upcoming = pick_upcoming_from_state(state, now, cfg)
     log(f"当日新增候选（从状态库重建）：{len(candidates)} 条；"

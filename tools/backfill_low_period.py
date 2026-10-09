@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import classify  # noqa: E402
 from src.config import load_config  # noqa: E402
-from src.httpclient import HttpError  # noqa: E402
+from src.httpclient import Blocked, HttpError  # noqa: E402
 from src.itad import build_client  # noqa: E402
 from src.state import State  # noqa: E402
 
@@ -49,9 +49,10 @@ DEFAULT_SINCE_DAYS = 800
 def low_period_starts(rows: list[dict]) -> list[str]:
     """从 ``history/v2`` 价格流水推「史低期开始」的时刻（升序）。
 
-    按时间升序走一遍，价格 **≤ 此前历史最低** 的变更即一段史低期的开始
-    （``<`` 是新史低、``==`` 是平史低，两者都算「在史低」）。``deal`` / ``price``
-    缺失的行跳过。
+    只做**取数**（把 ``history/v2`` 的嵌套结构拍平成 ``[(ts, price)]``）；
+    判定本身在 :func:`src.classify.low_period_starts` —— 与日常增量那条时间线
+    共用同一份规则（架构检查卡片 02：从前这里另写了一套，两边互不知情）。
+    ``deal`` / ``price`` 缺失的行由那边自动跳过。
     """
     points: list[tuple[str, int]] = []
     for row in rows or []:
@@ -59,60 +60,30 @@ def low_period_starts(rows: list[dict]) -> list[str]:
         price = ((row.get("deal") or {}).get("price") or {}).get("amountInt")
         if ts and price is not None:
             points.append((ts, price))
-    points.sort(key=lambda p: p[0])
-    starts: list[str] = []
-    seen_min: int | None = None
-    for ts, price in points:
-        if seen_min is None or price <= seen_min:
-            starts.append(ts)
-            seen_min = price
-    return starts
-
-
-def _parse(ts: str | None, tz):
-    return classify.parse_time(ts, tz) if ts else None
+    return classify.low_period_starts(points)
 
 
 def derive_low_period(rows: list[dict], existing_cur: str | None, tz) -> tuple[str, str] | None:
     """推 ``(cur, prev)``；没有「上一次史低期」时返回 ``None``。
 
-    时间线 = 流水里的史低期 ＋ 记忆里已有的 ``cur``（**同日去重，保留记忆的拼写**）。
-    ``cur`` = 时间线最后一段、``prev`` = 它前一段。这样记忆里的 cur 比流水还新时
-    （日常刚入账的周期 ITAD 还没记），prev 自然取流水里最新那段 —— 正是「上一次」。
+    时间线合并规则同样复用 :func:`src.classify.low_period_pair`（唯一出处）。
     """
-    starts = low_period_starts(rows)
-    cur_at = _parse(existing_cur, tz)
-    if cur_at is not None:
-        same_day = [t for t in starts if (_parse(t, tz) or cur_at).date() == cur_at.date()]
-        if same_day:
-            starts = [existing_cur if t in same_day else t for t in starts]
-        else:
-            starts.append(existing_cur)
-    timeline = sorted(
-        ((_parse(t, tz), t) for t in starts),
-        key=lambda p: p[0] or datetime.min.replace(tzinfo=timezone.utc),
-    )
-    timeline = [(d, t) for d, t in timeline if d is not None]
-    if len(timeline) < 2:
-        return None
-    return timeline[-1][1], timeline[-2][1]
+    return classify.low_period_pair(low_period_starts(rows), existing_cur, tz)
 
 
 def select_targets(state: State, cfg: dict) -> list[str]:
     """回填目标：seen_deal 里**能进列表**的史低条目（按 game_id 去重、稳定排序）。
 
-    判据复用唯一出处 :func:`classify.is_shown`。⚠️ 本脚本按 ``tier_of`` 判档，而
-    ``tier_of`` 只给 quality/notable/cold/other（``pending`` 是**抓取状态**，不由
-    它给）—— 所以实际选中的是 quality/notable；「详情待补」的条目等详情到位、
-    下一轮再补（脚本可重跑，自愈）。
+    判据复用唯一出处 :func:`classify.is_shown_meta`（2026-10-09 卡片 07：从
+    ``is_shown(tier_of(...))`` 收敛而来）—— 它只回答「按**已抓到的评价数据**
+    够不够格」，**不**把「没抓过详情」当 PENDING 放行：``pending`` 是抓取状态而不是
+    档位，放行等于给永远不展示的冷门条目白花配额。所以实际选中的是 quality/notable；
+    「详情待补」的条目等详情到位、下一轮再补（脚本可重跑，自愈）。
     """
     gids: set[str] = set()
     for entry in state.seen_deal.values():
         gid = entry.get("game_id")
-        if not gid:
-            continue
-        reviews = (state.meta(gid) or {}).get("reviews")
-        if classify.is_shown(classify.tier_of(reviews, cfg)):
+        if gid and classify.is_shown_meta(state.meta(gid), cfg):
             gids.add(gid)
     return sorted(gids)
 
@@ -141,8 +112,8 @@ def backfill(state: State, fetch, cfg: dict, tz, limit: int = 0) -> dict[str, in
             stats["no_prev"] += 1                 # 推不出上一次（该游戏首次史低）
             continue
         cur_ts, prev_ts = resolved
-        meta["low_period"] = {"cur": cur_ts, "prev": prev_ts}
-        state.game_meta[gid] = meta
+        # 受控写口（不直写 game_meta，见 State.set_low_period 的注释）
+        state.set_low_period(gid, cur_ts, prev_ts)
         stats["filled"] += 1
     return stats
 
@@ -179,14 +150,22 @@ def main() -> int:
     def fetch(game_id: str) -> list[dict]:
         try:
             return client.fetch_price_history(game_id, country, since=since)
-        except HttpError as exc:                  # 单条失败不阻断整轮（含 ItadError 子类）
+        except Blocked:                           # 滥用封禁：绝不降级硬扛，中止整轮
+            raise
+        except HttpError as exc:                  # 单条失败不阻断整轮（ItadError 是它的子类）
             print(f"[warn] {game_id} 价格流水抓取失败，跳过：{exc}", file=sys.stderr)
             return []
 
     print(f"回填目标（能进列表）：{targets} 个｜since={since}｜国家={country}"
           f"｜限流={cfg['itad_rate_limit']}@≥{cfg['itad_min_interval']}s"
           + (f"｜limit={args.limit}" if args.limit else ""))
-    stats = backfill(state, fetch, cfg, tz, limit=args.limit)
+    try:
+        stats = backfill(state, fetch, cfg, tz, limit=args.limit)
+    except Blocked as exc:
+        # 滥用封禁：与 run.py 同口径（退出码 3）。不写盘 —— 回填是幂等的，下次重跑即可。
+        print(f"[中止] {exc}", file=sys.stderr)
+        print("      封禁期间不再请求；请先排查（不要轮换 IP）。", file=sys.stderr)
+        return 3
     print(f"抓取 {stats['fetched']} 个游戏的价格流水")
     print(f"回填 low_period：{stats['filled']} 个"
           f"（已有 prev 跳过 {stats['skipped_complete']}；推不出上一次 {stats['no_prev']}）")

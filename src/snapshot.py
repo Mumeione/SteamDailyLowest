@@ -15,13 +15,12 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
 from . import classify
+from .config import DEFAULTS
+from .state import atomic_write_json
 
 SNAPSHOT_VERSION = 3
 
@@ -88,7 +87,7 @@ def build_snapshot(entries: list[dict], now: datetime, cfg: dict,
     与报表卡片（``report.build_card``）用的是同一个函数、同一份依据，不存在第二套口径。
     时区按计划书取 ``classify.zone(cfg["timezone"])``，``now`` 失去 tzinfo 时也能兜住。
     """
-    tz = now.tzinfo or classify.zone(cfg.get("timezone") or "Asia/Shanghai")
+    tz = now.tzinfo or classify.zone(cfg.get("timezone") or DEFAULTS["timezone"])
     items = []
     for entry in entries:
         item = {key: entry.get(key) for key in KEEP}
@@ -107,7 +106,7 @@ def build_snapshot(entries: list[dict], now: datetime, cfg: dict,
     return {
         "version": SNAPSHOT_VERSION,
         "generated_at": now.isoformat(timespec="seconds"),
-        "window_hours": int(cfg.get("upcoming_expiry_hours", 48)),
+        "window_hours": int(cfg.get("upcoming_expiry_hours", DEFAULTS["upcoming_expiry_hours"])),
         "fx": build_fx(fx),
         "count": len(items),
         "items": items,
@@ -116,21 +115,11 @@ def build_snapshot(entries: list[dict], now: datetime, cfg: dict,
 
 def write_snapshot(path: str | Path, entries: list[dict], now: datetime, cfg: dict,
                    fx: dict | None = None) -> int:
-    """原子写出快照，返回条目数。"""
+    """原子写出快照，返回条目数。
+
+    原子写用 :func:`src.state.atomic_write_json`（同一份实现，卡片 05）——
+    从前这里手抄了一遍写临时文件 + fsync + replace。
+    """
     path = Path(path)
-    payload = json.dumps(
-        build_snapshot(entries, now, cfg, fx), ensure_ascii=False, separators=(",", ":")
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-        raise
+    atomic_write_json(path, build_snapshot(entries, now, cfg, fx))
     return len(entries)

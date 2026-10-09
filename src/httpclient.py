@@ -103,6 +103,17 @@ class BaseHttpClient:
     #: 子类覆盖成各自 API 的根地址
     BASE = ""
 
+    #: 宿主异常类钩子：**传输出口只抛这两种**，子类覆盖成各自的宿主类型
+    #: （``ItadError`` / ``SteamError`` / ``SteamBrowseError``）。
+    #:
+    #: 为什么要有这一层：``request`` 是唯一的传输 seam，但早前它只抛底座自己的
+    #: :class:`HttpError` / :class:`Blocked` —— 于是调用方写下的
+    #: ``except ItadError``（意图＝「ITAD 失败不阻断本轮」）永远接不住真实失败，
+    #: 请求一挂就穿透到 main 记退出码 5，整轮完整渲染 + 快照全跳过。
+    #: 分类意图必须在这一处生效，而不是散在调用点当摆设。
+    error_cls: type[HttpError] = HttpError
+    blocked_cls: type[Blocked] = Blocked
+
     def __init__(
         self,
         limiter,
@@ -189,7 +200,7 @@ class BaseHttpClient:
                 self.network_errors += 1
                 self._record("network", path, error=str(exc), attempt=attempt)
                 if attempt >= self.max_attempts:
-                    raise HttpError(f"网络异常，重试 {attempt} 次仍失败：{exc}") from exc
+                    raise self.error_cls(f"网络异常，重试 {attempt} 次仍失败：{exc}") from exc
                 self._backoff_wait(min(2 ** attempt + random.uniform(0, 1), 60))
                 continue
 
@@ -204,7 +215,7 @@ class BaseHttpClient:
                     self.rate_limit_events += 1
                     self._record("soft_null", path, attempt=attempt)
                     if attempt >= self.max_attempts:
-                        raise HttpError(f"连续软限流（body=null），放弃：{path}")
+                        raise self.error_cls(f"连续软限流（body=null），放弃：{path}")
                     self.limiter.slow_down()
                     self._backoff_wait(backoff)
                     backoff = min(backoff * 2, 300)
@@ -214,7 +225,7 @@ class BaseHttpClient:
                 except ValueError as exc:
                     self._record("bad_json", path, attempt=attempt, body=text[:200])
                     if attempt >= self.max_attempts:
-                        raise HttpError(f"响应不是 JSON：{path}") from exc
+                        raise self.error_cls(f"响应不是 JSON：{path}") from exc
                     self._backoff_wait(backoff)
                     backoff = min(backoff * 2, 300)
                     continue
@@ -232,7 +243,7 @@ class BaseHttpClient:
                 wait = retry_after if retry_after is not None else backoff
                 self._record("429", path, attempt=attempt, wait=round(wait, 1))
                 if attempt >= self.max_attempts:
-                    raise HttpError(f"429 限流，重试 {attempt} 次仍失败：{path}")
+                    raise self.error_cls(f"429 限流，重试 {attempt} 次仍失败：{path}")
                 self._backoff_wait(wait)
                 backoff = min(backoff * 2, 300)
                 continue
@@ -242,9 +253,9 @@ class BaseHttpClient:
                 self.rate_limit_events += 1
                 self._record("403", path, attempt=attempt, consecutive=self._consecutive_403)
                 if self._consecutive_403 >= 2:
-                    raise Blocked(f"连续收到 403（滥用封禁），中止本轮并告警：{path}")
+                    raise self.blocked_cls(f"连续收到 403（滥用封禁），中止本轮并告警：{path}")
                 if attempt >= self.max_attempts:
-                    raise HttpError(f"403 封禁：{path}")
+                    raise self.error_cls(f"403 封禁：{path}")
                 self.limiter.slow_down()
                 self._backoff_wait(300)  # 社区做法：等 5 分钟
                 continue
@@ -254,11 +265,11 @@ class BaseHttpClient:
                 self.server_errors += 1
                 self._record("5xx", path, status=status, attempt=attempt)
                 if attempt >= self.max_attempts:
-                    raise HttpError(f"HTTP {status}，重试 {attempt} 次仍失败：{path}")
+                    raise self.error_cls(f"HTTP {status}，重试 {attempt} 次仍失败：{path}")
                 self._backoff_wait(min(2 ** attempt + random.uniform(0, 1), 60))
                 continue
 
-            raise HttpError(f"HTTP {status}：{path}")
+            raise self.error_cls(f"HTTP {status}：{path}")
 
     def stats(self) -> dict:
         return {

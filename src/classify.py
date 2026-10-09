@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone, tzinfo
 
+#: 默认配置的单表（2026-10-09 收编）：函数签名的默认值 / 读点兜底一律从这里取，
+#: 不再各写一个字面量 —— 否则「改一个 48 要动 5 处」（架构检查卡片 06）。
+from .config import DEFAULTS
+
 try:  # Windows 上若无 IANA 时区库则回落到固定 +08:00（Asia/Shanghai 无夏令时）
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover
@@ -329,9 +333,9 @@ def tier_of(reviews: dict | None, cfg: dict) -> str:
     count = int(reviews.get("count") or 0)
     ratio = float(reviews["score"]) / 100.0
 
-    min_count = int(cfg.get("min_review_count", 100))
-    notable_count = int(cfg.get("notable_review_count", 10000))
-    min_ratio = float(cfg.get("min_positive_ratio", 0.7))
+    min_count = int(cfg.get("min_review_count", DEFAULTS["min_review_count"]))
+    notable_count = int(cfg.get("notable_review_count", DEFAULTS["notable_review_count"]))
+    min_ratio = float(cfg.get("min_positive_ratio", DEFAULTS["min_positive_ratio"]))
     absolute_min = cfg.get("absolute_min_positive_ratio")
 
     if count < min_count:
@@ -350,10 +354,47 @@ def is_shown(tier: str) -> bool:
     return tier in (TIER_QUALITY, TIER_NOTABLE, TIER_PENDING)
 
 
+def merge_tier(meta: dict | None, cfg: dict) -> tuple[str, int | None, dict | None]:
+    """由 ``game_meta`` 条目决定**进列表的档位**与卡片要用的 ``appid`` / ``reviews``。
+
+    返回 ``(tier, appid, reviews)``。这条判定原先长在 ``run.merge_details`` 里 ——
+    orchestrator 里长着「进列表」语义的另一半，每个新消费方（回填脚本等）都得
+    重新理解一遍边界（架构检查卡片 07）。现在只有这一份：
+
+    · **unlisted**（决策 17）→ :data:`TIER_COLD`：它的动态数据已被主动丢弃，
+      归 :data:`TIER_PENDING` 会让它**以展示档重新进列表**（PENDING 是展示档）；
+    · 没抓过详情（无 meta / 无 ``fetched_at``）→ :data:`TIER_PENDING`（下轮自动补）；
+    · 其余按 :func:`tier_of` 判档。
+
+    ⚠️ unlisted 必须排在「没抓过详情」**前面**判：unlisted 条目的动态数据已被删，
+    ``fetched_at`` 可能为空 —— 顺序反了就会把它错归 PENDING。
+    """
+    if meta and meta.get("unlisted"):
+        return TIER_COLD, meta.get("appid"), None
+    if not meta or not meta.get("fetched_at"):
+        return TIER_PENDING, None, None
+    reviews = meta.get("reviews")
+    return tier_of(reviews, cfg), meta.get("appid"), reviews
+
+
+def is_shown_meta(meta: dict | None, cfg: dict) -> bool:
+    """``game_meta`` 条目**按已知评价数据**是否够格进列表（§3.5）。
+
+    与 :func:`merge_tier` 的区别是**不看抓取状态**：这里只回答「按已抓到的评价数
+    它够不够格」，:data:`TIER_PENDING`（这一轮没抓到）不是档位而是抓取状态，
+    所以**不能**把「没抓过详情」当 PENDING 放行 —— 那会让回填给永远不展示的
+    冷门条目白花配额。
+
+    调用方：``run.count_backlog`` 与 ``tools/backfill_low_period.select_targets``
+    （原先两边各写一遍 ``is_shown(tier_of(...))``，口径靠注释维系）。
+    """
+    return is_shown(tier_of((meta or {}).get("reviews"), cfg))
+
+
 # ----------------------------------------------------------------------
 # 视图窗口（§4.6）—— 第一版只上线「当日新增」，其余已按定义实现备用
 # ----------------------------------------------------------------------
-def week_window(now: datetime, days: int = 14) -> tuple[datetime, datetime]:
+def week_window(now: datetime, days: int = DEFAULTS["week_window_days"]) -> tuple[datetime, datetime]:
     """「本周」窗口：**本周一 00:00:00 ~ 下周日 23:59:59**（§4.6）。
 
     ⚠️ 这里**必须按自然周对齐**，不能写成「now 往前推 14 天」的滚动窗口 ——
@@ -367,7 +408,7 @@ def week_window(now: datetime, days: int = 14) -> tuple[datetime, datetime]:
     return monday, monday + timedelta(days=days) - timedelta(seconds=1)
 
 
-def in_week(start: str | None, now: datetime, days: int = 14) -> bool:
+def in_week(start: str | None, now: datetime, days: int = DEFAULTS["week_window_days"]) -> bool:
     """折扣**开始时间**是否落在「本周(14天)」窗口内（§4.6）。"""
     dt = parse_time(start, now.tzinfo)
     if dt is None:
@@ -381,7 +422,8 @@ def is_active(expiry: str | None, now: datetime) -> bool:
     return dt is not None and dt > now
 
 
-def is_upcoming(expiry: str | None, now: datetime, hours: int = 48) -> bool:
+def is_upcoming(expiry: str | None, now: datetime,
+                hours: int = DEFAULTS["upcoming_expiry_hours"]) -> bool:
     dt = parse_time(expiry, now.tzinfo)
     if dt is None:
         return False
@@ -399,6 +441,177 @@ def is_expired(expiry: str | None, now: datetime) -> bool:
 VIEW_KEYS = ("new_today", "week", "active", "upcoming")
 
 
+# ----------------------------------------------------------------------
+# 详情刷新口径（S6 决策 16 / 17）—— 「要不要给这个条目发详情请求」的领域判定
+# ----------------------------------------------------------------------
+# 这四个原先长在 run.py（orchestrator）里，每个新消费方都得回 orchestrator 里
+# 找一遍口径（架构检查卡片 07）。它们**不自己做 IO**，需要状态库时由调用方把
+# ``state`` 传进来（鸭子类型：只需 unlisted / dyn / detail_recently_failed 三个方法）。
+def discount_active(entry: dict, now: datetime) -> bool:
+    """条目是否折扣活跃（决策 16：``start ≤ now ≤ expiry``）。
+
+    边界解析不了的按**活跃**处理 —— 宁多刷不漏刷；非折扣期一律不刷新
+    （用户 2026-10-05 裁决：不进列表就没有消费方）。
+    """
+    expiry = parse_time(entry.get("expiry"), now.tzinfo)
+    if expiry is not None and expiry < now:
+        return False
+    start = parse_time(entry.get("start"), now.tzinfo)
+    if start is not None and start > now:
+        return False
+    return True
+
+
+def refresh_ttl_days(entry: dict, state, cfg: dict, now: datetime) -> int:
+    """折扣感知的刷新 TTL（决策 16，四档）：
+
+    新游（release_date ≤ ``new_game_days``）1 天 → 到期窗口（expiry −
+    ``upcoming_expiry_hours`` 起）1 天 → 折扣期普通条目 ``discount_refresh_days``
+    （3 天）。调用方保证条目折扣活跃（非折扣期根本不进派生）。
+    game_id 从 ``entry`` 派生（review-s6 P2 Data Clumps：它总是结伴出现，
+    不该单独占一个参数）。
+    """
+    ng_days = int(cfg.get("new_game_days", DEFAULTS["new_game_days"]) or 0)
+    meta = state.meta(entry.get("game_id")) or {}
+    rd = meta.get("release_date")
+    if ng_days > 0 and rd:
+        try:
+            released = datetime.fromtimestamp(int(rd), tz=now.tzinfo)
+            if abs((now - released).total_seconds()) <= ng_days * 86400:
+                return int(cfg.get("new_game_refresh_days", DEFAULTS["new_game_refresh_days"]))
+        except (TypeError, ValueError, OSError, OverflowError):
+            pass
+    expiry = parse_time(entry.get("expiry"), now.tzinfo)
+    if expiry is not None:
+        window = timedelta(hours=int(cfg.get("upcoming_expiry_hours",
+                                             DEFAULTS["upcoming_expiry_hours"])))
+        if now >= expiry - window:
+            return int(cfg.get("expiry_refresh_days", DEFAULTS["expiry_refresh_days"]))
+    return int(cfg.get("discount_refresh_days", DEFAULTS["discount_refresh_days"]))
+
+
+def unlisted_frozen(entry: dict, mark: dict | None) -> bool:
+    """unlisted 冻结判定（决策 17）：标记存在且仍是**同一折扣期**（start 一致）。
+
+    :func:`entry_needs_detail` 与 ``run.detail_targets`` 的 backlog 循环共用这一份
+    —— 「同折扣期内不重抓，``start`` 变了才重判」这句口径只能有一处实现。
+    """
+    return mark is not None and (entry.get("start") or "") == (mark.get("start") or "")
+
+
+def entry_needs_detail(entry: dict, state, cfg: dict, now: datetime,
+                       *, is_new: bool = False) -> bool:
+    """单条目级「要不要发详情请求」（S6 折扣感知口径，detail_targets 的原子判定）。
+
+    - unlisted 冻结（同一折扣期内，``start`` 与标记一致）→ False；
+    - 非当日新增且**非折扣活跃** → False（非折扣期不刷新）；
+    - 冷却期内失败过 → False（**当日新增不冷却**，报表核心每轮重试）；
+    - 其余按动态数据年龄 vs :func:`refresh_ttl_days` 判定（没抓过 → True）。
+    """
+    game_id = entry.get("game_id")
+    if not game_id:
+        return False
+    mark = state.unlisted(game_id)
+    if unlisted_frozen(entry, mark):
+        return False   # 同一折扣期内冻结（决策 17）
+    if not is_new:
+        if not discount_active(entry, now):
+            return False
+        if state.detail_recently_failed(
+                game_id, now, int(cfg.get("detail_retry_cooldown_days",
+                                          DEFAULTS["detail_retry_cooldown_days"]))):
+            return False
+    dyn = state.dyn(game_id)
+    if not dyn or dyn.get("fetched_at") is None:
+        return True
+    fetched = parse_time(dyn.get("fetched_at"), now.tzinfo)
+    if fetched is None:
+        return True
+    ttl_days = refresh_ttl_days(entry, state, cfg, now)
+    return (now - fetched) >= timedelta(days=ttl_days)
+
+
+# ----------------------------------------------------------------------
+# 史低期记忆（§3.6 扩展，2026-10-09）——
+# **「时刻 t 是否开启一段史低期」的判定唯一出处**（架构检查卡片 02）。
+#
+# 两条时间线各自喂进来，但判定与合并规则只有这一份：
+#   · 日常增量 —— :meth:`src.state.State.record_low_period` 每次入账一个 start；
+#   · 一次性回填 —— ``tools/backfill_low_period`` 从 ITAD ``/games/history/v2``
+#     的完整流水推（:func:`low_period_starts`）。
+# 从前这两条路各写一套、互不知情（也没有交叉测试），一改概念就要在 5 个 module
+# 里同步 —— 现在只剩这两个 adapter，判定在 classify。
+# ----------------------------------------------------------------------
+#: 时间戳解析不了时排序用的「最早」占位（aware，避免 naive/aware 混比）
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def low_period_starts(points: list[tuple[str, int]]) -> list[str]:
+    """从「价格变更流水」推史低期的开始时刻（升序）。
+
+    ``points`` = ``[(timestamp, price_amount_int), ...]``（ITAD ``history/v2`` 的
+    形态，由调用方拍平）。按**真实时刻**升序走一遍，价格 **≤ 此前历史最低** 的
+    变更即一段史低期的开始（``<`` 是新史低、``==`` 是平史低，两者都算「在史低」）；
+    价格回升不算。解析不了时间戳的行直接丢掉（宁缺勿猜）。
+    """
+    ordered = sorted(
+        ((parse_time(ts), ts, price) for ts, price in points if ts and price is not None),
+        key=lambda p: p[0] or _EPOCH,
+    )
+    starts: list[str] = []
+    seen_min: int | None = None
+    for dt, ts, price in ordered:
+        if dt is None:
+            continue
+        if seen_min is None or price <= seen_min:
+            starts.append(ts)
+            seen_min = price
+    return starts
+
+
+def roll_low_period(cur: str | None, new_start: str | None,
+                    tz: tzinfo | None = None) -> str | None:
+    """增量口径：新入账一个史低期开始 —— 返回**新的 cur**；不更新时返回 ``None``。
+
+    同 start（重复入账 / 折扣期被 Steam 延长）不更新；乱序写入只认**更晚**的开始
+    时间；解析不了不更新。调用方拿到新值时才滚动 prev（``prev = 旧 cur``）——
+    首次史低（旧 cur 为空）会得到 ``prev = None``，该卡维持「本次新史低」文案。
+    """
+    if not new_start or cur == new_start:
+        return None
+    parsed_new = parse_time(new_start, tz)
+    parsed_cur = parse_time(cur, tz) if cur else None
+    if parsed_new is None or (parsed_cur is not None and parsed_new <= parsed_cur):
+        return None
+    return new_start
+
+
+def low_period_pair(starts: list[str], cur: str | None = None,
+                    tz: tzinfo | None = None) -> tuple[str, str] | None:
+    """把一条史低期时间线合成 ``(cur, prev)``；不足两段返回 ``None``。
+
+    时间线 = 流水推出的 ``starts`` ＋ 记忆里已有的 ``cur``（**同日去重、保留记忆的
+    拼写**）。``cur`` = 时间线最后一段、``prev`` = 它前一段 —— 于是「记忆里的 cur
+    比流水还新」（日常刚入账、ITAD 还没记进流水）时，prev 自然取流水最新那段，
+    正是「上一次史低期」。
+    """
+    timeline = [t for t in starts if parse_time(t, tz) is not None]
+    cur_dt = parse_time(cur, tz) if cur else None
+    if cur_dt is not None:
+        same_day = [t for t in timeline
+                    if (parse_time(t, tz) or cur_dt).date() == cur_dt.date()]
+        if same_day:
+            timeline = [cur if t in same_day else t for t in timeline]
+        else:
+            timeline.append(cur)
+    ordered = sorted(((parse_time(t, tz), t) for t in timeline),
+                     key=lambda p: p[0] or _EPOCH)
+    ordered = [(d, t) for d, t in ordered if d is not None]
+    if len(ordered) < 2:
+        return None
+    return ordered[-1][1], ordered[-2][1]
+
+
 def in_view(view: str, deal: dict, now: datetime, cfg: dict) -> bool:
     """判断一条史低是否落在某个视图里（§4.6 的唯一入口）。
 
@@ -410,9 +623,11 @@ def in_view(view: str, deal: dict, now: datetime, cfg: dict) -> bool:
     if view == "new_today":
         return timestamp_is_today(deal, now.date(), now.tzinfo)
     if view == "week":
-        return in_week(deal.get("start"), now, int(cfg.get("week_window_days", 14)))
+        return in_week(deal.get("start"), now,
+                       int(cfg.get("week_window_days", DEFAULTS["week_window_days"])))
     if view == "active":
         return is_active(deal.get("expiry"), now)
     if view == "upcoming":
-        return is_upcoming(deal.get("expiry"), now, int(cfg.get("upcoming_expiry_hours", 48)))
+        return is_upcoming(deal.get("expiry"), now,
+                           int(cfg.get("upcoming_expiry_hours", DEFAULTS["upcoming_expiry_hours"])))
     raise ValueError(f"未知视图 {view!r}，可选 {VIEW_KEYS}")

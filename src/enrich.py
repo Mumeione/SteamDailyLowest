@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Callable
 
 from . import fx as fx_module
-from .httpclient import HttpError
+from .httpclient import Blocked, HttpError
 from .steam import SteamClient
 
 #: 比价地区的显示名（§7.2）。区域已收敛为 ua+in（config `compare_countries`）；
@@ -90,6 +90,8 @@ def enrich_steam(
             continue
         try:
             info = client.info(appid, cc=cfg.get("country", "CN"))
+        except Blocked:
+            raise                 # 滥用封禁：上抛中止本轮，绝不能当「单条失败」继续打
         except HttpError as exc:
             log(f"[warn] 中文名取失败：{entry.get('title')}（{exc}）")
             facts["errors"] += 1
@@ -117,6 +119,8 @@ def enrich_steam(
     for cc in countries:
         try:
             prices = client.prices(appids, cc)
+        except Blocked:
+            raise                 # 滥用封禁：上抛中止本轮（与中文名路径同口径）
         except HttpError as exc:
             log(f"[warn] 跨区价格取失败（{cc}）：{exc}，该区本轮缺行，下轮自愈")
             facts["errors"] += 1
@@ -181,6 +185,38 @@ def assemble_rows(raw_rows: list[dict], entry: dict, fx: dict | None) -> list[di
             "diff_pct": diff,
         })
     return rows
+
+
+def fill_compare(state, cfg: dict, entry: dict, fx: dict | None, *,
+                 truth_by_appid: dict | None = None,
+                 appid: int | None = None) -> bool:
+    """给**一条** entry 补 ``entry["compare"]``；返回是否**由估算**补上。
+
+    真查结果（``truth_by_appid``：appid → 展示行）命中就回灌；没命中（或没传真查
+    结果）就用「外区原价缓存 × 国区折扣比例」估算（:func:`estimate_compare`）。
+    条目已有 ``compare`` 或补不出任何区域时不动、返回 False。
+
+    **这是「估算谁吃」的唯一出处**（2026-10-09 架构检查卡片 05）：``run.render_pass``
+    与 ``tools/render_report`` 的本地预览从前各写一遍遍历，差别只在「真查结果从哪来」
+    —— 线上是本轮 enrich 的结果，本地预览不发任何网络请求所以**完全没有**（连真查
+    覆盖的条目也用缓存估算，好让预览完全离线可看）。差异点做成参数，别在调用点
+    再抄一遍判断。
+
+    ``appid``：``seen_deal`` 批次的条目没有 appid（它在 ``game_meta`` 里），由调用方
+    用 ``state.meta(...)`` 解析后传入（同 :func:`estimate_compare` 的教训）。
+    """
+    if entry.get("compare"):
+        return False
+    resolved = appid or entry.get("appid")
+    if truth_by_appid and resolved and truth_by_appid.get(resolved):
+        entry["compare"] = truth_by_appid[resolved]
+        return False
+    countries = [c for c in (cfg.get("compare_countries") or []) if c]
+    est = estimate_compare(state, entry, countries, fx, appid=resolved)
+    if est:
+        entry["compare"] = est
+        return True
+    return False
 
 
 def estimate_compare(state, entry: dict, countries: list[str], fx: dict | None,

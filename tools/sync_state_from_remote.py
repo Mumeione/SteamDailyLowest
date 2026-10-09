@@ -25,12 +25,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.state import atomic_write_text  # noqa: E402
 
 #: 远端 data 分支上的四份状态文件（都在 ``data/`` 下）。
 #: fx_cache.json 不在远端 —— 汇率本机现取即可，不同步。
@@ -60,11 +62,9 @@ def remote_names() -> set[str]:
 
 
 def replace_file(local: Path, raw: str) -> None:
-    """原子替换（写临时文件后 os.replace），中途断电不会留下半个 JSON。
+    """原子替换，中途断电不会留下半个 JSON（用 src.state 的同一份实现，卡片 05）。
     ⚠️ 不做备份 —— 本地不是数据源，旧数据没有保留价值（远端随时能给回最新）。"""
-    tmp = local.with_suffix(local.suffix + ".tmp")
-    tmp.write_text(raw, encoding="utf-8")
-    os.replace(tmp, local)
+    atomic_write_text(local, raw)
 
 
 def main() -> int:

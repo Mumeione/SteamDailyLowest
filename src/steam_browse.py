@@ -231,6 +231,8 @@ def _static_url_len(country_code: str, language: str) -> int:
 
 class SteamBrowseClient(BaseHttpClient):
     BASE = BASE
+    error_cls = SteamBrowseError
+    blocked_cls = SteamBrowseBlocked
 
     def __init__(self, limiter: RateLimiter, timeout: float = 25, pause: float = 0.0,
                  session=None, max_attempts: int = 4,

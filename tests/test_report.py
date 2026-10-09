@@ -97,88 +97,42 @@ class GroupSpecsTest(unittest.TestCase):
         # 不传 cfg 时退回 classify 的静态表，值也必须是中性词
         self.assertEqual(report.tier_labels()[classify.TIER_QUALITY], "好评达标")
 
-    def test_criteria_come_from_config(self):
-        specs = {s["key"]: s for s in report.group_specs(CFG)}
-        self.assertEqual(specs[classify.TIER_QUALITY]["criteria"],
-                         "好评率 ≥ 70% 且 评价数 ≥ 100")
-        self.assertIn("10,000", specs[classify.TIER_NOTABLE]["criteria"])
+    def test_specs_carry_only_key_and_label(self):
+        """2026-10-09（卡片 08）：`criteria` / `collapsed` 已删 —— 生产一个都不读。
 
-    def test_criteria_follow_threshold_changes(self):
-        """改阈值时文案必须跟着变，否则页面会撒谎。"""
-        cfg = dict(CFG, min_positive_ratio=0.8, min_review_count=250,
-                   notable_review_count=50000)
-        specs = {s["key"]: s for s in report.group_specs(cfg)}
-        self.assertEqual(specs[classify.TIER_QUALITY]["criteria"],
-                         "好评率 ≥ 80% 且 评价数 ≥ 250")
-        self.assertIn("50,000", specs[classify.TIER_NOTABLE]["criteria"])
+        阈值文案的唯一来源是「关于网站」页的 :func:`report.criteria_notes`。
+        """
+        for spec in report.group_specs(CFG):
+            self.assertEqual(set(spec), {"key", "label"}, spec)
 
-    def test_group_collapsed_defaults(self):
-        specs = {s["key"]: s for s in report.group_specs(CFG)}
-        self.assertFalse(specs[classify.TIER_QUALITY]["collapsed"])   # 主列表展开
-        self.assertTrue(specs[classify.TIER_NOTABLE]["collapsed"])
-        self.assertTrue(specs[classify.TIER_PENDING]["collapsed"])
 
-    def test_build_groups_carries_criteria_and_skips_empty(self):
+class PoolItemsTest(unittest.TestCase):
+    """「全部折扣」分片的池顺序（2026-10-09：由 build_groups 收敛成扁平列表）。"""
+
+    def test_group_order_follows_specs_and_skips_empty_tiers(self):
         items = [
             {"tier": classify.TIER_QUALITY, "cut": 90, "title": "A"},
-            {"tier": classify.TIER_COLD, "cut": 10, "title": "B"},
-        ]
-        groups = report.build_groups(items, CFG)
-        self.assertEqual([g["key"] for g in groups], [classify.TIER_QUALITY])
-        self.assertEqual(groups[0]["count"], 1)
-        self.assertEqual(groups[0]["criteria"], "好评率 ≥ 70% 且 评价数 ≥ 100")
-
-    def test_build_groups_notable_first(self):
-        """「高热度 · 口碑不一」排在页面最上面（默认收起），好评达标随后。"""
-        items = [
-            {"tier": classify.TIER_QUALITY, "cut": 90, "title": "A"},
+            {"tier": classify.TIER_COLD, "cut": 10, "title": "B"},     # 空白档位：不进池
             {"tier": classify.TIER_NOTABLE, "cut": 50, "title": "N"},
         ]
-        groups = report.build_groups(items, CFG)
-        self.assertEqual([g["key"] for g in groups],
-                         [classify.TIER_NOTABLE, classify.TIER_QUALITY])
-        self.assertTrue(groups[0]["collapsed"])
+        pool = report.pool_items(items, CFG)
+        self.assertEqual([i["title"] for i in pool], ["N", "A"])
 
-    def test_group_start_uses_the_majority_time(self):
-        """组内开始时刻不一致时按**多数派**上提。
-
-        2026-09-25 实测：quality 组 121 张卡里 113 张同是 01:20，另有 01:21/01:03/00:49/
-        00:15/06:16 共 8 张真的不同。原先「唯一才上提」会让整组退回 null，
-        前端就给每张卡插一行「折扣开始」，详情区从两栏变三栏。
-        """
-        items = (
-            [{"tier": classify.TIER_QUALITY, "cut": 90, "title": f"A{i}",
-              "start_text": "2026-09-25 01:20"} for i in range(5)]
-            + [{"tier": classify.TIER_QUALITY, "cut": 10, "title": "B",
-                "start_text": "2026-09-25 06:16"}]
-        )
-
-        groups = report.build_groups(items, CFG)
-
-        self.assertEqual(groups[0]["start_text"], "2026-09-25 01:20")
-
-    def test_group_start_none_when_no_card_has_a_time(self):
-        items = [{"tier": classify.TIER_QUALITY, "cut": 90, "title": "A"}]
-
-        groups = report.build_groups(items, CFG)
-
-        self.assertIsNone(groups[0]["start_text"])
-
-    def test_group_start_breaks_tie_toward_the_later_time(self):
-        """多数派并列时取较晚的那个 —— 组头不会显示得比实际更早。
-
-        比较的是 `%Y-%m-%d %H:%M` 字符串（定宽，故字典序即时序）。
-        """
+    def test_within_group_sorted_by_cut_then_title(self):
+        """组内折扣降序、同分按标题 —— 与「全部折扣」列表页看到的一致。"""
         items = [
-            {"tier": classify.TIER_QUALITY, "cut": 90, "title": "A",
-             "start_text": "2026-09-25 03:40"},
-            {"tier": classify.TIER_QUALITY, "cut": 80, "title": "B",
-             "start_text": "2026-09-25 01:20"},
+            {"tier": classify.TIER_QUALITY, "cut": 50, "title": "B"},
+            {"tier": classify.TIER_QUALITY, "cut": 90, "title": "A"},
+            {"tier": classify.TIER_QUALITY, "cut": 50, "title": "A"},
         ]
+        self.assertEqual([i["title"] for i in report.pool_items(items, CFG)],
+                         ["A", "A", "B"])
 
-        groups = report.build_groups(items, CFG)
-
-        self.assertEqual(groups[0]["start_text"], "2026-09-25 03:40")
+    def test_missing_cut_and_title_are_safe(self):
+        items = [{"tier": classify.TIER_QUALITY, "cut": None, "title": None},
+                 {"tier": classify.TIER_QUALITY, "cut": 80, "title": "X"}]
+        self.assertEqual([i["title"] for i in report.pool_items(items, CFG)],
+                         ["X", None])
 
 
 class FormatAmountTest(unittest.TestCase):

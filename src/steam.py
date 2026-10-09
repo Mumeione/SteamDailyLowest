@@ -67,6 +67,8 @@ class SteamBlocked(Blocked, SteamError):
 
 class SteamClient(BaseHttpClient):
     BASE = BASE
+    error_cls = SteamError
+    blocked_cls = SteamBlocked
 
     def __init__(self, limiter: RateLimiter, timeout: float = 25, pause: float = 0.0,
                  session: requests.Session | None = None, max_attempts: int = 4,

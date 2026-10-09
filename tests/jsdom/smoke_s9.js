@@ -49,8 +49,9 @@ const dom = new JSDOM(html, {
   pretendToBeVisual: true,
   virtualConsole: vc,
   beforeParse(win) {
+    // 桌面档（jsdom 无媒体查询引擎，`matches` 恒 false = 宽视口那一支）
     win.matchMedia = (q) => ({
-      matches: /max-width:\s*768px/.test(q) ? false : false,   // 桌面档
+      matches: false,
       media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}
     });
     win.scrollTo = () => {};
@@ -64,33 +65,59 @@ function check(name, ok, extra) {
   results.push({ name, ok, extra: extra === undefined ? "" : String(extra) });
 }
 
+// ---------------------------------------------------------------
+// 期望值一律由 payload / 夹具推算，**不硬编码**（架构检查卡片 09）。
+// 大卡张数、每批条数、上限、档位集合全都由 config → payload 决定：
+// 写死一个数字，改一次 config 就假红一次；假红多了校验层会被习惯性忽略，
+// 锁就废了 —— 所以只锁「结构 + 与 payload 自洽」，不锁具体数值。
+// ---------------------------------------------------------------
+const listCfg = (dom.window.REPORT_DATA || {}).list || {};
+const picksData = (dom.window.REPORT_DATA || {}).picks || [];
+const shards = dom.window.ALL_S || {};
+const boardKeys = ["new_low", "expiring", "popular", "big_cut", "__all__"];
+const shard0 = (k) => (shards[k + "_0"] || {});
+// 大卡列数由 app.js 按宽度算并写进 inline style（jsdom 没有布局引擎 → 走视口估算兜底）；
+// 首屏 track 上摆的是**第一页** = min(列数, 总张数)。
+const pickCols = Number(((doc.getElementById("picks-track").getAttribute("style") || "")
+  .match(/repeat\((\d+),/) || [0, 0])[1]) || 0;
+const pickPages = pickCols && picksData.length ? Math.ceil(picksData.length / pickCols) : 0;
+const page1Picks = Math.min(pickCols || picksData.length, picksData.length);
+// 抽屉档位以**服务端聚合维度**（第 0 片 agg.dim）为准 —— 它是 filter_dim_values 的
+// 唯一出处，模板选项正是按它渲染的；两边对拍能把「模板与 agg 漂移」变成红。
+const aggDim = (((shard0("__all__") || {}).agg || {}).dim) || {};
+const drawerVals = (g) => $$('#drawer .chip.opt[data-group="' + g + '"]')
+  .map((o) => o.getAttribute("data-value"));
+
 check("导航栏 5 项", $$("#nav .nav-item").length === 5, $$("#nav .nav-item").length);
-check("顶部大卡渲染 5 张", $$("#picks-track .pick").length === 5, $$("#picks-track .pick").length);
-check("大卡有排名徽章", $$("#picks-track .pick-rank").length === 5);
+check("顶部大卡渲染第一页（= min(列数, 总张数)，由 payload 推算）",
+  page1Picks > 0 && $$("#picks-track .pick").length === page1Picks,
+  $$("#picks-track .pick").length + " 张 / 期望 " + page1Picks);
+check("大卡有排名徽章", $$("#picks-track .pick-rank").length === page1Picks);
 // 大卡照 gg.deals 的结构（2026-10-07 重排）：折扣徽章代替力度条、只留一个 Steam 链接
 check("大卡有折扣徽章（不再是力度条）",
-  $$("#picks-track .pick .pick-cut").length === 5 && $$("#picks-track .pick .cut-bar").length === 0,
+  $$("#picks-track .pick .pick-cut").length === page1Picks &&
+  $$("#picks-track .pick .cut-bar").length === 0,
   $$("#picks-track .pick .pick-cut").length + " 个徽章");
 // 三排（2026-10-07 第二轮定稿）：① 标题 ② 折扣徽章 + Steam ③ 原价 + 现价 + 小黑盒。
 // 「史低类型」徽章已删 → 改由**卡片底部 6px 色条**表达（见下一条）
 check("大卡三排：标题 / 折扣+图标 / 原价+现价+图标",
-  $$("#picks-track .pick .pick-title").length === 5 &&
-  $$("#picks-track .pick .pick-low .pick-cut").length === 5 &&
-  $$("#picks-track .pick .pick-price-row .pick-was").length === 5 &&
-  $$("#picks-track .pick .pick-price-row .pick-price").length === 5,
+  $$("#picks-track .pick .pick-title").length === page1Picks &&
+  $$("#picks-track .pick .pick-low .pick-cut").length === page1Picks &&
+  $$("#picks-track .pick .pick-price-row .pick-was").length === page1Picks &&
+  $$("#picks-track .pick .pick-price-row .pick-price").length === page1Picks,
   $$("#picks-track .pick .pick-low .pick-cut")[0].textContent);
 // 用户 2026-10-07：「大卡底部加色条就行了，反正空的地方还多」——
 // 每张大卡都要有一条史低类型色条（l-new / l-tie / l-unk 三者之一），且**不再有徽章**
 check("大卡底部色条（史低类型）取代了徽章",
-  $$("#picks-track .pick.l-new, #picks-track .pick.l-tie, #picks-track .pick.l-unk").length === 5 &&
+  $$("#picks-track .pick.l-new, #picks-track .pick.l-tie, #picks-track .pick.l-unk").length === page1Picks &&
   $$("#picks-track .pick .hl").length === 0,
   $$("#picks-track .pick.l-new").length + " 张新史低色条");
 // 用户 2026-10-07 定稿：小黑盒跟「折扣」同一行、Steam 跟价格同一行，
 // 两枚都贴各自右端（竖着对齐成一列）
 check("大卡没有 From:、两枚图标分列在第 2/3 排右端",
   $$("#picks-track .pick .pick-from").length === 0 &&
-  $$("#picks-track .pick .pick-low .icon-link").length === 5 &&
-  $$("#picks-track .pick .pick-price-row .icon-link").length === 5);
+  $$("#picks-track .pick .pick-low .icon-link").length === page1Picks &&
+  $$("#picks-track .pick .pick-price-row .icon-link").length === page1Picks);
 // 首页两列按估算高度均衡分配（不再是 CSS grid 直接两列）
 check("板块分成左右两列容器", $$("#sections .section-col").length === 2);
 check("4 个板块都放进了列里", $$("#sections .section-col .section").length === 4);
@@ -179,19 +206,23 @@ const sortOpts = $$('#drawer .chip.opt[data-group="sort"]');
 sortOpts[1].click();
 check("只改排序不点亮角标", fBadge.hidden, fBadge.textContent || "(空)");
 const cutOpts = $$('#drawer .chip.opt[data-group="cut"]');
-// 用户 2026-10-07：「折扣区间去掉 70%」→ 只剩 不限 / ≥50% / ≥80% / ≥90%
-check("折扣区间 4 档且没有 ≥70%",
-  cutOpts.length === 4 && !cutOpts.some(function (o) { return o.textContent.trim() === "≥ 70%"; }),
-  cutOpts.map(function (o) { return o.textContent.trim(); }).join(" / "));
+// 用户 2026-10-07：「折扣区间去掉 70%」→ 只剩 不限 / ≥50% / ≥80% / ≥90%。
+// 档位集合不写死：与 payload 下发的 agg 维度对拍（服务端 filter_dim_values 是唯一出处）
+check("折扣区间档位 == payload 的 agg 维度，且没有 ≥70%",
+  !!aggDim.cut && drawerVals("cut").join(",") === aggDim.cut.join(",") &&
+  !cutOpts.some(function (o) { return /70/.test(o.textContent); }),
+  cutOpts.map(function (o) { return o.textContent.trim(); }).join(" / ")
+    + " · agg=" + (aggDim.cut || []).join("/"));
+const topCutLabel = cutOpts[cutOpts.length - 1].textContent.trim();   // 最高那档（默认 ≥90%）
 const totalBefore = doc.getElementById("lv-count").textContent;
-cutOpts[cutOpts.length - 1].click();          // 选最高那档（≥90%）
+cutOpts[cutOpts.length - 1].click();
 check("选了筛选 → 角标亮起", !fBadge.hidden && fBadge.textContent === "1", fBadge.textContent);
 check("选了筛选 → 该选项高亮", cutOpts[cutOpts.length - 1].classList.contains("active"));
 // B3：按钮整体变蓝 + 右边出现一枚已选条件小标签（文案取自抽屉里的同名选项）
 check("选了筛选 → 按钮变 is-on 态", doc.getElementById("filter-open").classList.contains("is-on"));
 check("选了筛选 → 出现已选小标签（文案与抽屉一致）",
   $$("#active-chips .a-chip").length === 1 &&
-  $$("#active-chips .a-chip")[0].textContent.replace("✕", "").trim() === "≥ 90%",
+  $$("#active-chips .a-chip")[0].textContent.replace("✕", "").trim() === topCutLabel,
   $$("#active-chips .a-chip")[0] && $$("#active-chips .a-chip")[0].textContent.trim());
 // 每页条数固定，所以看**总条数**变化，不是看这一页的行数
 const totalAfter = doc.getElementById("lv-count").textContent;
@@ -207,10 +238,35 @@ check("再加回来 → 小标签与角标都回来",
 doc.getElementById("filter-reset").click();
 const dateOpts = $$('#drawer .chip.opt[data-group="date"]');
 const offDates = dateOpts.filter(function (o) { return o.disabled; });
-check("没数据的日期被置灰且不可点",
-  dateOpts.length === 5 &&
+// 档位数量同样不写死：与 payload 的 agg 维度对拍（今天/昨天/前天/近 N 天/全部）
+check("日期档位 == payload 的 agg 维度",
+  !!aggDim.date && drawerVals("date").join(",") === aggDim.date.join(","),
+  drawerVals("date").join("/") + " · agg=" + (aggDim.date || []).join("/"));
+// 置灰判据 == 「池子里该日期无条目」（服务端 filter_specs.dead 的同一口径）。
+// ⚠️ 原先只写 `offDates.every(...)`：空数组恒真 ⇒ 一个都没置灰时**照样通过**，
+//    等于没锁。现在拿全量池（`__all__` 分片）现算每个档位的期望值再对拍。
+const poolAgos = new Set();
+Object.keys(shards).forEach(function (k) {
+  if (!/^__all___\d+$/.test(k)) return;
+  (shards[k].items || []).forEach(function (c) {
+    if (c.start_days_ago !== null && c.start_days_ago !== undefined) poolAgos.add(c.start_days_ago);
+  });
+});
+const expectDead = function (v) {
+  if (v === "all") return false;              // 「全部」永不留空，恒可选（filter_specs 口径）
+  if (v.indexOf("d") === 0) {
+    const n = Number(v.slice(1));
+    return !Array.from(poolAgos).some(function (a) { return a <= n; });
+  }
+  return !poolAgos.has(Number(v));
+};
+const deadVals = dateOpts.filter(function (o) { return o.disabled; }).map(function (o) { return o.getAttribute("data-value"); });
+check("没数据的日期被置灰（判据 == 池子里该日期无条目）",
+  poolAgos.size > 0 &&
+  dateOpts.every(function (o) { return o.disabled === expectDead(o.getAttribute("data-value")); }) &&
   offDates.every(function (o) { return o.classList.contains("is-off"); }),
-  offDates.length + " 个置灰：" + offDates.map(function (o) { return o.textContent.trim(); }).join("/"));
+  deadVals.length + " 个置灰：" + deadVals.join("/")
+    + " · 池内日期 " + Array.from(poolAgos).sort(function (a, b) { return a - b; }).join(","));
 doc.getElementById("filter-reset").click();
 check("重置 → 角标隐藏", fBadge.hidden);
 doc.getElementById("drawer-close").click();
@@ -284,18 +340,19 @@ check("首页显示概览摘要", !doc.getElementById("summary").hidden);
 const nextBtn = doc.getElementById("picks-next");
 const prevBtn = doc.getElementById("picks-prev");
 const picksSubEl = doc.getElementById("picks-sub");
-// 期望页数由夹具数据推算（ceil(总张数/列数)），不硬编码 —— 大促夹具换了张数也不脆断
-  const mpCols = Number(((doc.getElementById("picks-track").getAttribute("style") || "")
-    .match(/repeat\((\d+),/) || [0, 0])[1]);
-  const mpTotal = ((dom.window.REPORT_DATA || {}).picks || []).length;
-  const mpPages = mpCols && mpTotal ? Math.ceil(mpTotal / mpCols) : 0;
-  check("多页大卡：第 1 页上「上一页」禁用、「下一页」可用 + 副标题写页码",
-    prevBtn.disabled && !nextBtn.disabled &&
-    !doc.querySelector("#picks .deck-nav[hidden]") &&
-    mpPages > 1 && new RegExp("第\\s*1\\s*/\\s*" + mpPages + "\\s*页").test(picksSubEl.textContent),
-    picksSubEl.textContent + "（期望共 " + mpPages + " 页）");
-check("大卡一排 5 张（第一页）、排名从 #1 开始",
-  $$("#picks-track .pick").length === 5 &&
+// 期望页数由夹具数据推算（ceil(总张数/列数)），不硬编码 —— 大促夹具换了张数也不脆断。
+// 单页分支（总张数 ≤ 列数、翻页整块收起）由受控数据在下面单独覆盖，所以这里
+// 按数据是「多页」还是「单页」分别验，不再假定夹具一定撑满多页。
+check("大卡翻页：按数据验多页 / 单页两条分支",
+  pickPages > 1
+    ? (prevBtn.disabled && !nextBtn.disabled &&
+       !doc.querySelector("#picks .deck-nav[hidden]") &&
+       new RegExp("第\\s*1\\s*/\\s*" + pickPages + "\\s*页").test(picksSubEl.textContent))
+    : (!!doc.querySelector("#picks .deck-nav[hidden]") &&
+       !/第\s*\d+\s*\/\s*\d+\s*页/.test(picksSubEl.textContent)),
+  picksSubEl.textContent + "（期望共 " + pickPages + " 页）");
+check("大卡一排摆第一页张数、排名从 #1 开始",
+  $$("#picks-track .pick").length === page1Picks &&
   $$("#picks-track .pick-rank")[0].textContent === "#1",
   $$("#picks-track .pick-rank").map(function (e) { return e.textContent; }).join(","));
 
@@ -414,18 +471,24 @@ check("站点名是「图标 + 双色分段」",
   doc.querySelector("#brand .brand-b").textContent === "DailyLowest");
 
 // ---- S9-3：滚动加载 / 返回顶部 / 无图精简模式（重新打开板块列表页验证）----
-const listCfg = (dom.window.REPORT_DATA || {}).list || {};
-check("列表参数由 payload 下发（batch/auto_max）",
-  listCfg.batch === 30 && listCfg.auto_max === 300,
+// 只锁「payload 确实下发了这两个参数且是正数」，具体数值归 config
+// （页面上真正消费它们的地方在下面：首批行数 / 加载更多后的行数，都与它自洽）。
+check("列表参数由 payload 下发（batch/auto_max 为正整数）",
+  Number.isInteger(listCfg.batch) && listCfg.batch > 0 &&
+  Number.isInteger(listCfg.auto_max) && listCfg.auto_max > 0,
   "batch=" + listCfg.batch + " auto_max=" + listCfg.auto_max);
 // ---- 口径机械校验（架构勘察候选 2）：CSS 的 @media 边界必须 == payload 下发的
 // 两断点。曾发生真实腐烂：断点 768→600 改版时查询改了、守护注释没跟上 ——
 // 注释不会报错，这里会。@media 里出现的值 = 手机断点、+1、平板断点、+1 四种。
+// ⚠️ 扫之前**必须剥掉注释**：这条校验的场景就是「注释没跟上代码」，而注释里举的
+//    反例数字（`@container row (480px)` 之类）会被正则当成真实断点、把校验骗红
+//    （2026-10-09 实际踩到 —— 注释提到 @media 之后紧跟的注释文本里就有 480px）。
+const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
 check("CSS @media 边界只用 payload 下发的断点", (function () {
   const mob = listCfg.breakpoint, tab = listCfg.tablet_breakpoint;
   if (!mob || !tab) return false;
   const nums = new Set();
-  for (const m of css.matchAll(/@media[^{]*?(\d{3,4})px/g)) nums.add(Number(m[1]));
+  for (const m of cssCode.matchAll(/@media[^{]*?(\d{3,4})px/g)) nums.add(Number(m[1]));
   // ① 出现过的每个数值都必须是合法断点（手机/平板及其 +1）—— 挡住「随手写个 900px」
   const legal = [...nums].every((n) => n === mob || n === mob + 1 || n === tab || n === tab + 1);
   // ② 手机断点的两条边界（600 / 601）必须成对出现，否则「布局按手机、逻辑按桌面」会错位。
@@ -435,7 +498,7 @@ check("CSS @media 边界只用 payload 下发的断点", (function () {
   //    payload 里给预览工具用。
   //    所以这条断言**不再要求 tab+1 出现**，但 url 上仍然不允许多出别的数值。
   return legal && nums.has(mob) && nums.has(mob + 1);
-})(), "media=" + [...new Set(Array.from(css.matchAll(/@media[^{]*?(\d{3,4})px/g), (m) => m[1]))].join("/")
+})(), "media=" + [...new Set(Array.from(cssCode.matchAll(/@media[^{]*?(\d{3,4})px/g), (m) => m[1]))].join("/")
     + " payload=" + listCfg.breakpoint + "/" + listCfg.tablet_breakpoint);
 // ---- 口径机械校验（2026-10-08）：板块两列的 @container 阈值必须 == 「大卡 4 列」
 // 的同一内容宽 4×(PICK_MIN+PICK_GAP)−12。用户定的口径是「两列板块刚好放得下 =
@@ -451,7 +514,11 @@ check("CSS @media 边界只用 payload 下发的断点", (function () {
 })();
 $$("#nav .nav-item")[0].click();
 const firstBatch = $$("#rows .row").length;
-check("列表页首批 = 每批 30 条", firstBatch === 30, firstBatch + " 行");
+// 首批 = payload 下发的 batch（不写死 30），且不超过该板块总条数
+const lvTotal = Number((doc.getElementById("lv-count").textContent.match(/(\d+)\s*条/) || [0, 0])[1]) || 0;
+const expectBatch = Math.min(listCfg.batch, lvTotal || listCfg.batch);
+check("列表页首批 = payload 的 batch（不超过总条数）",
+  firstBatch === expectBatch, firstBatch + " 行 / 期望 " + expectBatch);
 // 2026-10-08 问题1：all.js 卡片瘦身后，列表页（数据来自 all.js）的卡片**没有** steam_url/
 // xiaoheihe_url/banner，链接与封面必须由 appid/game_id+art 现拼成功 —— 不然瘦身=毁页面。
 // 无 appid 的条目（unlisted/详情待补）本就没有链接，故断言「至少一行有链接」+「凡出现必合规」。
@@ -473,8 +540,11 @@ const moreBtn = doc.querySelector("#lv-pager .load-more");
 check("底部有「加载更多」按钮", !!moreBtn);
 if (moreBtn) {
   moreBtn.click();
-  check("点「加载更多」追加到 60 行", $$("#rows .row").length === 60,
-    $$("#rows .row").length + " 行");
+  // 追加一批 → 2×batch，但不超过总条数（不写死 60）
+  const expect2 = Math.min(2 * listCfg.batch, lvTotal || 2 * listCfg.batch);
+  check("点「加载更多」再追加一批（2×batch，不超过总条数）",
+    $$("#rows .row").length === expect2,
+    $$("#rows .row").length + " 行 / 期望 " + expect2);
 }
 const compactBtn = doc.getElementById("btn-compact");
 const topBtn = doc.getElementById("btn-top");
@@ -665,9 +735,7 @@ check("大卡每页张数 = 实际列数（不是写死的 5）", (function () {
 // ---- 分片（2026-10-08）：all.js 拆成 all/<板块>_<片号>.js ----
 // 顺序 = **分片的物理顺序**（片号 0,1,2… 依次读出来就是板块顺序），所以服务端不再
 // 单独下发 section_order：顺序只有一份（服务端切片时定），前端不复制任何排序规则。
-const shards = dom.window.ALL_S || {};
-const boardKeys = ["new_low", "expiring", "popular", "big_cut", "__all__"];
-const shard0 = (k) => (shards[k + "_0"] || {});
+// （`shards` / `boardKeys` / `shard0` 已在文件顶部统一定义，那里也供 agg 维度对拍用）
 
 check("window.ALL_S 里五个板块的第 0 片都到齐",
   boardKeys.every((k) => (shard0(k).items || []).length > 0),

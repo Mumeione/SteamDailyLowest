@@ -135,6 +135,10 @@ def sweep_filter(sweep: str) -> dict | None:
 
 class ItadClient(BaseHttpClient):
     BASE = BASE
+    #: 传输失败的宿主类型（见 BaseHttpClient.error_cls）：run.py 的
+    #: ``except ItadError`` / backfill 的「单条失败不阻断」全靠这一处包装生效。
+    error_cls = ItadError
+    blocked_cls = ItadBlocked
 
     def __init__(self, api_key: str, limiter: RateLimiter, timeout: float = 25,
                  pause: float = 0.0, session: requests.Session | None = None,

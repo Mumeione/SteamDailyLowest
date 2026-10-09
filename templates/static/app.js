@@ -4,9 +4,13 @@
  *       → 点导航进「板块完整列表页」（数据来自分片懒加载）
  *
  * 数据来源：
- *   window.REPORT_DATA（data.js）—— 当日新增摘要（low_points）、四板块预览
- *                                    （各 10 条）、顶部大卡候选、断点/分页配置
- *                                    （⚠️ 2026-10-08 起不含分组卡片，见下）
+ *   window.REPORT_DATA（data.js）—— 四板块预览（栏位数 K **随池量动态**，不写死 10）、
+ *                                    顶部大卡候选、断点/分页配置
+ *                                    （⚠️ 2026-10-08 起不含分组卡片；2026-10-09 起
+ *                                     不含 overview / fx / steam / sweep / low_points
+ *                                     / filter_defaults —— 概览与汇率是服务端渲染进
+ *                                     index/about 的，筛选默认值走模板的
+ *                                     window.FILTER_DEFAULTS，前端一个都不读）
  *   window.ALL_S["<板块>_<片号>"]（all/<key>_<n>.js，按需懒加载）—— 板块完整列表，
  *                                    每张带 views（视图成员）与 sections（板块归属）。
  *                                    2026-10-08 起取代原先的单文件 all.js
@@ -22,10 +26,13 @@
   var data = window.REPORT_DATA;
   if (!data) return;
 
-  // 断点必须与 app.css 的 @media 用同一个值（payload 里下发，别写死第二份）
+  // 断点必须与 app.css 的 @media 用同一个值（payload 里下发，别写死第二份）。
+  // ⚠️ **刻意不给兜底数字**（2026-10-09，卡片 08）：这里曾写 `|| 768`，与全仓库的
+  //    600 矛盾，是个纯粹的僵尸常量 —— 真出现 768 只会让「跨档重排」静默按错的
+  //    边界走。取不到就干脆不挂这个行为（见文件末尾的 mq 判空）。
   var listCfg = data.list || {};
-  var breakpoint = listCfg.breakpoint || 768;
-  var mq = window.matchMedia("(max-width: " + breakpoint + "px)");
+  var breakpoint = listCfg.breakpoint;
+  var mq = breakpoint ? window.matchMedia("(max-width: " + breakpoint + "px)") : null;
   // 列表加载参数**从配置来**（payload 的 list 段，见 report.render）——
   // 不在前端再写死一份阈值（review-s9-01 确立的仓库约定）。
   var LIST_BATCH = listCfg.batch || 30;        // 每批追加几条（refs.md §9.2「20~30 条」）
@@ -58,32 +65,51 @@
     return node;
   }
 
+  /** 读一个 CSS 变量的**计算值**（色板不在这里再抄一份 —— 架构检查卡片 10）。
+   *  ⚠️ 读不到用第二个参数兜底：:root 每次都随页面产出（同一份渲染），真出问题
+   *     只会是「变量被改名」，那种情况宁可回落一个具体的颜色，也不要 stroke 变成空串
+   *     （空串 = 不描边，插画直接消失，比配色不对更难发现）。
+   *  ⚠️ 不能在 SVG 里直接写 `stroke="var(--x)"` —— 表现属性上的 var() 支持面很窄，
+   *     读出来插值才是稳的。 */
+  function cssVar(name, fallback) {
+    var value = window.getComputedStyle(document.documentElement)
+      .getPropertyValue(name);
+    return (value && value.trim()) || fallback;
+  }
+
   // ------------------------------------------------------------------
   // 空状态插画（refs.md B13「没有、加载中、失败都可以加一个小插画，但要符合
   // 网站现有的色彩主题」）—— 自绘 SVG 常量：不引图片文件（页面要能离线双击打开）。
-  // 配色只用站点现有色：新史低红 #d92b2b / 主色蓝 #2563eb / 灰 #c9cfd8 · #e3e5e9。
+  // 配色**全部从 CSS 变量读**（--accent / --new-low / --line / --faint），
+  // 不再在 JS 里维护第二份色值表（2026-10-09，卡片 10）。
   // ------------------------------------------------------------------
-  var EMPTY_ART = {
-    // 无内容：卡片框 + 往下探的箭头 + 底部一条红线（呼应站点名那个「价格探底」标记）
-    none: '<svg class="empty-art" viewBox="0 0 120 120" aria-hidden="true">'
-      + '<rect x="24" y="30" width="72" height="54" rx="9" fill="none" stroke="#c9cfd8"'
-      + ' stroke-width="3" stroke-dasharray="8 6"/>'
-      + '<path d="M60 42v24" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round"/>'
-      + '<path d="M50 58l10 10 10-10" fill="none" stroke="#2563eb" stroke-width="4"'
-      + ' stroke-linecap="round" stroke-linejoin="round"/>'
-      + '<rect x="30" y="94" width="60" height="5" rx="2.5" fill="#d92b2b" opacity=".5"/></svg>',
-    // 加载中：转圈（旋转交给 CSS 的 .is-spin —— 老安卓 WebView 对 SVG 动画支持不稳）
-    loading: '<svg class="empty-art is-spin" viewBox="0 0 120 120" aria-hidden="true">'
-      + '<circle cx="60" cy="60" r="30" fill="none" stroke="#e3e5e9" stroke-width="9"/>'
-      + '<path d="M60 30a30 30 0 0 1 30 30" fill="none" stroke="#2563eb" stroke-width="9"'
-      + ' stroke-linecap="round"/></svg>',
-    // 加载失败：虚线圈 + 感叹号（红 = 出错，与站点的新史低红同色，不另造一个红）
-    fail: '<svg class="empty-art" viewBox="0 0 120 120" aria-hidden="true">'
-      + '<circle cx="60" cy="58" r="29" fill="none" stroke="#d92b2b" stroke-width="3.5"'
-      + ' stroke-dasharray="9 7" opacity=".85"/>'
-      + '<path d="M60 41v23" stroke="#d92b2b" stroke-width="5" stroke-linecap="round"/>'
-      + '<circle cx="60" cy="74" r="3.6" fill="#d92b2b"/></svg>'
-  };
+  var EMPTY_ART = (function () {
+    var accent = cssVar("--accent", "#2563eb");      // 主色蓝
+    var newLow = cssVar("--new-low", "#d92b2b");     // 新史低红（也是「出错」红）
+    var line = cssVar("--line", "#e3e5e9");
+    var faint = cssVar("--faint", "#9aa1ab");
+    return {
+      // 无内容：卡片框 + 往下探的箭头 + 底部一条红线（呼应站点名那个「价格探底」标记）
+      none: '<svg class="empty-art" viewBox="0 0 120 120" aria-hidden="true">'
+        + '<rect x="24" y="30" width="72" height="54" rx="9" fill="none" stroke="' + faint + '"'
+        + ' stroke-width="3" stroke-dasharray="8 6"/>'
+        + '<path d="M60 42v24" fill="none" stroke="' + accent + '" stroke-width="4" stroke-linecap="round"/>'
+        + '<path d="M50 58l10 10 10-10" fill="none" stroke="' + accent + '" stroke-width="4"'
+        + ' stroke-linecap="round" stroke-linejoin="round"/>'
+        + '<rect x="30" y="94" width="60" height="5" rx="2.5" fill="' + newLow + '" opacity=".5"/></svg>',
+      // 加载中：转圈（旋转交给 CSS 的 .is-spin —— 老安卓 WebView 对 SVG 动画支持不稳）
+      loading: '<svg class="empty-art is-spin" viewBox="0 0 120 120" aria-hidden="true">'
+        + '<circle cx="60" cy="60" r="30" fill="none" stroke="' + line + '" stroke-width="9"/>'
+        + '<path d="M60 30a30 30 0 0 1 30 30" fill="none" stroke="' + accent + '" stroke-width="9"'
+        + ' stroke-linecap="round"/></svg>',
+      // 加载失败：虚线圈 + 感叹号（红 = 出错，与站点的新史低红同色，不另造一个红）
+      fail: '<svg class="empty-art" viewBox="0 0 120 120" aria-hidden="true">'
+        + '<circle cx="60" cy="58" r="29" fill="none" stroke="' + newLow + '" stroke-width="3.5"'
+        + ' stroke-dasharray="9 7" opacity=".85"/>'
+        + '<path d="M60 41v23" stroke="' + newLow + '" stroke-width="5" stroke-linecap="round"/>'
+        + '<circle cx="60" cy="74" r="3.6" fill="' + newLow + '"/></svg>'
+    };
+  })();
 
   var emptyBox = document.getElementById("empty");
 
@@ -111,7 +137,7 @@
   // 下面的判据都对 undefined 安全。
   var FILTER_DEFAULTS = window.FILTER_DEFAULTS || {};
   Object.keys(FILTER_DEFAULTS).forEach(function (k) {
-    state.filters[k] = FILTER_DEFAULTS[k];
+    setFilter(k, undefined, { auto: true });   // 初始化：不算「用户手动改过」
   });
   var SECTION_LABEL = { __all__: "全部折扣" };
   (data.sections || []).forEach(function (s) { SECTION_LABEL[s.key] = s.label; });
@@ -498,7 +524,7 @@
   picksNext.addEventListener("click", function () { pickPage++; renderPicks(); });
 
   // ------------------------------------------------------------------
-  // 首页四板块（服务端已给每板块前 10 条 + 完整条数）
+  // 首页四板块（服务端已给每板块前 K 条预览 + 完整条数；K 由服务端按池量动态定）
   // ------------------------------------------------------------------
   var sectionsBox = document.getElementById("sections");
 
@@ -863,18 +889,45 @@
 
   // 用户有没有**手动**改过日期。没有的话，切到「全部折扣」页时日期自动放开成
   // 「全部」（refs §11.5 Q2：「全部折扣」页**不设限**），切回板块再收成默认窗口。
-  // ⚠️ 写点只有下面 touchDate / clearDateTouched 两个（架构整理时收敛的）——
-  //    新增改筛选的入口必须走它们，别直接赋值（漏更新 = 「全部折扣页日期意外
-  //    收紧/放开」的静默回归）。
+  // ⚠️ 这个标记**只由 setFilter 维护**（见下）—— 别在别处赋值（漏更新 =
+  //    「全部折扣页日期意外收紧/放开」的静默回归）。
   var dateTouched = false;
   function touchDate() { dateTouched = true; }
   function clearDateTouched() { dateTouched = false; }
+
+  /** 筛选项的**唯一写入口**（2026-10-09，架构检查卡片 10）。
+   *
+   *  `state.filters` 从前有 6 条写入路径（初始化 / 抽屉点击 / 已选小标签的 ✕ /
+   *  resetFilters / openSection 的隐式日期改写 / resetImpliedFilters），`dateTouched`
+   *  也散在 3 处 —— 注释里记录的两条静默回归都出在这块。现在全部走这里：
+   *
+   *  · `value === undefined` = **恢复该项的默认值**（服务端下发的 FILTER_DEFAULTS）；
+   *  · 日期维度的「用户手动改过」标记自动处理：给了具体值 = 用户改过（touch）；
+   *    恢复默认 = 不算改过（clear）。程序自动调整（openSection 的放开/收紧）要显式
+   *    传 `{auto:true}`，否则会被误记成「用户改过」；
+   *  · 返回**是否真的变了**，调用方可据此决定要不要重渲染。
+   *
+   *  ⚠️ 新增筛选维度不需要改这里（遍历 FILTER_DEFAULTS + 模板渲染选项即可）；
+   *     只有当新维度带**附加状态**时才在这里加一个显式选项，别去外面直接赋值。
+   */
+  function setFilter(group, value, opts) {
+    opts = opts || {};
+    var next = (value === undefined) ? FILTER_DEFAULTS[group] : value;
+    var changed = state.filters[group] !== next;
+    state.filters[group] = next;
+    if (group === "date" && opts.auto !== true) {
+      if (value === undefined) clearDateTouched();
+      else touchDate();
+    }
+    return changed;
+  }
 
   function openSection(key) {
     state.section = key;
     state.limit = LIST_BATCH;
     if (!dateTouched) {
-      state.filters.date = (key === "__all__") ? "all" : FILTER_DEFAULTS.date;
+      // 程序自动放开/收紧日期窗口：**不算**用户手动改过（auto:true）
+      setFilter("date", (key === "__all__") ? "all" : undefined, { auto: true });
     }
     // 进板块先复位「在当前板块里没有意义」的已选条件 ——
     // 不然角标会挂着一个筛不掉任何东西的条件（例：带着「仅新史低」进新史低板块）。
@@ -1033,7 +1086,7 @@
       if ((opt.dataset.implied || "").split(",").indexOf(sec) < 0) continue;
       var g = opt.getAttribute("data-group");
       if (state.filters[g] === opt.getAttribute("data-value")) {
-        state.filters[g] = FILTER_DEFAULTS[g];
+        setFilter(g, undefined);          // 程序复位：不算用户手动改过
       }
     }
   }
@@ -1067,8 +1120,9 @@
 
   /** 把所有筛选恢复成服务端给的默认值（抽屉的「重置」与标签行的「清空」共用一份）。 */
   function resetFilters() {
-    Object.keys(FILTER_DEFAULTS).forEach(function (k) { state.filters[k] = FILTER_DEFAULTS[k]; });
-    clearDateTouched();        // 重置后「全部折扣」页重新自动放开日期
+    // setFilter(k, undefined) = 恢复默认；对 date 会自动 clearDateTouched
+    // （重置后「全部折扣」页重新自动放开日期）
+    Object.keys(FILTER_DEFAULTS).forEach(function (k) { setFilter(k, undefined); });
     applyFilters();
   }
 
@@ -1103,8 +1157,7 @@
           "aria-label": "去掉条件 " + optLabel(k, value),
           onclick: function (e) {
             e.stopPropagation();
-            state.filters[k] = FILTER_DEFAULTS[k];
-            if (k === "date") clearDateTouched();
+            setFilter(k, undefined);      // 去掉这个条件 = 恢复默认（date 会自动清标记）
             applyFilters();
           }
         })
@@ -1181,8 +1234,7 @@
       (function (opt) {
         opt.addEventListener("click", function () {
           var group = opt.getAttribute("data-group");
-          state.filters[group] = opt.getAttribute("data-value");
-          if (group === "date") touchDate();
+          setFilter(group, opt.getAttribute("data-value"));   // 用户手动改：date 会打标记
           applyFilters();        // 选了就立刻生效，不用再点「完成」
         });
       })(filterOpts[f]);
@@ -1272,8 +1324,9 @@
     renderPicks();                     // 每页张数随断点变（口径只在 picksPerPage）
     if (state.section) { state.limit = LIST_BATCH; openSection(state.section); }
   }
-  if (mq.addEventListener) mq.addEventListener("change", onBreakpointChange);
-  else if (mq.addListener) mq.addListener(onBreakpointChange);
+  // payload 没给断点就不挂这个行为（宁可不重排，也不按猜的边界重排）
+  if (mq && mq.addEventListener) mq.addEventListener("change", onBreakpointChange);
+  else if (mq && mq.addListener) mq.addListener(onBreakpointChange);
 
   // ------------------------------------------------------------------
   // S9-3：顶部消息区第二行（refs.md A-3 / B2）
