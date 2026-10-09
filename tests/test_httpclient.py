@@ -12,7 +12,9 @@
 5. 5xx：服务端故障，重试但**不计入限流统计**；
 6. 网络异常：重试耗尽抛错；
 7. **出口按宿主类型包装**（架构检查卡片 01）：ItadClient 抛 ItadError/ItadBlocked、
-   SteamBrowseClient 抛 SteamBrowseError/SteamBrowseBlocked，底座自身仍抛 HttpError。
+   SteamBrowseClient 抛 SteamBrowseError/SteamBrowseBlocked，底座自身仍抛 HttpError；
+8. **风控零容忍**（``abort_on_risk_control``，2026-10-09 小黑盒引入）：置 True 的
+   宿主 403/429 第一次就抛 blocked_cls —— 零等待零重试；默认 False 不影响老策略。
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.heybox import HeyboxBlocked, HeyboxClient  # noqa: E402
 from src.httpclient import BaseHttpClient, Blocked, HttpError  # noqa: E402
 from src.itad import ItadBlocked, ItadClient, ItadError  # noqa: E402
 from src.steam_browse import SteamBrowseBlocked, SteamBrowseClient, SteamBrowseError  # noqa: E402
@@ -139,6 +142,29 @@ class BlockedTest(unittest.TestCase):
         client, _, _ = make([Resp(403), Resp(200, payload={"ok": 1})], max_attempts=5)
         self.assertEqual(client.request("GET", "/x"), {"ok": 1})
         self.assertEqual(client._consecutive_403, 0)
+
+
+class RiskControlAbortTest(unittest.TestCase):
+    """``abort_on_risk_control=True``（小黑盒）：403/429 第一次就抛 blocked_cls。
+
+    零等待零重试 —— 等待只会白烧回填的墙钟预算、加深风控印象。
+    默认 False，ITAD / Steam 的退避重试策略不受影响（BlockedTest 锁住）。
+    """
+
+    def test_single_403_aborts_immediately(self):
+        client, limiter, session = make([Resp(403)], max_attempts=5, cls=HeyboxClient)
+        with self.assertRaises(HeyboxBlocked):
+            client.request("GET", "/x")
+        self.assertEqual(session.calls, 1)              # 没有第二次
+        self.assertNotIn(300, limiter.waits)            # 没等 5 分钟
+
+    def test_single_429_aborts_immediately(self):
+        client, limiter, session = make(
+            [Resp(429, headers={"Retry-After": "300"})], max_attempts=5, cls=HeyboxClient)
+        with self.assertRaises(HeyboxBlocked):
+            client.request("GET", "/x")
+        self.assertEqual(session.calls, 1)
+        self.assertEqual(limiter.waits, [])             # 没有退避等待
 
 
 class SuccessFalseTest(unittest.TestCase):

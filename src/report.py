@@ -201,7 +201,8 @@ def tier_labels(cfg: dict | None = None) -> dict:
 #: Steam schinese 标题里常见的商标符号，比较时先去掉
 _TITLE_NOISE_RE = re.compile(r"[\u00ae\u2122\u00a9]")
 #: 剥完必须还剩中文（>= 2 个汉字）才认，见 clean_title_zh 里的硬约束
-_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+#: （正则唯一出处 = classify.CJK_RE，heybox.is_cn_name 共用）
+_CJK_RE = classify.CJK_RE
 #: 剥完英文后可能剩下的吊诡残留：空括号、首尾分隔符、连续空格
 _EMPTY_BRACKET_RE = re.compile(r"\s*[\(（\[【]\s*[\)）\]】]")
 _SEP_CHARS = "\\s\\-\\u2013\\u2014:：,，、/\\|()（）\\[\\]【】®™©"

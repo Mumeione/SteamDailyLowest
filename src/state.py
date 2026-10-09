@@ -38,8 +38,11 @@ STATE_VERSION = 1
 CACHE_VERSION = 1
 DYN_VERSION = 1
 
-# cache.json 收的两块缓存键（旧版 state.json 里的遗留键同名）
-_CACHE_KEYS = ("compare_cache", "low_time_cache")
+# cache.json 收的三块缓存键（旧版 state.json 里的遗留键同名）。
+# heybox_miss：中文名回填的落空标记（2026-10-09）—— 键为 game_id、
+# 值为时刻，**不参与** cleanup_expired（永久键，同 compare_cache 的 S7 先例），
+# TTL 由读取方按「落空后 N 天内不重查」判定。
+_CACHE_KEYS = ("compare_cache", "low_time_cache", "heybox_miss")
 
 # 旧版 game_meta 里混存的动态键（S6 拆分前格式）→ 收编进 dynamic.json
 _DYN_KEYS = ("reviews", "stats", "fetched_at", "detail_failed_at", "detail_attempts")
@@ -78,7 +81,7 @@ def atomic_write_json(path: Path, payload: dict) -> None:
 
 
 class Cache:
-    """可重建缓存（cache.json）：compare_cache + low_time_cache。
+    """可重建缓存（cache.json）：compare_cache + low_time_cache + heybox_miss。
 
     **可重建**语义决定了它和 State 容错策略不同：文件缺失或损坏按空缓存
     起步（丢了重拉），不抛异常炸管线。
@@ -91,6 +94,7 @@ class Cache:
             "updated_at": None,
             "compare_cache": {},
             "low_time_cache": {},
+            "heybox_miss": {},
         }
 
     def load(self) -> "Cache":
@@ -774,6 +778,26 @@ class State:
             "fetched_at": now.isoformat(timespec="seconds"),
         }
         return entry.get("initial") if entry else None
+
+    # ------------------------------------------------------------------
+    # heybox_miss：中文名回填的落空标记（2026-10-09）
+    # ------------------------------------------------------------------
+    # 小黑盒对无中文译名的游戏返回英文/日文原名（不算命中）——不记负缓存的话，
+    # 每次手动触发回填都会把这些已知落空的条目重查一遍白烧请求。
+    # 落在 **cache 层**（可重建，丢了重查一轮即可自愈）；键空间与
+    # compare_cache 同款永久键，**绝不挂进 cleanup_expired**（S7 头号坑：
+    # expiry 键清理按「后缀解析时间」走，解析不了会误删）。
+    # ------------------------------------------------------------------
+    def heybox_miss(self, game_id: str, now: datetime) -> None:
+        """记录「该游戏在小黑盒没有有效中文名」及其时刻（TTL 判定在读取方）。"""
+        if not game_id:
+            return
+        self.cache.data["heybox_miss"][game_id] = now.isoformat(timespec="seconds")
+
+    def heybox_missed_at(self, game_id: str) -> datetime | None:
+        """该游戏最近一次「小黑盒落空」的时刻；从未落空 → None。"""
+        raw = self.cache.data["heybox_miss"].get(game_id)
+        return classify.parse_time(raw, self.tz)
 
     # ------------------------------------------------------------------
     # run_log

@@ -11,7 +11,9 @@ ITAD 与 Steam 两个宿主都要同一套「限流 + 五种响应分开处理�
 响应/异常         处理
 ===============  ==========================================================
 429               尊重 `Retry-After`，否则从 10 秒起退避；同时自动降速
+                  （``abort_on_risk_control`` 的子类例外：立即抛 blocked_cls）
 403               **滥用封禁，比 429 严重**：等 5 分钟；连续 2 次则中止本轮
+                  （``abort_on_risk_control`` 的子类例外：立即抛 blocked_cls）
 200 + body=null   **软限流**（不报错，悄悄限你）→ 按限流处理，绝不当"没数据"
 200 + success:false  **不是限流**：目标不存在 / 该区不售 → 返回 None 让调用方跳过
 5xx               服务端故障，**与限流无关** → 指数退避重试，不计入限流统计
@@ -113,6 +115,13 @@ class BaseHttpClient:
     #: 分类意图必须在这一处生效，而不是散在调用点当摆设。
     error_cls: type[HttpError] = HttpError
     blocked_cls: type[Blocked] = Blocked
+
+    #: 子类置 True = **风控零容忍**：403/429 不重试、不等待，第一次就抛
+    #: ``blocked_cls`` 让调用方立即中止本轮。给「等待重试只会白烧墙钟预算、
+    #: 还会加深风控印象」的宿主用（小黑盒：无官方配额文档，宁断勿扛）。
+    #: 默认 False —— ITAD/Steam 沿用上表的退避重试策略（它们有已知配额，
+    #: 短暂 429 等一下就过）。
+    abort_on_risk_control: bool = False
 
     def __init__(
         self,
@@ -239,6 +248,8 @@ class BaseHttpClient:
             if status == 429:
                 self.rate_limit_events += 1
                 self.limiter.slow_down()
+                if self.abort_on_risk_control:
+                    raise self.blocked_cls(f"429 限流（风控零容忍，立即中止）：{path}")
                 retry_after = _retry_after_seconds(resp)
                 wait = retry_after if retry_after is not None else backoff
                 self._record("429", path, attempt=attempt, wait=round(wait, 1))
@@ -252,6 +263,8 @@ class BaseHttpClient:
                 self._consecutive_403 += 1
                 self.rate_limit_events += 1
                 self._record("403", path, attempt=attempt, consecutive=self._consecutive_403)
+                if self.abort_on_risk_control:
+                    raise self.blocked_cls(f"403 封禁（风控零容忍，立即中止）：{path}")
                 if self._consecutive_403 >= 2:
                     raise self.blocked_cls(f"连续收到 403（滥用封禁），中止本轮并告警：{path}")
                 if attempt >= self.max_attempts:

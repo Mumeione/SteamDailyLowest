@@ -6,11 +6,18 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone, tzinfo
 
 #: 默认配置的单表（2026-10-09 收编）：函数签名的默认值 / 读点兜底一律从这里取，
 #: 不再各写一个字面量 —— 否则「改一个 48 要动 5 处」（架构检查卡片 06）。
 from .config import DEFAULTS
+
+#: CJK 汉字正则（含扩展 A 区）—— 中文名相关判定的**唯一出处**
+#: （``report.clean_title_zh`` 的剥英文残留校验、``heybox.is_cn_name`` 的
+#: 社区中文名质量闸共用）。注意：假名不在汉字范围里，需要排除假名的
+#: 消费方（heybox）自加排除正则，不在此处混入。
+CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 
 try:  # Windows 上若无 IANA 时区库则回落到固定 +08:00（Asia/Shanghai 无夏令时）
     from zoneinfo import ZoneInfo
