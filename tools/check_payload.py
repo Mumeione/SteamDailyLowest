@@ -275,7 +275,12 @@ def main() -> int:
           and js_order == py_order and not bad_agg_keys
           # data.js 不带死键（卡片 08）
           and not dead_keys)
-    OUT.write_text("\n".join(lines), encoding="utf-8")
+    text = "\n".join(lines)
+    # ⚠️ 写之前**必须自己建目录**：本机 data/probe/ 早就有（跑过探针），CI 里却只有
+    # `mkdir -p data`（state-restore 只建 data/）—— 少了这句，本机永远绿、CI 一跑就
+    # FileNotFoundError（2026-10-09 实际踩到：checks.yml 第一次上 CI 就红在这）。
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(text, encoding="utf-8")
     print(f"结果已写入 {OUT}")
     return 0 if ok else 2
 

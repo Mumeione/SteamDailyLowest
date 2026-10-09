@@ -2,8 +2,24 @@
 #   · tests/            pytest（判定 / 渲染 / 状态库 / 传输底座…）
 #   · tools/check_payload.py   报表产物的跨端字面量双向比对（low_class / views / 日期协议 / agg 键序）
 #   · tests/jsdom/smoke_s9.js  app.js 的 DOM 行为冒烟（无浏览器环境下的主力手段）
-# 结果就是「记得跑才锁」——改错了不红，锁等于不存在。这里给它们通电：
-# 每次推 main / 开 PR 都跑一遍，一条命令红就整条红。
+#   · tools/check_workflow_yaml.py  workflow 文件严格校验（重复键直接报错）
+# 结果就是「记得跑才锁」——改错了不红，锁等于不存在。
+#
+# ⚠️ 实际命令只有一条：`python tools/check_all.py` —— **和本地完全同一个入口**
+#   （装载依赖之后再跑它，它自己按依赖顺序串四道锁并打印耗时表）。
+#   不在这里重排一遍命令序列，是为了避免「本地绿、CI 红」那类最耗时间的偏差。
+#
+# ⚠️ **触发方式 = 只手动（2026-10-09 用户定案）**：他每次都本地跑齐再提交，
+#   不希望每天推送都在 Actions 里堆一批记录（还要占额度、翻日志）。
+#   所以 `on:` 只留 `workflow_dispatch` —— 想跑的时候到 Actions 页面点一下
+#   「Run workflow」即可，四道锁大约 1.5~4 分钟跑完。
+#   要把自动化加回来，就在 `on:` 下补这几行（其余配置不用动）：
+#       push:
+#         branches: [main]
+#       # pull_request:
+#   ⚠️ 注意：手动触发意味着**没有任何东西会拦住坏提交** —— 发布流程 daily.yml
+#   不看这个文件（它跑的是 main 上最新的代码）。所以「本地必须跑齐」这条约束
+#   现在由使用习惯承担，别把这份文件当成安全网。
 #
 # ⚠️ 与 daily.yml 分开是有意的：daily 是**发布**流程（抓取 → 报表 → Pages），
 # 它跑一次要打上百次真实请求；这里的四道锁**零网络**（报表用状态库本地重渲染），
@@ -13,16 +29,10 @@
 # 所以先从 data 分支恢复状态库，再用 tools/render_report.py **本地重渲染**
 # （--at latest：参照日期取状态库里最新一条数据，不写死日期，免随时间腐烂）。
 # 数据陈旧不影响这几道锁：它们验的是结构 / 协议 / 行为，不是当天内容。
-#
-# cron 字段说明（本文件不设 schedule，仅 rrule 无关）：
-#   触发 = push(main) · pull_request · workflow_dispatch
 
 name: checks
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch: {}
 
 permissions: {}
@@ -55,27 +65,19 @@ jobs:
           python-version: "3.13"
 
       - name: 安装依赖
-        # pyyaml 只给 tools/check_workflow_yaml.py 用（本 job 会顺手校验三个 workflow）
+        # pyyaml 供 tools/check_workflow_yaml.py；pytest 不在 requirements 里（开发期依赖）
         run: pip install -r requirements.txt pytest
-
-      - name: 0) workflow YAML 严格校验（重复键直接报错；不带参数 = 校验目录下全部）
-        run: python tools/check_workflow_yaml.py
-
-      - name: 1) 单元测试（判定 / 渲染 / 状态库 / 传输底座）
-        run: python -m pytest -q
-
-      - name: 2) 本地重渲染测试报表（零网络请求）
-        run: python tools/render_report.py --at latest
-
-      - name: 3) 报表产物契约检查（跨端字面量双向比对）
-        run: python tools/check_payload.py
 
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
 
-      - name: 4) 前端冒烟（jsdom：DOM 行为 / 分片加载 / 筛选序列）
-        # 版本与本地对齐（jsdom ^30）；本地跑法：NODE_PATH=<node_modules> node tests/jsdom/smoke_s9.js
-        run: |
-          npm install --no-save --no-audit --no-fund "jsdom@^30"
-          node tests/jsdom/smoke_s9.js
+      - name: 安装 jsdom（前端冒烟的前置）
+        # 版本与本地对齐（jsdom ^30）；CI 装在仓库根，node 从 ./node_modules 直接解析
+        run: npm install --no-save --no-audit --no-fund "jsdom@^30"
+
+      - name: 跑齐四道锁（与本地**同一条命令**）
+        # 本地: python tools/check_all.py
+        # 刻意不让 CI 自己拼命令序列 —— 两边同一套入口，才不会出现「本地绿、CI 红」
+        # （那是最浪费时间的一类不一致）。每道锁的耗时表由 check_all.py 自己打印。
+        run: python tools/check_all.py

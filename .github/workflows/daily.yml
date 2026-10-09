@@ -4,7 +4,8 @@
 #   14 19 * * *  每日 03:14 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
 #   21 21 * * *  每日 05:21 Asia/Shanghai  补跑：daily-guard 检测到 12h 内已有成功的定时主任务则跳过
 #   14 7 * * *   每日 15:14 Asia/Shanghai  预抓：run.py --prefetch，纯 state 派生补详情缓存、不出报表（S8 起不扫描折扣列表）
-#   14 7 2 * *   每月 2 日 15:14           orphan 清理：把 data 分支历史清零（只留当前一版）
+#   14 7 2 * *   每月 2 日 15:14           orphan 清理：data 分支历史清零（只留当前一版）
+#                                          + 清掉 7 天前的 Pages 部署记录（见该 job 注释）
 #   workflow_dispatch                    手动触发：主任务与预抓都跑（并发组串行排队）
 #
 # 定时全部避开整点：官方文档写明「整点是 Actions 高负载时刻，调度可能被推迟甚至丢弃」。
@@ -35,8 +36,10 @@
 # 且 orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
 #
 # ⚠️ 本文件**不跑测试**：pytest / check_payload / jsdom 冒烟在 checks.yml（2026-10-09）。
-#   分工是「daily = 发布（要打真实请求）· checks = 契约锁（零网络）」，
-#    别往这里加测试步骤 —— 那会让每次发布多背一套依赖，而且失败语义混在一起。
+#   分工是「daily = 发布（要打真实请求）· checks = 契约锁（零网络）」。checks 目前
+#   是**手动触发**（用户每次都本地跑齐再提交，不想每天堆 Actions 记录）；所以别指望
+#   它拦住坏提交，也别往 daily 里加测试步骤 —— 那会让每次发布多背一套依赖，
+#   而且失败语义混在一起。
 
 name: daily
 
@@ -188,6 +191,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write      # force-push 重置 data 分支
+      deployments: write   # 删旧的 Pages 部署记录（见下面第二步）
     steps:
       - uses: actions/checkout@v7
         with:
@@ -201,6 +205,53 @@ jobs:
           git add -A
           git commit -m "state reset $(date -u +%F)"
           git push origin HEAD:data --force
+
+      # 每月顺手清掉旧的 **Pages 部署记录**（用户 2026-10-09 要求）。
+      # 背景：deploy-pages 每个成功的主跑都建一条 deployment，约 1 条/天、一年 300 多条，
+      # 全都挂在这个仓库的 Environments → github-pages 列表里。**它不占仓库体积、
+      # 不影响 Pages 站点**（站点内容由 Pages 服务持有，deployment 只是记录），
+      # 纯粹是列表整洁 —— 而且 GitHub 的 retention 设置**不管 deployments**
+      # （2026-10-01 那次扩大范围覆盖的是 checks / workflow runs / statuses /
+      # artifact / 日志），所以只能自己删。
+      # ⚠️ 删除有两条硬规则（REST API 文档）：仓库有多个 deployment 时**只能删
+      #    inactive 的**，要先 POST 一个非 success 的 status 标成 inactive 再删；
+      #    所以这里永远**跳过最新一条**（列表必须至少留一条）。
+      # ⚠️ 失败**不判 job 红**（只用 ::warning:: 标注一下）：这是列表整洁类维护，
+      #    删不掉几条记录不该去触发那个「失败就开 Issue」的告警。
+      # 现在是 7 天（用户 2026-10-09 定）；想更保守就把 KEEP_DAYS 调大。
+      - name: 清掉旧的 Pages 部署记录（留最新一条 + 只留最近 7 天）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_DAYS: "7"
+          TARGET_ENV: github-pages
+        run: |
+          set -u
+          cutoff=$(date -u -d "-${KEEP_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          echo "将删除 ${TARGET_ENV} 环境下早于 ${cutoff} 的部署记录（最新一条永远保留）"
+          if ! gh api --paginate \
+                 "repos/${GITHUB_REPOSITORY}/deployments?environment=${TARGET_ENV}&per_page=100" \
+                 --jq '.[] | "\(.id) \(.created_at)"' > /tmp/deps.raw 2>/tmp/deps.err; then
+            echo "::warning::取部署列表失败，本次跳过清理；$(cat /tmp/deps.err)"
+            exit 0
+          fi
+          tail -n +2 /tmp/deps.raw > /tmp/deps.txt   # 跳过最新一条
+          pending=$(wc -l < /tmp/deps.txt)
+          echo "该环境下待考察 ${pending} 条"
+          deleted=0; failed=0
+          while read -r id created; do
+            [ -n "${id:-}" ] || continue
+            [[ "${created:-}" < "${cutoff}" ]] || continue   # ISO8601 字典序即时序
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments/${id}/statuses" \
+              -f state=inactive -f description="cleanup: superseded by a newer deploy" \
+              >/dev/null 2>&1 || true
+            if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/deployments/${id}" \
+                 >/dev/null 2>&1; then
+              deleted=$((deleted + 1))
+            else
+              failed=$((failed + 1))
+            fi
+          done < /tmp/deps.txt
+          echo "已删除 ${deleted} 条，失败 ${failed} 条（失败多为「系统保护的最后一条」，可忽略）"
 
   prefetch:
     # 批 B 预抓（.scratch/prefetch/spec.md R2）：15:14 Asia/Shanghai 补详情缓存，
