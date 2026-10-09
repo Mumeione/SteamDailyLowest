@@ -472,13 +472,203 @@ def boxart_code(url: str | None) -> str | None:
 
 
 def slim_for_all_js(cards: list[dict]) -> list[dict]:
-    """给 all.js 的分组卡片瘦身：剔除 :data:`_ALL_JS_DROP`，并把 ``banner`` 换成紧凑的 ``art``。"""
+    """给列表页卡片瘦身：剔除 :data:`_ALL_JS_DROP`，并把 ``banner`` 换成紧凑的 ``art``。"""
     out = []
     for card in cards:
         slim = {k: v for k, v in card.items() if k not in _ALL_JS_DROP}
-        slim["art"] = boxart_code(card.get("banner"))
+        # ⚠️ 幂等：卡片可能**已经被瘦身过**（没有 banner、只有 art）—— 这时别拿
+        # 不存在的 banner 去算、把 art 抹成 None（分片路径会连着瘦两次：
+        # `all_section_orders` 的池子先瘦一次建组，`write_all_shards` 再瘦一次）。
+        if "banner" in card:
+            slim["art"] = boxart_code(card.get("banner"))
+        elif "art" in card:
+            slim["art"] = card["art"]
         out.append(slim)
     return out
+
+
+# ==================================================================
+# 板块完整列表的分片（2026-10-08：分类页加载 20 秒）
+# ==================================================================
+# 病根：分类页原本**一次性下载整个 all.js** —— 线上 5.81MB raw / 729KB gzip，
+# 而且**下完才渲染第一条**，可首屏只需要 30 条（3KB 的量）。国内到 github.io
+# 实测只有 40~60KB/s，729KB 就是 13~18 秒，占满那 20 秒的 95%。
+# 分片后首屏只要 1 片（200 条 ≈ 20KB gzip），降幅 97%。
+#
+# ⚠️ **必须按板块自己的顺序切片，不能做「共享池 + 板块索引」** —— 实测
+# （2026-10-08，池顺序 = tier 分组 + 折扣降序，与板块排序完全不相关）：
+#     new_low 前 30 条散落在 9 片 / expiring 1 片 / popular 18 片 / big_cut 1 片
+# 「热门游戏」打开就要拉 18 个分片，等于没优化。卡片因此在板块间**重复存储**
+# （发布体积 5.8MB → 约 13.1MB raw），这是可重建产物，换首屏速度值得。
+#
+# ⚠️ 别再把卡片字段拆成「card / compare 两个文件」来求解：实测 compare 只占
+# 24.4%，拆掉也只把 653KB 降到 550KB（-16%），20 秒 → 17 秒，感觉不出来。
+# 真正的问题是「一次性全量阻塞」，不是「单卡有多胖」。
+ALL_SHARD_SIZE = 200
+
+#: 分片文件写入的全局命名空间 —— app.js 的 :func:`shardGlobal` 读同一个键。
+#: 产物是 ``(window.ALL_S = window.ALL_S || {})["expiring_0"] = {...};`` 形态，
+#: 每个文件自带命名空间初始化，加载顺序无所谓（与 all.js 一样不受 CORS 限制，
+#: 本地 file:// 直开也能用；fetch 会失败）。
+ALL_SHARD_GLOBAL = "ALL_S"
+
+
+def filter_dim_values(cfg: dict) -> dict[str, list[str]]:
+    """列表页筛选四个维度的**全部选项值**（前端预聚合计数的查表键）。
+
+    ⚠️ 与 :func:`filter_specs` 的选项**必须逐项一致** —— 那边加/改一个档位，
+    这里不改的话，用户选到那个档位时查表会 miss、退回分片遍历（结果仍对，
+    但「共 N 条」要等分片到齐）。有单测锁两边同步。
+    """
+    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
+    big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
+    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
+    return {
+        "date": ["0", "1", "2", f"d{days}", "all"],
+        "cut": ["all"] + [str(v) for v in sorted({50, big, 90})],
+        "reviews": ["all"] + [str(v) for v in sorted({500, 5000, notable})],
+        "only_new": ["all", "new"],
+    }
+
+
+def _agg_rows(members: list[dict], cfg: dict, key: str) -> list[tuple]:
+    """把每张卡的筛选判据预压成元组，供 :func:`section_agg` 复用。
+
+    不做的话就是 160 个组合 × N 张卡次重复取字段（expiring 一轮 116 万次）。
+    """
+    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
+    big = int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
+    notable = int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
+    cuts = sorted({50, big, 90})
+    revs = sorted({500, 5000, notable})
+    rows = []
+    for card in members:
+        ago = card.get("start_days_ago")
+        # 日期位图，位序跟着 :func:`filter_dim_values` 的 date 选项：0/1/2/dN/all
+        bits = 16                                   # "all" 恒真
+        if ago is not None:
+            if ago == 0:
+                bits |= 1
+            if ago == 1:
+                bits |= 2
+            if ago == 2:
+                bits |= 4
+            if ago <= days:
+                bits |= 8
+        rows.append((
+            True if key == "__all__" else _is_live(card),   # 「全部折扣」不叠加 liveOk
+            bits,
+            sum(1 for t in cuts if (card.get("cut") or 0) >= t),   # 门槛已升序 ⇒ 越大越严
+            sum(1 for t in revs if review_count(card) >= t),
+            card.get("low_class") == classify.STEAM_LOW_NEW,
+        ))
+    return rows
+
+
+def section_agg(members: list[dict], cfg: dict, key: str) -> dict:
+    """板块在**每一种筛选组合**下的精确条数（构建期算好，写进第 0 片）。
+
+    意义：分片之后前端手上只有前几片，本来算不出「共 N 条」——这张表让
+    **只加载第 0 片**就能给出精确总数，筛选不必退化成全量加载。
+    四个维度都是离散档位（5×4×4×2 = 160 个组合），表本身约 4KB raw / 1KB gzip。
+
+    ⚠️ 判据必须与 app.js 的 ``dateOk`` / ``filterOk`` / ``liveOk`` 同一口径：
+      · 「即将到期」**不叠加日期窗口**（refs §11.3：叠加会把最紧急的老折扣漏掉）；
+      · 「全部折扣」**不叠加 liveOk**（本来就是要看全量，含过期留存）。
+    """
+    dims = filter_dim_values(cfg)
+    dates, cuts, revs, news = dims["date"], dims["cut"], dims["reviews"], dims["only_new"]
+    rows = _agg_rows(members, cfg, key)
+    cache: dict[tuple, int] = {}
+    counts: dict[str, int] = {}
+    for di, d in enumerate(dates):
+        # 「即将到期」忽略日期 ⇒ 5 个日期选项共用一份计数（靠 cache 只算一次）
+        bit = 16 if key == "expiring" else (1 << di)
+        for ci in range(len(cuts)):
+            for ri in range(len(revs)):
+                for oi in range(len(news)):
+                    ck = (bit, ci, ri, oi)
+                    n = cache.get(ck)
+                    if n is None:
+                        n = sum(1 for live, b, ct, rt, isn in rows
+                                if live and (b & bit) and ct >= ci and rt >= ri
+                                and (oi == 0 or isn))
+                        cache[ck] = n
+                    counts["|".join((d, cuts[ci], revs[ri], news[oi]))] = n
+    return {"dim": dims, "counts": counts}
+
+
+def all_section_orders(all_cards: list[dict], cfg: dict) -> dict[str, list[dict]]:
+    """每个板块**完整列表**的卡片顺序，分片就按它切。
+
+    与首页四板块预览（:func:`build_sections`）同源、同排序 —— 点「查看更多」
+    进去看到的顺序和首页预览一致。
+
+    ``"__all__"``（全部折扣）没有板块排序语义，沿用**池顺序**：tier 分组 +
+    折扣降序，与前端原本展开 ``groups`` 的顺序一致（分片后就是这个顺序），别改成
+    ``all_cards`` 的原序（那是抓取顺序，不稳定）。
+    """
+    orders = {}
+    for spec in HOME_SECTIONS:
+        key = spec["key"]
+        members = _section_members(key, all_cards, cfg)
+        members.sort(key=_section_sort(key, cfg))
+        orders[key] = members
+    # ⚠️ 这里**不瘦身**：`write_all_shards` 会统一瘦一次，瘦两遍会把 art 抹成 None
+    pool: list[dict] = []
+    for group in build_groups(all_cards, cfg):
+        pool.extend(group["items"])
+    orders["__all__"] = pool
+    return orders
+
+
+def _write_shard(path: Path, slot: str, payload: dict) -> None:
+    """写一个分片文件：``(window.ALL_S = window.ALL_S || {})["<slot>"] = {...};``"""
+    path.write_text(
+        '(window.%s = window.%s || {})[%s] = %s;\n'
+        % (ALL_SHARD_GLOBAL, ALL_SHARD_GLOBAL,
+           json.dumps(slot), json.dumps(payload, ensure_ascii=False)),
+        encoding="utf-8")
+
+
+def write_all_shards(output_dir: Path, all_cards: list[dict], cfg: dict) -> dict:
+    """把板块完整列表切成 ``all/<key>_<n>.js``，**替代**原先的单文件 ``all.js``。
+
+    每片 :data:`ALL_SHARD_SIZE` 条；第 0 片额外带 ``total`` / ``shards`` / ``agg``，
+    让前端只加载一片就能给出精确的「共 N 条」。
+
+    关于「换排序」：默认「精选」排序 = 分片顺序，天然对齐、零成本。用户主动换成
+    折扣/价格/好评排序是**全局重排**，必须拿到该板块全部卡片，此时并发拉取全部分片
+    （≈650KB gzip，与改动前点一次分类的代价相同）。实测另出一份「列式排序键」
+    只能在这个次要路径上再省约 40%，却要在 app.js 里复制一份筛选判据
+    （卡式 + 列式两套），与「判据只有一份」的约定冲突 —— 不值，故不做。
+
+    ⚠️ 会先清空 ``output/all/``：池量每天变，昨天 37 片、今天 12 片的话，
+    残留的旧分片会被一起发布，白占仓库体积。
+    """
+    out = output_dir / "all"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, dict] = {}
+    for key, members in all_section_orders(all_cards, cfg).items():
+        slim = slim_for_all_js(members)
+        total = len(slim)
+        n_shards = max(1, math.ceil(total / ALL_SHARD_SIZE))
+        manifest[key] = {"total": total, "shards": n_shards, "size": ALL_SHARD_SIZE}
+        for i in range(n_shards):
+            payload = {
+                "key": key,
+                "n": i,
+                "size": ALL_SHARD_SIZE,     # 前端按它算「第 k 条落在第几片」
+                "total": total,
+                "shards": n_shards,
+                "items": slim[i * ALL_SHARD_SIZE:(i + 1) * ALL_SHARD_SIZE],
+            }
+            if i == 0:
+                payload["agg"] = section_agg(members, cfg, key)
+            _write_shard(out / f"{key}_{i}.js", f"{key}_{i}", payload)
+    return manifest
 
 
 #: 首页四板块（S9 定案 2026-10-06）。顺序由用户拍板：新史低 → 即将到期 → 热门游戏 → 大额折扣。
@@ -491,7 +681,8 @@ def slim_for_all_js(cards: list[dict]) -> list[dict]:
 #: :func:`criteria_notes` 从配置生成，那里才是唯一来源。
 #: ⚠️ 加/改板块要同时动三处（这是已知的重复分派，暂时保留、改动面大）：
 #: ① :func:`_in_section`（判据）② :func:`_section_sort`（板块内排序）
-#: ③ :func:`render` 里 all.js 的 `section_order`（列表页顺序）—— 有单测与冒烟锁定。
+#: ③ :func:`all_section_orders`（列表页顺序 = 分片的物理顺序）—— 有单测与冒烟锁定。
+#:    （2026-10-08 起 `section_order` 不再单独下发：切片的顺序本身就是它。）
 HOME_SECTIONS = [
     {"key": "new_low", "label": "新史低"},
     {"key": "expiring", "label": "即将到期"},
@@ -1008,11 +1199,12 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
 
     ``all_cards``：「全部」视图的数据 —— 今日筛选链通过的全量卡片，每张带
     ``views`` 列表（week/active/new_today/upcoming 成员标志，run.py 计算）；
-    传了就写出 ``all.js``（懒加载视图的数据源）。
+    传了就写出板块完整列表的分片 ``all/<key>_<n>.js``（2026-10-08 起取代单文件
+    ``all.js`` —— 见 :func:`write_all_shards` 的注释）。
 
     ⚠️ 2026-10-08：payload 不再下发 ``views`` / ``groups`` / ``view_groups``
     （首屏瘦身）—— 视图按钮与「即将过期」卡片都无前端消费者；「即将到期」板块的
-    完整列表走 all.js 的 ``expiring`` 板块，expiring.json 快照导出由 run.py 的
+    完整列表走 ``all/`` 分片的 ``expiring`` 板块，expiring.json 快照导出由 run.py 的
     ``upcoming_shown_items`` 负责。
     """
     output_dir = Path(cfg["output_dir"])
@@ -1043,8 +1235,8 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_text": now.strftime("%Y-%m-%d %H:%M"),
         #: 资源版本（= now 的 epoch 秒）——模板给 data.js / app.js 的 ``?v=`` 用它，
-        #: app.js 懒加载 all.js 时也拼同一个值（2026-10-08：all.js 原先不带 ``?v=``，
-        #: 会吃 Pages 的 ~10 分钟缓存、可能短暂取到旧版）。
+        #: app.js 懒加载 ``all/`` 分片时也拼同一个值（2026-10-08：原先的单文件
+        #: ``all.js`` 不带 ``?v=``，会吃 Pages 的 ~10 分钟缓存、可能短暂取到旧版）。
         "assets_version": version,
         "stale_banner_hours": int(cfg.get("stale_banner_hours", 36)),
         #: S9-3 顶部消息区：>26h 黄（Actions 延迟）/>36h 红（今天没更新）。
@@ -1056,7 +1248,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "overview": stats,
         "low_points": low_points,
         #: ⚠️ payload 里**没有** ``groups`` / ``view_groups`` / ``views``（2026-10-08 删除）：
-        #: S9 首页板块走 sections、大卡走 picks、「即将到期」完整列表走 all.js 的
+        #: S9 首页板块走 sections、大卡走 picks、「即将到期」完整列表走 ``all/`` 分片的
         #: expiring —— 没有前端消费者。这组键曾让 data.js 在大促尾期膨胀到
         #: 7.4MB（首屏几十秒）——别加回来。
         #: S9 首页四板块（池子 = 「全部」视图那批卡片，见 build_sections 注释）
@@ -1097,31 +1289,14 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "item_count": len(items),
     }
 
-    # 重构 S5：「全部」视图的懒加载数据（今日筛选链全量，含视图成员标志）。
-    # 与 data.js 同一次渲染写出，保证两份产物的 generated_at 一致。
-    # ⚠️ 产物是 all.js（window.ALL_DATA = {...}）而不是 .json —— 前端用动态
-    # <script> 标签加载，不受 CORS 限制，本地 file:// 直开也能用；fetch 会失败
+    # 板块完整列表（首页点「查看更多」进去的那张页）—— 2026-10-08 起**按板块顺序
+    # 切成 all/<key>_<n>.js 分片**，取代原先的单文件 all.js（5.81MB raw / 729KB gzip）。
+    # 顺序不再单独下发：它就是分片的物理顺序，前端按片号依次读即得到板块顺序，
+    # 排序口径仍然只有服务端一份（:func:`_section_sort`）。
     if all_cards is not None:
-        # S9-卡片：板块列表页（首页点「查看更多」进去的那张页）的顺序 ——
-        # 首页四板块的顺序由 `_section_sort` 决定，而 all.js 的分组顺序是
-        # 「tier 分组 + (-cut, title)」，两者本来不一致（现象：点进去顺序变样）。
-        # 这里把每个板块的**完整 appid 顺序**一起下发，前端 featured 模式下按它排 ——
-        # 排序口径仍然只有服务端一份，前端不复制规则。
-        all_payload = {
-            "generated_at": payload["generated_at"],
-            "generated_at_text": payload["generated_at_text"],
-            "groups": build_groups(slim_for_all_js(all_cards), cfg),
-            "section_order": {
-                spec["key"]: [card["appid"] for card in sorted(
-                    _section_members(spec["key"], all_cards, cfg),
-                    key=_section_sort(spec["key"], cfg))]
-                for spec in HOME_SECTIONS
-            },
-        }
-        (output_dir / "all.js").write_text(
-            "window.ALL_DATA = " + json.dumps(all_payload, ensure_ascii=False) + ";\n",
-            encoding="utf-8")
-        paths["all_js"] = str(output_dir / "all.js")
+        manifest = write_all_shards(output_dir, all_cards, cfg)
+        paths["all_shards"] = manifest
+        paths["all_dir"] = str(output_dir / "all")
 
     latest = {
         "generated_at": payload["generated_at"],

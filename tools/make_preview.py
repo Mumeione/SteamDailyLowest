@@ -49,12 +49,12 @@ def load_breakpoints(data_js: str, fallback: tuple[int, int] = (600, 1100)) -> t
 
 
 def build_single(index_html: str, css: str, js: str, data_js: str,
-                 all_js: str | None = None) -> str:
+                 all_shards: str | None = None) -> str:
     """把外链的 css / js / data.js 内联进 HTML。
 
-    重构 S5 起顺带内联 all.js（可重建视图的懒加载数据，``window.ALL_DATA``）——
-    app.js 的 loadAll 检测到 window.ALL_DATA 就直接用，不再注入 <script>，
-    单文件预览里「本周 / 折扣中 / 全部」三视图照常可点。
+    顺带内联板块列表的分片（``output/all/*.js``，``window.ALL_S``）——
+    app.js 的 loadShard 会先查 window.ALL_S，命中就不注入 <script>，
+    单文件预览里点分类照样出列表（2026-10-08 起取代原先的单个 all.js）。
     """
     # <link rel="stylesheet" href="static/app.css?v=...">  → <style>
     html = re.sub(
@@ -77,12 +77,12 @@ def build_single(index_html: str, css: str, js: str, data_js: str,
         html,
         flags=re.IGNORECASE,
     )
-    # all.js（window.ALL_DATA）内联：放在 data.js 之后、app.js 之前均可 ——
-    # loadAll 是点击时才读 window.ALL_DATA
-    if all_js:
+    # 分片（window.ALL_S）内联：放在 data.js 之后、app.js 之前均可 ——
+    # loadShard 是点击时才读 window.ALL_S
+    if all_shards:
         html = html.replace(
             "</head>",
-            "<script>\n" + all_js + "\n</script>\n</head>",
+            "<script>\n" + all_shards + "\n</script>\n</head>",
             1,
         )
     return html
@@ -147,7 +147,7 @@ def main() -> int:
     css_path = OUTPUT / "static" / "app.css"
     js_path = OUTPUT / "static" / "app.js"
     data_path = OUTPUT / "data.js"
-    all_path = OUTPUT / "all.js"  # 重构 S5：可重建视图的懒加载数据，缺失不阻断
+    all_dir = OUTPUT / "all"      # 板块列表的分片，缺失不阻断（首页照常能看）
 
     missing = [p.name for p in (index_path, css_path, js_path, data_path) if not p.exists()]
     if missing:
@@ -155,12 +155,17 @@ def main() -> int:
         return 1
 
     data_js = _read(data_path)
-    all_js = _read(all_path) if all_path.exists() else None
-    if all_js is None:
-        print("[warn] 没有 all.js：「本周 / 折扣中 / 全部」三视图在预览里不可用"
-              "（先跑一次带 S5 渲染的报表）")
+    # 分片内联：按文件名排序（<key>_<n> 字典序即可，前端按 slot 查表、不依赖顺序）。
+    # 大促时这一堆可能十几 MB —— 预览是本地单文件，不上传，不心疼。
+    shard_files = sorted(all_dir.glob("*.js")) if all_dir.exists() else []
+    all_shards = "\n".join(_read(p) for p in shard_files) or None
+    if all_shards is None:
+        print("[warn] 没有 output/all/ 分片：预览里点进分类会停在「加载失败」"
+              "（先跑一次带 all_cards 的报表）")
+    else:
+        print(f"[info] 已内联 {len(shard_files)} 个列表分片")
     single = build_single(_read(index_path), _read(css_path), _read(js_path),
-                          data_js, all_js=all_js)
+                          data_js, all_shards=all_shards)
     (OUTPUT / "preview_single.html").write_text(single, encoding="utf-8")
 
     mobile, tablet = load_breakpoints(data_js)

@@ -1,8 +1,10 @@
 /* S9 首页前端冒烟测（jsdom）—— 无浏览器环境下验证 app.js/app.css 的主力手段。
  * 用法（jsdom 不是本仓库依赖，NODE_PATH 指到装有 jsdom 的 node_modules）：
  *   NODE_PATH=<装有 jsdom 的目录> node tests/jsdom/smoke_s9.js
- * 做法：把 output/ 的 index.html + app.css + data.js + all.js + app.js 内联成一个
+ * 做法：把 output/ 的 index.html + app.css + data.js + all/*.js + app.js 内联成一个
  *      自包含页面（同 tools/make_preview.py 的思路），再用 jsdom 跑脚本、断言 DOM。
+ *      （2026-10-08 起 all.js 拆成 all/<板块>_<片号>.js；全部内联后 loadShard() 每次
+ *      都命中 window.ALL_S 缓存、同步回调，所以下面的断言仍然可以写成同步的。）
  * 先跑 `python tools/render_report.py --at <日期>` 产出 output/，再跑本脚本。
  * 2026-10-07 起入库（原来在 %TEMP% 不受版本控制，换机即失传 —— 架构勘察候选 7）。
  */
@@ -17,13 +19,22 @@ const index = read("index.html");
 const css = read("static/app.css");
 const appJs = read("static/app.js");
 const dataJs = read("data.js");
-const allJs = read("all.js");
+// 分片目录（output/all/）。文件名自描述（"<板块>_<片号>.js"），顺序无所谓 ——
+// 真正的顺序由文件里的 slot 名决定，不靠这里的文件次序。
+const allDir = path.join(OUT, "all");
+const shardFiles = fs.existsSync(allDir)
+  ? fs.readdirSync(allDir).filter((f) => f.endsWith(".js")).sort()
+  : [];
+if (!shardFiles.length) {
+  console.warn("[warn] output/all/ 里没有分片 —— 先跑 `python tools/render_report.py` 再跑本脚本");
+}
+const allShards = shardFiles.map((f) => fs.readFileSync(path.join(allDir, f), "utf8")).join("\n");
 
-// 内联静态资源（all.js 放在 app.js 之前，等价于单文件预览）
+// 内联静态资源（分片放在 app.js 之前，等价于单文件预览）
 let html = index
   .replace(/<link[^>]*app\.css[^>]*>/i, `<style>${css}</style>`)
   .replace(/<script[^>]*data\.js[^>]*><\/script>/i, `<script>${dataJs}</script>`)
-  .replace(/<script[^>]*app\.js[^>]*><\/script>/i, `<script>${allJs}</script><script>${appJs}</script>`);
+  .replace(/<script[^>]*app\.js[^>]*><\/script>/i, `<script>${allShards}</script><script>${appJs}</script>`);
 
 const errors = [];
 const vc = new VirtualConsole();
@@ -495,7 +506,7 @@ function buildDom(mutate, patchHtml, opts) {
     .replace(/<link[^>]*app\.css[^>]*>/i, `<style>${css}</style>`)
     .replace(/<script[^>]*data\.js[^>]*><\/script>/i, `<script>${patchedData}</script>`)
     .replace(/<script[^>]*app\.js[^>]*><\/script>/i,
-      (opts.withAllJs === false ? "" : `<script>${allJs}</script>`) + `<script>${appJs}</script>`);
+      (opts.withShards === false ? "" : `<script>${allShards}</script>`) + `<script>${appJs}</script>`);
   if (patchHtml) h = patchHtml(h);
   const vc2 = new VirtualConsole();
   vc2.on("jsdomError", (e) => {
@@ -581,8 +592,8 @@ check("没内容 → 显示空状态（不再只是一句话）",
 check("无内容用「探底」那张插画（不是转圈那张）",
   !!emptyEl.querySelector(".empty-art:not(.is-spin)"));
 
-// ② 加载中：不内联 all.js，点导航后停在加载态
-const loadingDom = buildDom(null, null, { withAllJs: false });
+// ② 加载中：不内联分片，点导航后停在加载态
+const loadingDom = buildDom(null, null, { withShards: false });
 loadingDom.window.document.querySelector("#nav .nav-item").click();
 const loadingEmpty = loadingDom.window.document.getElementById("empty");
 check("加载中 → 转圈插画 + 加载文案",
@@ -591,9 +602,12 @@ check("加载中 → 转圈插画 + 加载文案",
   loadingEmpty.textContent.trim());
 
 // ③ 加载失败：给那个动态 <script> 派发一次 error
-// src 带 ?v=（2026-10-08 起，防 Pages 缓存），用前缀匹配
-const loadScript = loadingDom.window.document.querySelector('script[src^="all.js"]');
-check("点导航真的去加载 all.js", !!loadScript);
+// src 形如 all/<板块>_<片号>.js?v=…（2026-10-08 起分片；?v= 防 Pages 缓存），用前缀匹配。
+// 分片后取的是「第 0 片」（≈20KB gzip），不再是整包 all.js —— 20 秒的来源就在这里。
+const loadScript = loadingDom.window.document.querySelector('script[src^="all/"]');
+check("点导航真的去加载分片（不是整包 all.js）",
+  !!loadScript && /^all\/[a-z_]+_\d+\.js/.test(loadScript.getAttribute("src")),
+  loadScript ? loadScript.getAttribute("src") : "(没找到动态 script)");
 if (loadScript) {
   loadScript.dispatchEvent(new loadingDom.window.Event("error"));
   check("加载失败 → 失败插画 + 重试按钮",
@@ -648,23 +662,69 @@ check("大卡每页张数 = 实际列数（不是写死的 5）", (function () {
   return n === total && n <= cols && !pg;
 })(), doc.getElementById("picks-sub").textContent);
 
-// 板块列表页的顺序必须来自服务端下发的 section_order（否则「查看更多」里顺序和首页不一致）
-check("all.js 下发了每个板块的顺序 section_order", (function () {
-  const so = (dom.window.ALL_DATA || {}).section_order || {};
-  const keys = Object.keys(so);
-  return keys.length === 4 && keys.every((k) => Array.isArray(so[k]) && so[k].length > 0);
-})(), Object.keys((dom.window.ALL_DATA || {}).section_order || {}).join("/"));
+// ---- 分片（2026-10-08）：all.js 拆成 all/<板块>_<片号>.js ----
+// 顺序 = **分片的物理顺序**（片号 0,1,2… 依次读出来就是板块顺序），所以服务端不再
+// 单独下发 section_order：顺序只有一份（服务端切片时定），前端不复制任何排序规则。
+const shards = dom.window.ALL_S || {};
+const boardKeys = ["new_low", "expiring", "popular", "big_cut", "__all__"];
+const shard0 = (k) => (shards[k + "_0"] || {});
 
-// 点进板块列表页后，首条必须是「服务端板块顺序」的第一条（首页预览与列表页一致）
-check("板块列表页首条 = 服务端板块顺序第一条", (function () {
-  const order = ((dom.window.ALL_DATA || {}).section_order || {}).new_low || [];
-  const cards = [];
-  ((dom.window.ALL_DATA || {}).groups || []).forEach((g) => (g.items || []).forEach((c) => cards.push(c)));
-  const want = cards.find((c) => c.appid === order[0]);
-  const got = doc.querySelector("#rows .row .row-title");
-  if (!want || !got) return false;
-  return got.textContent === (want.title_zh || want.title);
-})());
+check("window.ALL_S 里五个板块的第 0 片都到齐",
+  boardKeys.every((k) => (shard0(k).items || []).length > 0),
+  boardKeys.filter((k) => !(shard0(k).items || []).length).join("/") || "全部到齐");
+check("每个分片自带 total/shards/size（前端据此算「第 k 条落在第几片」）", (function () {
+  const keys = Object.keys(shards);
+  return keys.length > 0 && keys.every((k) => {
+    const s = shards[k];
+    return s && typeof s.total === "number" && typeof s.shards === "number" && s.size > 0;
+  });
+})(), Object.keys(shards).length + " 片");
+check("只有第 0 片带预聚合计数表 agg（其余不带，省体积）", (function () {
+  const keys = Object.keys(shards);
+  return keys.length > 0 && keys.every((k) => {
+    const s = shards[k];
+    return /_0$/.test(k) ? !!(s.agg && s.agg.counts) : !s.agg;
+  });
+})(), "第 0 片 " + Object.keys(shards).filter((k) => /_0$/.test(k)).length + " 个");
+// 首屏只加载第 0 片也要能给出精确的「共 N 条」—— 靠的就是这张表
+check("第 0 片 agg 覆盖全部筛选组合（只加载 1 片也知道共几条）", (function () {
+  const agg = shard0("new_low").agg || {};
+  const dim = agg.dim || {};
+  const counts = agg.counts || {};
+  if (!dim.date || !dim.cut || !dim.reviews || !dim.only_new) return false;
+  let n = 0, miss = 0;
+  for (const d of dim.date) for (const c of dim.cut) for (const r of dim.reviews) for (const o of dim.only_new) {
+    n++;
+    if (typeof counts[[d, c, r, o].join("|")] !== "number") miss++;
+  }
+  return n > 0 && miss === 0;
+})(), Object.keys((shard0("new_low").agg || {}).counts || {}).length + " 个组合");
+// 端到端地验一次：只加载了第 0 片（200 条），「共 N 条」必须来自 agg 而不是已加载条数
+check("「共 N 条」来自预聚合表（比已加载条数多 ⇒ 没退化成全量加载）", (function () {
+  const txt = doc.getElementById("lv-count").textContent;
+  const m = txt.match(/(\d+)\s*条/);
+  const shown = doc.querySelectorAll("#rows .row").length;
+  return !!m && Number(m[1]) > shown;
+})(), doc.getElementById("lv-count").textContent + " / 已渲染 "
+      + doc.querySelectorAll("#rows .row").length + " 行");
+
+// 点进板块列表页后，渲染顺序必须 = 该板块分片的物理顺序（首页预览与列表页一致）。
+// 做法：渲染出来的行标题必须是「第 0 片顺序」的**子序列** —— 既能证明顺序一致，
+// 又不要求「第 0 片第一条一定通过默认日期窗口」（那会变成随数据漂移的脆弱断言）。
+check("板块列表页顺序 = 分片物理顺序（不再依赖服务端 section_order）", (function () {
+  const items = (shard0("new_low").items || []).map((c) => c.title_zh || c.title);
+  const shown = Array.from(doc.querySelectorAll("#rows .row .row-title")).map((e) => e.textContent);
+  if (!items.length || shown.length < 2) return false;
+  let start = 0;
+  for (const t of shown) {                    // 贪心子序列匹配（允许同名游戏重复出现）
+    let hit = -1;
+    for (let j = start; j < items.length; j++) { if (items[j] === t) { hit = j; break; } }
+    if (hit < 0) return false;
+    start = hit + 1;
+  }
+  return true;
+})(), "渲染 " + doc.querySelectorAll("#rows .row").length + " 行 / 第 0 片 "
+      + (shard0("new_low").items || []).length + " 条");
 
 // ---- S9 收尾小件（2026-10-07）：无封面占位 ----
 // 一次性气泡做过又删了（用户裁定：悬停呼吸效果已能表达可点，气泡多此一举），
@@ -677,14 +737,18 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
 // 做法：用 buildDom 把**所有**条目的 banner 抹成 null 再渲染一遍，占位节点数必须
 // 精确等于行数/大卡数，永远可判定。
 (function () {
+  // ⚠️ 2026-10-08 起封面有**两个来源**（`banner` 现成 URL / `art` 扩展名码 + game_id
+  // 现拼，见 app.js `bannerUrl`），只抹 banner 的话 art 会兜住、占位一个都不出现
+  // （这条断言就是这么悄悄失效的）。要造出「真的没有封面」必须两个都抹。
+  const stripArt = (it) => { it.banner = null; it.art = null; };
   const phDoc = buildDom((o) => {
-    (o.sections || []).forEach((s) => (s.items || []).forEach((it) => { it.banner = null; }));
-    (o.picks || []).forEach((p) => { p.banner = null; });
+    (o.sections || []).forEach((s) => (s.items || []).forEach(stripArt));
+    (o.picks || []).forEach(stripArt);
   }).window.document;
   const $$p = (sel) => Array.from(phDoc.querySelectorAll(sel));
   const rowCount = $$p("#sections .row").length;
   const divThumbs = $$p("#sections .row-thumb").filter((e) => e.tagName === "DIV");
-  check("无封面行卡片渲染灰块占位（抹 banner 后占位数 == 行数）",
+  check("无封面行卡片渲染灰块占位（抹 banner+art 后占位数 == 行数）",
     rowCount > 0 && divThumbs.length === rowCount,
     "占位 " + divThumbs.length + " / 行 " + rowCount);
   const pickArts = $$p("#picks-track .pick-art");

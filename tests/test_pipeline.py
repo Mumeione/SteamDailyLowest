@@ -26,6 +26,21 @@ TZ = classify.zone("Asia/Shanghai")
 NOW = datetime(2026, 9, 22, 16, 0, tzinfo=TZ)
 
 
+def all_shard_cards(out: Path) -> list[dict]:
+    """板块完整列表的卡片（2026-10-08 起在 ``output/all/<key>_<n>.js`` 分片里，
+    不再是单个 all.js）。这里只读「全部折扣」那一套 —— 它是全量池，够断言用。
+
+    分片是 ``(window.ALL_S = window.ALL_S || {})["<slot>"] = {...};`` 形态，
+    按 ``"] = "`` 切开再剥尾部分号。
+    """
+    cards: list[dict] = []
+    for path in sorted((out / "all").glob("__all___*.js")):
+        payload = json.loads(
+            path.read_text(encoding="utf-8").split("] = ", 1)[1].rstrip().rstrip(";"))
+        cards.extend(payload["items"])
+    return cards
+
+
 def deal(game_id: str, appid: int | None, cut: int, title: str) -> dict:
     return {
         "game_id": game_id,
@@ -184,12 +199,9 @@ class RenderPassTest(unittest.TestCase):
         good = next(i for i in section_cards if i["game_id"] == "g-good")
         self.assertTrue(good["compare"], "首页板块卡片必须带上 enrich 回灌的比价行")
 
-        all_data = json.loads(
-            (self.out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
-        )
-        all_cards = [c for g in all_data["groups"] for c in g["items"]]
+        all_cards = all_shard_cards(self.out)
         good_all = next(c for c in all_cards if c["game_id"] == "g-good")
-        self.assertTrue(good_all["compare"], "all.js 卡片同样要带上回灌的比价行")
+        self.assertTrue(good_all["compare"], "列表页分片卡片同样要带上回灌的比价行")
 
     def test_estimate_compare_fills_history_entries(self):
         """2026-10-08 估算定案：真查只保证「当日新增 + 即将到期」两板块的真实性
@@ -211,11 +223,7 @@ class RenderPassTest(unittest.TestCase):
                     announce_merges=False, enrich_hook=None,
                     all_entries=self.candidates)
 
-        all_data = json.loads(
-            (self.out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";")
-        )
-        all_cards = [c for g in all_data["groups"] for c in g["items"]]
-        good = next(c for c in all_cards if c["game_id"] == "g-good")
+        good = next(c for c in all_shard_cards(self.out) if c["game_id"] == "g-good")
         # 国区现价 1000 / 原价 10000 → 折扣比例 0.1；UA 原价 50000 → 估算现价 5000
         # （卡片里存的是 compare_rows 格式化后的展示行）
         rows = {r["label"]: r for r in good["compare"]}

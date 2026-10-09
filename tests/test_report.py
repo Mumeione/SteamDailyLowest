@@ -59,6 +59,24 @@ def _load_payload(out: Path) -> dict:
     return json.loads(text.split("=", 1)[1].rstrip().rstrip(";"))
 
 
+def _load_shards(out: Path) -> dict[str, list[dict]]:
+    """读出 ``output/all/`` 下的分片，按板块拼回完整卡片列表。
+
+    分片文件是 ``(window.ALL_S = window.ALL_S || {})["<slot>"] = {...};`` 形态
+    （与 all.js 一样不是纯 JSON），按 ``"] = "`` 切开再剥尾部分号。
+    返回 ``{板块 key: 按分片顺序拼好的卡片列表}`` —— 板块顺序就是分片顺序。
+    """
+    out_dir = out / "all"
+    if not out_dir.exists():
+        return {}
+    buckets: dict[str, list[dict]] = {}
+    for path in sorted(out_dir.glob("*.js")):
+        payload = json.loads(
+            path.read_text(encoding="utf-8").split("] = ", 1)[1].rstrip().rstrip(";"))
+        buckets.setdefault(payload["key"], []).extend(payload["items"])
+    return buckets
+
+
 class GroupSpecsTest(unittest.TestCase):
     def test_labels_are_neutral_not_evaluative(self):
         specs = {s["key"]: s for s in report.group_specs(CFG)}
@@ -402,11 +420,14 @@ class FeaturedSortTest(unittest.TestCase):
 
 
 class LazyViewsTest(unittest.TestCase):
-    """重构 S5：板块完整列表的数据源 = all.js（首次点导航时懒加载）。
+    """板块完整列表的数据源 = ``output/all/`` 下的分片（按需懒加载）。
 
-    - 未传 all_cards：不写 all.js（懒加载视图没有数据源）
-    - 传了 all_cards：all.js 落盘（按 tier 分组，每条带 views / sections 标志）
-    ⚠️ 2026-10-08：视图按钮（payload["views"]）已整段删除，本类不再断言它。
+    - 未传 all_cards：不产出分片（列表页没有数据源）
+    - 传了 all_cards：按板块切出分片，每条带 views / sections 标志
+
+    ⚠️ 2026-10-08：单文件 all.js（5.81MB / gzip 729KB，分类页要等 13~18 秒）
+    已换成按板块顺序切的 ``all/<key>_<n>.js`` —— 见 :func:`report.write_all_shards`。
+    ⚠️ 视图按钮（payload["views"]）已整段删除，本类不再断言它。
     """
 
     now = datetime(2026, 9, 21, 12, 0, tzinfo=classify.zone("Asia/Shanghai"))
@@ -420,9 +441,9 @@ class LazyViewsTest(unittest.TestCase):
                 "reviews": {"score": 80, "count": 500}}
 
     def test_all_json_absent_without_all_cards(self):
-        """不传 all_cards → 不写 all.js；payload 也不再带 views 键（2026-10-08 删）。"""
+        """不传 all_cards → 不产出分片目录；payload 也不再带 views 键（2026-10-08 删）。"""
         out = _render([], self.now)
-        self.assertFalse((out / "all.js").exists())
+        self.assertFalse((out / "all").exists())
         self.assertNotIn("views", _load_payload(out))
 
     def test_all_json_written_with_all_cards(self):
@@ -444,34 +465,37 @@ class LazyViewsTest(unittest.TestCase):
         cfg = dict(CFG, output_dir=str(out))
         report.render(cfg, [], _STATS, self.now, all_cards=all_cards)
 
-        # all.js 是 window.ALL_DATA = {...} 形态（非纯 JSON），解析时剥前缀
-        all_payload = json.loads(
-            (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
-        items = {i["game_id"]: i for g in all_payload["groups"] for i in g["items"]}
+        items = {i["game_id"]: i for i in _load_shards(out)["__all__"]}
         self.assertEqual(set(items), {"g-active", "g-expired"})
         self.assertIn("active", items["g-active"]["views"])
         self.assertIn("week", items["g-active"]["views"])
         self.assertNotIn("active", items["g-expired"]["views"])
         self.assertNotIn("week", items["g-expired"]["views"])
 
-    def test_all_json_groups_by_tier(self):
-        """「全部」沿用现有分组交互：all.js 里仍是口碑分档组（组头带条件文案）。"""
+    def test_all_shards_keep_tier_group_order(self):
+        """「全部折扣」没有板块排序语义，沿用**池顺序** = tier 分组（notable →
+        quality → pending）+ 组内折扣降序 —— 分片顺序必须与之一致，否则点进
+        「全部折扣」看到的顺序会和改动前不一样。"""
         import tempfile
         out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
-        entry = self._entry("g-good", 1, "2026-09-28T10:00:00+08:00")
-        card = report.build_card(entry, self.now)
-        card["views"] = ["week", "active", "new_today", "upcoming"]
+        cards = []
+        for game_id, appid, tier, cut in (
+            ("g-quality", 1, classify.TIER_QUALITY, 50),
+            ("g-notable", 2, classify.TIER_NOTABLE, 90),
+        ):
+            entry = self._entry(game_id, appid, "2026-09-28T10:00:00+08:00")
+            entry["tier"] = tier
+            entry["cut"] = cut
+            card = report.build_card(entry, self.now)
+            card["views"] = ["week", "active", "new_today", "upcoming"]
+            cards.append(card)
         cfg = dict(CFG, output_dir=str(out))
-        report.render(cfg, [], _STATS, self.now, all_cards=[card])
-        all_payload = json.loads(
-            (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
-        self.assertEqual([g["key"] for g in all_payload["groups"]],
-                         [classify.TIER_QUALITY])
-        self.assertEqual(all_payload["groups"][0]["criteria"],
-                         "好评率 ≥ 70% 且 评价数 ≥ 100")
+        report.render(cfg, [], _STATS, self.now, all_cards=cards)
+        order = [c["game_id"] for c in _load_shards(out)["__all__"]]
+        self.assertEqual(order, ["g-notable", "g-quality"])
 
     def test_all_json_cards_are_slimmed(self):
-        """all.js 卡片瘦身（2026-10-08 问题1，分类页 6.3MB）：剔除前端不读
+        """分片卡片瘦身（2026-10-08 问题1，分类页 6.3MB）：剔除前端不读
         （tier_label/low_label/last_low_days）或能现拼（steam_url/xiaoheihe_url/banner）
         的字段；`banner` 换成紧凑 `art` 扩展名码；`game_id` 必须保留（art 现拼的依据）。"""
         import tempfile
@@ -481,9 +505,7 @@ class LazyViewsTest(unittest.TestCase):
         card = report.build_card(entry, self.now)
         cfg = dict(CFG, output_dir=str(out))
         report.render(cfg, [], _STATS, self.now, all_cards=[card])
-        all_payload = json.loads(
-            (out / "all.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
-        item = all_payload["groups"][0]["items"][0]
+        item = _load_shards(out)["__all__"][0]
         for dropped in ("tier_label", "low_label", "last_low_days",
                         "steam_url", "xiaoheihe_url", "banner"):
             self.assertNotIn(dropped, item)
@@ -503,8 +525,134 @@ class LazyViewsTest(unittest.TestCase):
     # data.js 不再带 groups/view_groups（S9 前端不读分组键）。
 
 
-if __name__ == "__main__":
-    unittest.main()
+class AllShardsTest(unittest.TestCase):
+    """板块完整列表的分片（2026-10-08，分类页加载 20 秒）。
+
+    锁三件事：
+      ① 分片顺序 == 板块排序（顺序就是分片的物理顺序，前端不再需要 section_order）
+      ② 第 0 片带 total/shards/agg（只加载一片就能给出精确的「共 N 条」）
+      ③ agg 计数与「暴力筛一遍」完全对得上（前端判据的服务端镜像，不能漂）
+    """
+
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=classify.zone("Asia/Shanghai"))
+
+    @staticmethod
+    def card(game_id, appid, *, ago=1, cut=50, count=500, live=True,
+             upcoming=False, low="new", tier=None):
+        views = [k for k, ok in (("active", live), ("upcoming", upcoming)) if ok]
+        return {
+            "game_id": game_id, "title": game_id, "title_zh": game_id, "appid": appid,
+            "price_int": 100, "price_text": "¥1.00", "regular_int": 200,
+            "regular_text": "¥2.00", "cut": cut, "low_class": low,
+            "start_days_ago": ago, "start_text": "2026-09-20 10:00",
+            "days_left": 3 if live else 0, "days_tier": "soon", "rate_tier": "mid",
+            "last_low_text": None, "last_low_date": None, "expiry_text": "2026-09-28 10:00",
+            "reviews": {"score": 90, "count": count} if count else None,
+            "tier": tier or classify.TIER_QUALITY, "views": views,
+            "sections": [], "compare": [],
+        }
+
+    def cards(self):
+        """四张性质不同的卡，让每个板块都不空。"""
+        out = [
+            self.card("a", 1, ago=0, cut=95, count=50000, upcoming=True),
+            self.card("b", 2, ago=1, cut=80, count=10000, low="tie"),
+            self.card("c", 3, ago=3, cut=50, count=500, live=False),
+            self.card("d", 4, ago=None, cut=40, count=0),
+        ]
+        for c in out:
+            c["sections"] = report.section_keys(c, CFG)
+        return out
+
+    def test_filter_dim_values_matches_filter_specs(self):
+        """预聚合表的查表键必须和筛选面板的选项**逐项一致** —— 那边加/改一个档位
+        这边没跟上，用户选到那个档位就会查不到、退回已加载条数。"""
+        specs = {g["key"]: [o["value"] for o in g["options"]]
+                 for g in report.filter_specs(CFG)}
+        dims = report.filter_dim_values(CFG)
+        for key in ("date", "cut", "reviews", "only_new"):
+            self.assertEqual(dims[key], specs[key], f"维度 {key} 与筛选选项不一致")
+
+    def test_shard_order_equals_section_order(self):
+        """顺序 = 分片的物理顺序：每个板块的分片拼起来，必须等于该板块自己的排序。"""
+        cards = self.cards()
+        orders = report.all_section_orders(cards, CFG)
+        for key in ("new_low", "expiring", "popular", "big_cut"):
+            expected = sorted(report._section_members(key, cards, CFG),
+                              key=report._section_sort(key, CFG))
+            self.assertEqual([c["appid"] for c in orders[key]],
+                             [c["appid"] for c in expected], f"板块 {key} 顺序不符")
+
+    def test_shards_on_disk_preserve_order_and_meta(self):
+        """落盘的分片：顺序不变、第 0 片带 total/shards/agg。"""
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        report.render(dict(CFG, output_dir=str(out)), [], _STATS, self.now,
+                      all_cards=self.cards())
+        shards = _load_shards(out)
+        orders = report.all_section_orders(self.cards(), CFG)
+        for key, expected in orders.items():
+            self.assertEqual([c["appid"] for c in shards[key]],
+                             [c["appid"] for c in expected], f"板块 {key} 分片顺序不符")
+        first = json.loads(
+            (out / "all" / "__all___0.js").read_text(encoding="utf-8")
+            .split("] = ", 1)[1].rstrip().rstrip(";"))
+        self.assertEqual(first["total"], len(orders["__all__"]))
+        self.assertEqual(first["shards"], 1)
+        self.assertEqual(first["size"], report.ALL_SHARD_SIZE)
+        self.assertIn("counts", first["agg"])
+        self.assertEqual(len(first["agg"]["counts"]),
+                         len(report.filter_dim_values(CFG)["date"])
+                         * len(report.filter_dim_values(CFG)["cut"])
+                         * len(report.filter_dim_values(CFG)["reviews"])
+                         * len(report.filter_dim_values(CFG)["only_new"]))
+
+    def test_agg_counts_match_brute_force(self):
+        """agg 的每一个组合都必须和「照 app.js 判据暴力筛一遍」一致。
+
+        判据镜像自 app.js 的 dateOk / filterOk / liveOk + cardsFor 的板块分支：
+          · 四板块：sections 命中 + liveOk +（除「即将到期」外）dateOk + filterOk
+          · 全部折扣：dateOk + filterOk（不叠加 liveOk，本就要看全量）
+        """
+        cards = self.cards()
+        dims = report.filter_dim_values(CFG)
+
+        def brute(members, key):
+            result = {}
+            for d in dims["date"]:
+                for cu in dims["cut"]:
+                    for rv in dims["reviews"]:
+                        for on in dims["only_new"]:
+                            n = 0
+                            for c in members:
+                                live = (not c["views"]) or ("active" in c["views"])
+                                if key != "__all__" and not live:
+                                    continue
+                                if key != "expiring":
+                                    ago = c["start_days_ago"]
+                                    if d == "all":
+                                        pass
+                                    elif ago is None:
+                                        continue
+                                    elif d.startswith("d"):
+                                        if ago > int(d[1:]):
+                                            continue
+                                    elif ago != int(d):
+                                        continue
+                                if cu != "all" and (c["cut"] or 0) < int(cu):
+                                    continue
+                                if rv != "all" and report.review_count(c) < int(rv):
+                                    continue
+                                if on == "new" and c["low_class"] != "new":
+                                    continue
+                                n += 1
+                            result["|".join((d, cu, rv, on))] = n
+            return result
+
+        for key, members in report.all_section_orders(cards, CFG).items():
+            self.assertEqual(report.section_agg(members, CFG, key)["counts"],
+                             brute(members, key), f"板块 {key} 预聚合计数不符")
+
 
 
 class HomeSectionsTest(unittest.TestCase):
@@ -1194,3 +1342,7 @@ class MessageBarTest(unittest.TestCase):
         （refs.md B13：三种状态都要有插画）。"""
         html = (self._render_with(self._content({})) / "index.html").read_text(encoding="utf-8")
         self.assertIn('<div id="empty" class="empty" hidden></div>', html)
+
+
+if __name__ == "__main__":
+    unittest.main()

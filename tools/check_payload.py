@@ -6,9 +6,13 @@
 判定口径字段有没有彻底从 payload 里清掉（批 F 后口径只在 README）。
 
 ⚠️ 2026-10-08：data.js 首屏瘦身、不再写 ``groups`` / ``view_groups``，
-分组卡片改从 ``all.js``（``window.ALL_DATA.groups``，「全部」视图的全量分组）读取 ——
+卡片改从 ``output/all/`` 的分片读取（「全部折扣」那套 = 全量池）——
 所以卡片级覆盖统计（中文名 / 比价 / 分类 / 剩 X 天）是**全部池**口径，不再只数当日新增；
 「概览色点」仍与 data.js 的当日新增口径对齐（见下）。
+
+⚠️ 2026-10-08（第二轮）：单文件 ``all.js`` 已换成按板块顺序切的
+``all/<key>_<n>.js``（分类页 20 秒），分组结构随之下线 —— 分片里只有卡片。
+「分组标题 vs 卡片标签」那条校验因此失去对象（两边同源、恒真），改为看 tier 分布。
 
 用法：`python tools/check_payload.py` → 结果落 data/probe/report_check.txt
 """
@@ -37,12 +41,17 @@ def main() -> int:
         return 1
     payload = json.loads(data_js.read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
 
-    all_js = ROOT / "output" / "all.js"
-    if not all_js.exists():
-        print(f"没找到 {all_js} —— 分组卡片现在只由 all.js 承载"
+    all_dir = ROOT / "output" / "all"
+    if not all_dir.exists():
+        print(f"没找到 {all_dir} —— 卡片现在只由分片承载"
               f"（data.js 已停写 groups），先跑一次 run.py")
         return 1
-    all_payload = json.loads(all_js.read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
+    # 「全部折扣」那套分片 = 全量池（tier 分组 + 折扣降序），覆盖统计用它。
+    # 分片是 (window.ALL_S = window.ALL_S || {})["<slot>"] = {...}; 形态，非纯 JSON。
+    items: list[dict] = []
+    for path in sorted(all_dir.glob("__all___*.js")):
+        items.extend(json.loads(
+            path.read_text(encoding="utf-8").split("] = ", 1)[1].rstrip().rstrip(";"))["items"])
 
     lines: list[str] = []
     lines.append("=" * 72)
@@ -52,25 +61,13 @@ def main() -> int:
     lines.append("fx      : " + json.dumps(payload.get("fx"), ensure_ascii=False))
     lines.append("steam   : " + json.dumps(payload.get("steam"), ensure_ascii=False))
 
-    groups = all_payload.get("groups") or []
-    items = [i for g in groups for i in g["items"]]
     lines.append("")
-    lines.append("--- 分组（标题 + 入组条件，来自 all.js「全部」视图）---")
-    for g in groups:
-        lines.append(f"  {g['label']} | {g['criteria']} | {g['count']} 条 | 默认收起={g['collapsed']}")
+    lines.append("--- 全量池（来自 all/__all___*.js 分片）---")
+    tier_counts = Counter(i.get("tier") for i in items)
+    for tier, n in tier_counts.most_common():
+        lines.append(f"  {tier}: {n} 条（{classify.TIER_LABELS.get(tier, tier)}）")
     lines.append(f"  合计卡片 {len(items)} 条")
-
-    lines.append("")
-    lines.append("--- 分组标签 vs 卡片标签（必须一致）---")
-    group_labels = {g["key"]: g["label"] for g in groups}
-    # all.js 已瘦身、不再下发 tier_label（2026-10-08 问题1）—— 由 tier 从 classify 派生期望值再比对分组标题
-    card_labels = {i["tier"]: classify.TIER_LABELS.get(i["tier"], i["tier"]) for i in items}
     ok = True
-    for key, label in group_labels.items():
-        same = card_labels.get(key) == label
-        ok = ok and same
-        lines.append(f"  {key}: 分组「{label}」 vs 卡片「{card_labels.get(key)}」"
-                     f" -> {'一致' if same else '★不一致★'}")
 
     lines.append("")
     lines.append("--- 中文名 ---")
@@ -161,17 +158,18 @@ def main() -> int:
     lines.append(f"  取值分布: {days}")
 
     lines.append("")
-    lines.append("--- 分组「折扣开始」（批 E spec E5 → 批 G：按组内多数派上提）---")
-    for g in groups:
-        counts = Counter(i.get("start_text") for i in g["items"] if i.get("start_text"))
+    lines.append("--- 各 tier 的「折扣开始」多数派（批 E spec E5 → 批 G）---")
+    for tier in [t for t, _ in tier_counts.most_common()]:
+        bucket = [i for i in items if i.get("tier") == tier]
+        counts = Counter(i.get("start_text") for i in bucket if i.get("start_text"))
         # 与 src/report.py::build_groups 同一口径：取频次最高，并列时取较晚的那个
         majority = max(counts, key=lambda text: (counts[text], text)) if counts else None
-        lines.append(f"  {g['label']}: group.start_text={g.get('start_text')}"
-                     f" · 组内多数派={majority} · 分布={dict(counts)}")
+        lines.append(f"  {tier}: 组内多数派={majority} · 分布={dict(counts)}")
 
     lines.append("")
     lines.append("--- 判定 ---")
-    lines.append("  分组与卡片标签一致：" + ("是 ✓" if ok else "否 ✗"))
+    lines.append("  tier 取值都认识："
+                 + ("是 ✓" if set(tier_counts) <= set(classify.TIER_LABELS) else "否 ✗"))
     # R2 验收：payload 与卡片中无 itad_url
     no_itad = all("itad_url" not in i for i in items)
     ok = ok and no_itad
@@ -183,9 +181,12 @@ def main() -> int:
                "history_low_text", "history_low_1y_text")
     left = [f for f in removed if any(f in i for i in items)]
     lines.append("  已删字段无残留：" + ("是 ✓" if not left else f"否 ✗ {left}"))
-    ok = (ok and not left and not bad_class and not bad_pair
+    # ⚠️ `bad_pair` 那条（分组标签 vs 卡片标签）已随分片的分组结构下线一并移除 ——
+    #    它此前就已是未定义变量（会 NameError），正好借这次改造清掉。
+    ok = (ok and not left and not bad_class
           and points_sum == new_today_shown and not leaks
-          and not not_in_js and not strange)
+          and not not_in_js and not strange
+          and set(tier_counts) <= set(classify.TIER_LABELS))
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"结果已写入 {OUT}")
     return 0 if ok else 2

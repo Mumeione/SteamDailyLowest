@@ -1,14 +1,16 @@
 /* 报表前端（S9，2026-10-06）：gg.deals 式首页
  * ================================================================
  * 骨架：吸顶导航 → 筛选胶囊行 → 首页（顶部大卡横排 + 四板块两栏行列表）
- *       → 点导航进「板块完整列表页」（数据来自 all.js 懒加载）
+ *       → 点导航进「板块完整列表页」（数据来自分片懒加载）
  *
  * 数据来源：
  *   window.REPORT_DATA（data.js）—— 当日新增摘要（low_points）、四板块预览
  *                                    （各 10 条）、顶部大卡候选、断点/分页配置
  *                                    （⚠️ 2026-10-08 起不含分组卡片，见下）
- *   window.ALL_DATA（all.js，首次点导航时 <script> 懒加载）—— 全量卡片，
- *                                    每张带 views（视图成员）与 sections（板块归属）
+ *   window.ALL_S["<板块>_<片号>"]（all/<key>_<n>.js，按需懒加载）—— 板块完整列表，
+ *                                    每张带 views（视图成员）与 sections（板块归属）。
+ *                                    2026-10-08 起取代原先的单文件 all.js
+ *                                    （5.81MB / gzip 729KB，分类页要等 13~18 秒）。
  *
  * ⚠️ 用 <script> 动态加载而不是 fetch：本地 file:// 直开时 fetch 会被 CORS 拦，
  *    <script> 不受限制（重构 S5 的既有结论，别改回去）。
@@ -518,42 +520,54 @@
   }
 
   // ------------------------------------------------------------------
-  // 板块完整列表页：数据来自 all.js（全量卡片，带 sections 标记）
+  // 板块完整列表页：按板块顺序切好的分片（2026-10-08）
   // ------------------------------------------------------------------
-  var allCache = window.ALL_DATA || null;
-  var allRequested = false;
-  var allCallbacks = [];
+  // 原先是一整个 all.js（5.81MB raw / 729KB gzip），分类页必须**整份下完**才肯渲染
+  // 第一条。国内到 github.io 实测 40~60KB/s，729KB 就是 13~18 秒，占满用户报的
+  // 「接近二十秒」的 95%（剩下是解析：5.81MB 对象字面量约 200ms，手机上翻倍）。
+  // 现在切成 all/<key>_<n>.js，每片 200 条 ≈ 20KB gzip，首屏只要 1 片。
+  //
+  // ⚠️ **顺序 = 分片的物理顺序**：片号 0,1,2… 依次读出来就是板块顺序，所以不再需要
+  //   服务端单独下发 section_order（排序口径仍然只在服务端一份，前端不复制规则）。
+  // ⚠️ **必须按板块自己的顺序切片**，不能做「共享池 + 板块索引」：池顺序（tier 分组
+  //   + 折扣降序）跟板块排序不相关，实测「热门游戏」前 30 条会散落在 18 个分片里，
+  //   等于没优化。卡片因此**在板块间重复存储**（发布体积 5.8MB → 13.1MB raw），
+  //   这是可重建产物，换首屏速度值得。
+  var ALL_GLOBAL = "ALL_S";
+  var shardPending = {};   // "<key>_<n>" -> [回调]，合并并发的重复请求
+  /** 一次最多并发取几片。默认路径（精选排序）只用到 1 片，这个上限只影响
+   *  筛选很严 / 换排序时的补片速度。 */
+  var SHARD_CONCURRENCY = 4;
 
-  function loadAll(done) {
-    if (!allCache && window.ALL_DATA) allCache = window.ALL_DATA;
-    if (allCache) { done(allCache, null); return; }
-    allCallbacks.push(done);
-    if (allRequested) return;
-    allRequested = true;
+  function shardGlobal() {
+    if (!window[ALL_GLOBAL]) window[ALL_GLOBAL] = {};
+    return window[ALL_GLOBAL];
+  }
+
+  function slotOf(key, n) { return key + "_" + n; }
+
+  /** 取一个分片。已加载的直接回调（同步），正在取的合并进同一批回调。 */
+  function loadShard(slot, cb) {
+    var got = shardGlobal()[slot];
+    if (got) { cb(got, null); return; }
+    var pend = shardPending[slot];
+    if (pend) { pend.push(cb); return; }
+    shardPending[slot] = [cb];
     var script = document.createElement("script");
-    // all.js 也带 ?v=（2026-10-08）：否则会吃 Pages 的 ~10 分钟缓存，刚发布的新数据
-    // 可能拿不到。版本从 payload 取，与 data.js/app.js 的 ?v= 同源（report.render 的 assets_version）。
-    script.src = "all.js?v=" + encodeURIComponent(data.assets_version || "");
-    script.onload = function () {
-      var cbs = allCallbacks.splice(0);
-      allCache = window.ALL_DATA || null;
-      if (!allCache) allRequested = false;   // 数据坏了允许重试，别把回调晾死
-      cbs.forEach(function (cb) { cb(allCache, allCache ? null : new Error("all.js 数据为空")); });
-    };
-    script.onerror = function () {
-      allRequested = false;
-      var cbs = allCallbacks.splice(0);
-      cbs.forEach(function (cb) { cb(null, new Error("all.js 加载失败")); });
-    };
+    // 与 data.js / app.js 同源的 ?v=（2026-10-08 加的）：否则会吃 Pages 的
+    // ~10 分钟缓存，刚发布的新数据可能拿不到。
+    script.src = "all/" + slot + ".js?v=" + encodeURIComponent((data && data.assets_version) || "");
+    script.onload = function () { fireShard(slot, shardGlobal()[slot] || null); };
+    script.onerror = function () { fireShard(slot, null); };
     document.head.appendChild(script);
   }
 
-  function allCards() {
-    var out = [];
-    ((allCache && allCache.groups) || []).forEach(function (g) {
-      (g.items || []).forEach(function (c) { out.push(c); });
-    });
-    return out;
+  function fireShard(slot, payload) {
+    var cbs = shardPending[slot] || [];
+    delete shardPending[slot];      // 失败也清掉 ⇒ 下次 openSection 可以重试
+    for (var i = 0; i < cbs.length; i++) {
+      cbs[i](payload, payload ? null : new Error("分片数据为空"));
+    }
   }
 
   // ---- 筛选的三个判据（底部抽屉，refs.md §6.7）----
@@ -610,37 +624,122 @@
     return arr;
   }
 
-  /** 板块列表页的顺序：**服务端下发**（all.js 的 `section_order`），前端不复制排序规则。
-   *  ⚠️ 首页四板块的顺序是各板块自己一套（新史低→折扣→评价数、热门→评价数…），
-   *  而 all.js 的分组顺序是「tier 分组 + 折扣降序」，两者不一样 ——
-   *  不按 section_order 排的话，点「查看更多」进去看到的顺序会和首页预览不一致。 */
-  function applySectionOrder(cards, key) {
-    var order = (allCache && allCache.section_order || {})[key];
-    if (!order) return cards;
-    var pos = {};
-    order.forEach(function (appid, i) { pos[appid] = i; });
-    return cards.slice().sort(function (a, b) {
-      var pa = pos[a.appid], pb = pos[b.appid];
-      return (pa === undefined ? 1e9 : pa) - (pb === undefined ? 1e9 : pb);
+  // ---- 分片顺序即板块顺序（不再需要服务端下发 section_order）----
+  // 「精选」排序 = 服务端给的板块顺序 = **分片的物理顺序**，按片号 0,1,2… 依次读出来
+  // 就对了，前端仍然不复制任何排序规则。
+
+  /** 单卡在当前板块 + 当前筛选下要不要留下（判据只有这一份，服务端 `section_agg`
+   *  用的是同一套，改这里必须同步改那边）。 */
+  function cardPredicate(key) {
+    return function (card) {
+      if (key !== "__all__") {
+        if ((card.sections || []).indexOf(key) === -1) return false;
+        if (!liveOk(card)) return false;
+        // 「即将到期」本来就是按**到期时间**筛的，不再叠加用户选的日期窗口
+        // （refs.md §11.3：叠加会把最紧急的老折扣漏掉）
+        if (key !== "expiring" && !dateOk(card)) return false;
+      } else if (!dateOk(card)) {
+        return false;
+      }
+      return filterOk(card);
+    };
+  }
+
+  /** 第 0 片带的**预聚合计数表**：只加载一片也能给出精确的「共 N 条」。
+   *  查不到（服务端没这张表 / 选项对不上）返回 null，调用方退回已加载条数。 */
+  function aggCount(shard0) {
+    var agg = shard0 && shard0.agg;
+    if (!agg || !agg.counts) return null;
+    var f = state.filters;
+    var parts = [f.date, f.cut, f.reviews, f.only_new].map(function (v) {
+      return (v === undefined || v === null) ? "all" : String(v);
+    });
+    var n = agg.counts[parts.join("|")];
+    return (n === undefined || n === null) ? null : n;
+  }
+
+  /** 换「折扣/价格/好评」排序是**全局重排**，必须拿到该板块全部卡片 ⇒ 拉全部分片。
+   *  默认「精选」不需要 —— 实测按折扣排序的前 30 条仍落在 1~3 片内，
+   *  但前端事先不知道，只能全取。代价与改动前「点一次分类」相同，属次要路径。 */
+  function isGlobalSort() {
+    return !!state.filters.sort && state.filters.sort !== "featured";
+  }
+
+  /**
+   * 按分片顺序累积卡片，够 `want` 条就停（`all` = true 时取满整个板块）。
+   * 回调 `done(cards, meta, err)`，meta = {total, shards, size, count}。
+   */
+  function collectCards(key, want, all, done) {
+    var pred = cardPredicate(key);
+    var acc = [];
+    var meta = null;
+    var next = 1;              // 片 0 由下面单独发起（它带 total/shards/agg）
+    var flying = 0;
+    var stopped = false;
+    var failed = 0;            // 中途加载失败的分片数（第 0 片失败直接走 err 路径）
+
+    function finish(err) {
+      if (stopped) return;
+      stopped = true;
+      if (meta && failed) meta.failed = failed;
+      done(acc, meta, err || null);
+    }
+
+    function grab(shard) {
+      var items = (shard && shard.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (pred(items[i])) acc.push(items[i]);
+      }
+    }
+
+    function pump() {
+      if (stopped) return;
+      if (flying === 0 && (acc.length >= want || next >= meta.shards)) { finish(null); return; }
+      var size = meta.size || 200;
+      var batch;
+      if (all) {
+        batch = Math.min(SHARD_CONCURRENCY, meta.shards - next);
+      } else {
+        // 按已加载部分的命中率外推还要几片 —— 别一股脑并发拉一堆用不上的片
+        var rate = acc.length / Math.max(1, next * size);
+        var need = rate > 0 ? Math.ceil((want - acc.length) / rate / size) : (meta.shards - next);
+        batch = Math.max(1, Math.min(SHARD_CONCURRENCY, need, meta.shards - next));
+      }
+      for (var k = 0; k < batch; k++) {
+        flying++;
+        loadShard(slotOf(key, next++), function (shard, err) {
+          flying--;
+          if (stopped) return;
+          // ⚠️ 中间片失败不能静默吞掉：记下失败数、继续拿其余片（别让一片失败
+          // 饿死整张列表），完成后 meta.failed 交给 renderList 挂「重试」入口 ——
+          // 失败片的 pending 已被 fireShard 清掉，重试会真正重新拉取。
+          if (err || !shard) failed++;
+          else grab(shard);
+          pump();
+        });
+      }
+    }
+
+    loadShard(slotOf(key, 0), function (shard0, err0) {
+      if (err0 || !shard0) { finish(err0 || new Error("分片数据为空")); return; }
+      meta = {
+        total: shard0.total,
+        shards: shard0.shards,
+        size: shard0.size,
+        count: aggCount(shard0),
+      };
+      grab(shard0);
+      if (!all && acc.length >= want) { finish(null); return; }
+      pump();
     });
   }
 
-  function cardsFor(key) {
-    var out = allCards().filter(function (c) {
-      if (key !== "__all__") {
-        if ((c.sections || []).indexOf(key) === -1) return false;
-        // 「即将到期」本来就是按**到期时间**筛的，不再叠加用户选的日期窗口
-        // （refs.md §11.3：叠加会把最紧急的老折扣漏掉）
-        if (key === "expiring") return filterOk(c) && liveOk(c);
-        return dateOk(c) && filterOk(c) && liveOk(c);
-      }
-      return dateOk(c) && filterOk(c);
+  /** 列表页当前该展示的卡片（异步）。done(cards, meta, err) */
+  function sectionCards(key, done) {
+    collectCards(key, state.limit, isGlobalSort(), function (acc, meta, err) {
+      if (err) { done(null, null, err); return; }
+      done(sortCards(acc), meta, null);
     });
-    // 「精选」= 服务端给的板块顺序；换成折扣/价格/好评排序时才由前端重排
-    if (state.filters.sort === "featured" || state.filters.sort === undefined) {
-      return applySectionOrder(out, key);
-    }
-    return sortCards(out);
   }
 
   var homeBox = document.getElementById("home");
@@ -648,18 +747,41 @@
   var rowsBox = document.getElementById("rows");
   var pagerBox = document.getElementById("lv-pager");
 
+  // 列表页当前这批已取到的卡片与板块元信息（分片是异步来的，渲染要能重入）。
+  var listState = { key: null, cards: [], meta: null };
+
   // 滚动加载（refs.md B12 / §9.2）：**只在板块列表页**做，首页不做（"首页不可滑动"）。
   // 每批追加 LIST_BATCH 条；滑到底自动追加，底部按钮同时是手动兜底。
   // 不做虚拟列表 —— 一次最多把该板块全部渲染出来（板块量级几百到一千出头）。
-  function renderList(cards) {
+  //
+  // 2026-10-08：数据改成分片后，「加载更多」可能要去取下一片（已取到的片直接命中
+  // 缓存，不会重复下载），所以这里不再吃一份固定的 cards，而是读 listState。
+  function renderList() {
+    var cards = listState.cards || [];
+    var meta = listState.meta || {};
     var shown = cards.slice(0, state.limit);
     fillRows(rowsBox, shown);
     pagerBox.textContent = "";
-    var left = cards.length - shown.length;
+    // 「共 N 条」用预聚合表的精确值；没有这张表就退回已加载条数（不会更好，但不会错）
+    var total = (meta.count === null || meta.count === undefined) ? cards.length : meta.count;
+    document.getElementById("lv-count").textContent = total + " 条";
+    // 中间有分片加载失败 ⇒ 列表可能缺一段（「共 N 条」仍是 agg 的精确值）。
+    // 不清空已加载的内容，只在底部挂一条提示 + 重试按钮，让用户可以自愈。
+    if (meta.failed) {
+      pagerBox.appendChild(el("div", { class: "pager" }, [
+        el("span", { text: "有 " + meta.failed + " 个数据分片加载失败，内容可能不完整 · " }),
+        (function () {
+          var retry = el("button", { type: "button", class: "load-more", text: "重试" });
+          retry.addEventListener("click", function () { refreshList(); });
+          return retry;
+        })(),
+      ]));
+    }
+    var left = Math.max(0, total - shown.length);
     if (left <= 0) {
-      if (cards.length > LIST_BATCH) {
+      if (total > LIST_BATCH) {
         pagerBox.appendChild(el("div", { class: "pager" }, [
-          el("span", { text: "已全部加载 " + cards.length + " 条" })]));
+          el("span", { text: "已全部加载 " + total + " 条" })]));
       }
       if (moreObserver) { moreObserver.disconnect(); moreObserver = null; }
       return;
@@ -671,11 +793,11 @@
       text: (auto ? "加载更多" : "继续加载") + "（还有 " + left + " 条）" });
     more.addEventListener("click", function () {
       state.limit += LIST_BATCH;
-      renderList(cards);
+      refreshList();                 // 可能要补取下一片；已取到的片直接命中缓存
     });
     pagerBox.appendChild(el("div", { class: "pager" }, [
       auto ? null : el("span", {
-        text: "已自动显示前 " + shown.length + " 条（共 " + cards.length
+        text: "已自动显示前 " + shown.length + " 条（共 " + total
               + " 条）· 建议用上方「筛选」缩小范围 · " }),
       more
     ]));
@@ -715,7 +837,7 @@
     // 不然角标会挂着一个筛不掉任何东西的条件（例：带着「仅新史低」进新史低板块）。
     resetImpliedFilters();
     // ⚠️ 这里必须手动刷一次筛选 UI（含「本板块已隐含」选项的置灰）——
-    // openSection 自己不调 applyFilters（它在 loadAll 回调里直接 renderList），
+    // openSection 自己不调 applyFilters（它在 refreshList 里直接 renderList），
     // 漏了这步的话，切板块后筛选项的可点状态会停在**上一个板块**的状态
     // （2026-10-07 冒烟抓到：从新史低切到大额折扣，「折扣降序」还是灰的）。
     syncFilterUI();
@@ -734,19 +856,32 @@
     rowsBox.textContent = "";
     pagerBox.textContent = "";
     setEmpty("loading", "正在加载折扣数据…");
-    loadAll(function (_json, err) {
+    listState.key = key;
+    listState.cards = [];
+    listState.meta = null;
+    refreshList();
+  }
+
+  var listSeq = 0;   // 只认最后一次请求的结果，避免慢回来的旧结果盖掉新的
+  /** 重新取一遍当前板块该展示的卡片（分片已缓存的话不发网络请求）再渲染。 */
+  function refreshList() {
+    var seq = ++listSeq;
+    var key = state.section;
+    sectionCards(key, function (cards, meta, err) {
+      // 期间用户切走了 / 又有更新的请求 → 丢掉这次结果，别把旧数据画上去
+      if (seq !== listSeq || listState.key !== key) return;
       if (err) {
         document.getElementById("lv-count").textContent = "";
         setEmpty("fail",
-          "全部数据加载失败（" + ((err && err.message) || "网络错误") + "），可以点下面的按钮重试。",
+          "折扣数据加载失败（" + ((err && err.message) || "网络错误") + "），可以点下面的按钮重试。",
           function () { openSection(state.section); });
         return;
       }
-      var cards = cardsFor(state.section);
-      document.getElementById("lv-count").textContent = cards.length + " 条";
+      listState.cards = cards;
+      listState.meta = meta;
       if (cards.length) hideEmpty();
       else setEmpty("none", "这个板块暂时没有符合条件的折扣。");
-      renderList(cards);
+      renderList();
     });
   }
 
@@ -1058,6 +1193,34 @@
   renderSections();
   // 「点卡片能点开」不做一次性气泡提示了（2026-10-07 用户裁定：悬停有呼吸/上浮
   // 效果已经能表达可点，气泡多此一举）—— refs.md §6.7 B11 的招 3 整条作废。
+
+  // ---- 首页空闲时偷跑各板块的第 0 片（2026-10-08）----
+  // 用户看首页的几秒足够下完 5×20KB，点进分类时就只剩「读缓存」，近乎瞬开。
+  // ⚠️ 一片一片串行、每片都排在下一个空闲时段里，不跟首屏渲染抢主线程；
+  //    用户已经进了某个板块（说明预取没必要了）就立刻停手。
+  // ⚠️ 代价是只看首页不点分类的用户也会多下 ~100KB —— 用「近乎瞬开」换的，
+  //    觉得不划算就把下面这段删掉，分类页仍然只比现在快 33 倍。
+  (function prefetchShards() {
+    var keys = ["new_low", "expiring", "popular", "big_cut", "__all__"];
+    var i = 0;
+    function step() {
+      if (state.section) return;                 // 已经进板块了，不用预取
+      if (i >= keys.length) return;
+      var key = keys[i++];
+      loadShard(slotOf(key, 0), function () {
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(step, { timeout: 2000 });
+        } else {
+          window.setTimeout(step, 200);
+        }
+      });
+    }
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(step, { timeout: 3000 });
+    } else {
+      window.setTimeout(step, 1000);
+    }
+  })();
 
   function onBreakpointChange() {
     placeFilterButton();               // 幂等兜底：按钮永远在浮层（正常在 init 已就位）

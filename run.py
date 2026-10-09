@@ -720,8 +720,9 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
     :func:`classify.in_view` 筛好）；``None`` = 本轮不产出该视图。
 
     ``all_entries``（重构 S5）：今日筛选链通过的**全量**史低（hist_low），
-    用于「全部」视图的 all.js（懒加载数据源）；
-    ``None`` = 不产出 all.js。
+    用于板块完整列表的分片 ``all/<板块>_<片号>.js``（懒加载数据源，2026-10-08 起
+    取代单文件 ``all.js``）；
+    ``None`` = 不产出分片（``output/all/`` 目录都不会建）。
     """
     def build_view(entries: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
         merged = merge_details(state, entries, cfg)
@@ -783,7 +784,7 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
             compare_by_appid[appid] = entry["compare"]
 
     # ---- 重构 S5：「全部」视图数据 = 今日筛选链全量（含当日新增），逐条打视图标志 ----
-    # 懒加载视图（板块完整列表）的数据源：all.js 用它。
+    # 懒加载视图（板块完整列表）的数据源：all/<板块>_<片号>.js 用它。
     # ⚠️ 2026-10-08 起不再统计视图按钮 count（那组 payload 已删）。
     # 比价数据：真查覆盖条目回灌（当日新增 + 即将到期）；其余历史条目按
     # 「原价缓存 × 国区折扣比例」估算（2026-10-08 定案，见 enrich.estimate_compare）

@@ -29,7 +29,9 @@ AGENTS.md
 - 运行时依赖仅 `requests` + `jinja2`（模板渲染），不引入 ORM / 前端框架
   - `tools/check_workflow_yaml.py` 依赖 PyYAML（已列入 `requirements.txt` 并装入主
     Python；运行管线不依赖它，Actions 的 daily/prefetch 用不到，属提交前校验工具）
-- 存储用标准库 `sqlite3` / JSON 状态文件，报表为 jinja2 模板渲染的静态 HTML（`index.html` + `data.js` + `all.js`）
+- 存储用标准库 `sqlite3` / JSON 状态文件，报表为 jinja2 模板渲染的静态 HTML
+  （`index.html` + `data.js` + `static/app.js|css` + 懒加载分片 `all/<板块>_<片号>.js`；
+  2026-10-08 起单文件 `all.js` 已下线）
 - API key 只放本机 `config.json`（已 gitignore），**不得写入任何入库文件**
 
 ## Agent skills
