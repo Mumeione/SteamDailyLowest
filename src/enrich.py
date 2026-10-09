@@ -247,10 +247,11 @@ def estimate_compare(state, entry: dict, countries: list[str], fx: dict | None,
     ratio = base / regular
     raw_rows = []
     for cc in countries:
-        initial = state.compare_original(appid, cc)
+        cached = state.compare_entry(appid, cc) or {}
+        initial = cached.get("initial")
         if initial is None:
             continue
-        currency = (state.compare_cache.get(state.compare_key(appid, cc)) or {}).get("currency")
+        currency = cached.get("currency")
         raw_rows.append({
             "cc": cc,
             "label": COMPARE_LABELS.get(cc, cc),

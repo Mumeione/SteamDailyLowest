@@ -374,14 +374,9 @@ class State:
         """删除整个动态条目（unlisted 收敛 / 留存清理用）。"""
         self.dynamic.entries.pop(game_id, None)
 
-    def detail_fetched_recently(self, game_id: str, now: datetime, ttl_days: int) -> bool:
-        """动态数据是否在 ttl 天内抓过（给一次性工具做幂等跳过用；
-        管线内的新鲜度判定走 run.py 的折扣感知逻辑，不用这个）。"""
-        dyn = self.dyn(game_id)
-        if not dyn or dyn.get("fetched_at") is None:
-            return False
-        fetched = classify.parse_time(dyn.get("fetched_at"), self.tz)
-        return fetched is not None and now - fetched < timedelta(days=ttl_days)
+    # 注：原 `detail_fetched_recently(game_id, now, ttl_days)` 已删（2026-10-09 卡片 04）
+    # —— 它只被自己那条单测调过，生产/工具零引用；新鲜度判定的唯一出处是
+    # classify.entry_needs_detail / refresh_ttl_days（折扣感知四档，不是单一 TTL）。
 
     def has_appid(self, game_id: str) -> bool:
         entry = self.game_meta.get(game_id)
@@ -668,9 +663,18 @@ class State:
     def compare_key(appid: int, cc: str) -> str:
         return f"{appid}|{cc}"
 
+    def compare_entry(self, appid: int, cc: str) -> dict | None:
+        """缓存里该区域的整条记录（``{initial, currency, fetched_at}``），没有则 None。
+
+        **给需要「原价 + 币种」一起用的调用方**（如 :func:`src.enrich.estimate_compare`）
+        —— 从前它自己 ``state.compare_cache.get(state.compare_key(...))`` 直探内部字典，
+        等于把缓存结构外泄成公开接口（卡片 04）。
+        """
+        return self.compare_cache.get(self.compare_key(appid, cc))
+
     def compare_original(self, appid: int, cc: str) -> int | None:
         """缓存里的区域原价（price_overview.initial），没有则 None。"""
-        entry = self.compare_cache.get(self.compare_key(appid, cc))
+        entry = self.compare_entry(appid, cc)
         return entry.get("initial") if entry else None
 
     def set_compare_original(self, appid: int, cc: str,

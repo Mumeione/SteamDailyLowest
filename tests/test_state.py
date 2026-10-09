@@ -95,7 +95,6 @@ class StateTest(unittest.TestCase):
 
     def test_never_fetched_has_no_dynamic(self):
         self.assertIsNone(self.state.dyn("uuid-missing"))
-        self.assertFalse(self.state.detail_fetched_recently("uuid-missing", NOW, 7))
 
     def test_legacy_game_meta_auto_migrates(self):
         """S6 代码自迁移：旧版 game_meta 混存的动态键 → load 时收编进 dynamic.json。"""
