@@ -75,9 +75,9 @@ def load_fx_cache_only(cfg: dict, today: str, log=None) -> dict | None:
     这种情况退而用缓存里**最新的那一份**并在日志里写明日期 —— 页脚本来就会显示
     汇率取数日期，所以不会让人误以为是今天的汇率。
     """
-    cache_path = Path(cfg.get("fx_cache_path") or "data/fx_cache.json")
-    if not cache_path.is_absolute():
-        cache_path = ROOT / cache_path
+    # 相对路径解析唯一出处 = config.resolve_path（code-audit-2026-10-09 #9）：
+    # 这里曾留 `or "data/fx_cache.json"` 第二份默认值。
+    cache_path = resolve_path(cfg, "fx_cache_path")
     if not cache_path.exists():
         return None
     try:

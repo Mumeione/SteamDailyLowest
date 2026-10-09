@@ -25,9 +25,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .httpclient import USER_AGENT
+from .state import atomic_write_json
+
 RATES_URL = "https://open.er-api.com/v6/latest/{base}"
 BASE_CURRENCY = "CNY"
-USER_AGENT = "SteamDailyLowest/1.0 (+https://github.com/)"
 TIMEOUT_SECONDS = 10
 
 
@@ -98,8 +100,8 @@ def load_or_fetch(cache_path: str | Path, *, today: str, log: Callable[[str], No
         raise FxError(f"汇率源取失败且没有可用缓存：{exc}") from exc
 
     fresh["date"] = today  # 以「本轮的今天」为准，避免时区把日期算差
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(fresh, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    # 原子写（code-audit-2026-10-09 #2）：缓存目录创建 + 紧凑 JSON 都由它负责
+    atomic_write_json(path, fresh)
     log(f"[fx] 已取汇率并缓存：{today} UAH={fresh['rates'].get('UAH')} INR={fresh['rates'].get('INR')}")
     return fresh
 

@@ -461,7 +461,8 @@ def is_expired(expiry: str | None, now: datetime) -> bool:
 
 #: 视图键（写入每张卡片的 ``views`` 成员标志，供前端 ``liveOk`` 与板块筛选使用）
 #: 批 F2：`expired` 已移出 —— 折扣过期后对买家没有意义，不再作为一个视图
-#: （`is_expired()` 保留：留存清理与判定仍要它）
+#: （`is_expired()` 保留：**仅作判定语义参考与测试使用** —— code-audit-2026-10-09 #14：
+#:  生产代码已无消费者，留存清理走 state.cleanup_expired 自行 parse_time）
 VIEW_KEYS = ("new_today", "week", "active", "upcoming")
 
 

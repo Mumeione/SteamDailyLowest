@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -182,7 +183,7 @@ class SetLowPeriodWritePortTest(unittest.TestCase):
         self.assertEqual(self.state.game_meta, {})
 
     def test_merges_into_existing_meta(self):
-        self.state.set_title_zh("g", "某游戏")
+        self.state.set_title_zh("g", "某游戏", datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc))
         self.state.set_low_period("g", "2026-09-17T12:00:00Z", None)
         self.assertEqual(self.state.title_zh("g"), "某游戏")
         self.assertIn("low_period", self.state.game_meta["g"])

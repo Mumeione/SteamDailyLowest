@@ -908,9 +908,10 @@ N 9/9 间隔为 0、H 33/33 与 S 9/9 均间隔 ≥37 天；窗口取 1h~72h 结
 | 即将过期 | 距 `expiry` 不足 48 小时                             | 已上线（2026-09-27 批 H） |
 
 > **「已过期」（`expiry <= now`）已从视图里删除**（批 F2）：折扣过期后对买家毫无浏览价值
-> （用户原话「过期折扣犹如砒霜」）。`classify.is_expired()` 与
-> `expired_retention_days`（过期后留 7 天再清理）**都保留** —— 留存清理仍要用；
-> 但 `classify.VIEW_KEYS` 里不再有它，`in_view("expired", …)` 会抛 `ValueError`。
+> （用户原话「过期折扣犹如砒霜」）。`expired_retention_days`（过期后留 7 天再清理）**保留**；
+> `classify.is_expired()` 亦保留，但**仅作判定语义参考与测试使用** —— 生产已无消费者
+> （留存清理走 `state.cleanup_expired` 自行 `parse_time`，不调它；2026-10-09 审计 #14 订正）；
+> `classify.VIEW_KEYS` 里不再有 `expired`，`in_view("expired", …)` 会抛 `ValueError`。
 
 窗口一律按**折扣开始时间** `timestamp` 分组；状态一律按 `expiry` 判定。
 **所有视图都先过「史低」这道门**——非史低的普通折扣不进报表。
@@ -1055,6 +1056,8 @@ SteamDailyLowest/
 **职责边界**：`httpclient.py` / `itad.py` / `steam.py` / `fx.py` 只负责网络与解析；
 `classify.py` 是纯函数、无 IO，便于对判定规则写单元测试；
 `state.py` 与 `snapshot.py` 是碰磁盘的模块（状态库 / 快照导出，均临时文件 + `os.replace` 原子写）；
+`atomic_write_text` / `atomic_write_json` 定义在 `state.py`，供 `snapshot.py` / `report.py` / `fx.py` 复用
+（2026-10-09 审计 #2 起，产物与缓存统一走原子写）；
 `enrich.py` 是唯一同时用到 steam + fx + state 的地方。
 
 > **为什么要有** **`httpclient.py`**：ITAD 与 Steam 都要「滑动窗口限流 + 五种响应分开处理」。

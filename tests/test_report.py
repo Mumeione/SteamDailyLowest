@@ -1144,6 +1144,30 @@ class FilterSpecsTest(unittest.TestCase):
             self.assertNotIn("criteria", sec)
 
 
+class AutoescapeGuardTest(unittest.TestCase):
+    """转义守卫（code-audit-2026-10-09 第一节 #1）。
+
+    病根：Environment 用 ``select_autoescape(["html"])``，而模板名是 ``*.html.j2`` ——
+    jinja2 按「扩展名结尾」匹配，``.j2`` 不以 ``.html`` 结尾 → **autoescape 全程为 False**。
+    这里往**服务端渲染的插值**里塞一段 ``<script>``，锁死它必须被转义成实体；
+    否则将来任何人把 API 侧字符串（游戏标题 / 错误信息）插进模板就是存储型 XSS。
+    """
+
+    def test_server_rendered_values_are_escaped(self):
+        import tempfile
+
+        evil = "<script>alert(1)</script>"
+        out = Path(tempfile.mkdtemp(prefix="sdl-esc-"))
+        # 两个页面各插一处：about 页走服务端渲染的 overview.sweep；
+        # index 页走页脚链接 site_repo_url（两页都要锁，见可自动化检查项 #1）。
+        report.render(dict(CFG, output_dir=str(out), site_repo_url=evil), [],
+                      dict(_STATS, sweep=evil), datetime(2026, 10, 6, 5, 14))
+        for name in ("index.html", "about.html"):
+            html = (out / name).read_text(encoding="utf-8")
+            self.assertNotIn(evil, html, name)
+            self.assertIn("&lt;script&gt;", html, name)
+
+
 class TopbarTest(unittest.TestCase):
     """S9-2 顶栏：站点名标识 + 手机端导航折叠按钮（refs.md B1）。
 

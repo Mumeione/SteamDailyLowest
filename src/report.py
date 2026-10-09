@@ -15,10 +15,11 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 from . import announcements, classify
 from .config import DEFAULTS
+from .state import atomic_write_text
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = ROOT / "templates"
@@ -651,12 +652,15 @@ def all_section_orders(all_cards: list[dict], cfg: dict) -> dict[str, list[dict]
 
 
 def _write_shard(path: Path, slot: str, payload: dict) -> None:
-    """写一个分片文件：``(window.ALL_S = window.ALL_S || {})["<slot>"] = {...};``"""
-    path.write_text(
+    """写一个分片文件：``(window.ALL_S = window.ALL_S || {})["<slot>"] = {...};``
+
+    原子写（code-audit-2026-10-09 #2）：分片同样是发布产物，每天全量重写，
+    半截文件一旦上架无自愈。"""
+    atomic_write_text(
+        path,
         '(window.%s = window.%s || {})[%s] = %s;\n'
         % (ALL_SHARD_GLOBAL, ALL_SHARD_GLOBAL,
-           json.dumps(slot), json.dumps(payload, ensure_ascii=False)),
-        encoding="utf-8")
+           json.dumps(slot), json.dumps(payload, ensure_ascii=False)))
 
 
 def write_all_shards(output_dir: Path, all_cards: list[dict], cfg: dict) -> dict:
@@ -1258,8 +1262,15 @@ def criteria_notes(cfg: dict) -> list[dict]:
         scope += "与成人内容"
     return [
         {"k": "收录范围", "v": scope},
-        {"k": "史低判定", "v": "用 IsThereAnyDeal 的 flag（N=新史低 / H=平史低）。"
+        # code-audit-2026-10-09 #4：拆成「守门 / 展示」两条 —— 页面上的史低标签其实
+        # 走 Steam 店内口径（classify.steam_low_class），与 ITAD 全商店 flag 不是一套；
+        # 旧文案只说 flag，读者按它去理解色条会对不上。
+        {"k": "史低判定（守门）", "v": "用 IsThereAnyDeal 的全商店 flag（N / H / S 皆算史低）。"
                               "**不靠比价格** —— Steam 店史低已含本次折扣，比价会把新史低也判成相等"},
+        {"k": "新史低 / 平史低（展示）", "v": "按 **Steam 店内口径**分：Steam 首次到该价 = 新史低，"
+                              "以前到过 = 平史低（依据 Steam 店内史低被记录的时间与本次折扣开始是否重合）。"
+                              "与守门的全商店 flag 可能不同 —— Steam 店内首次到该价、但别家更早更便宜过，"
+                              "ITAD 会标 H / S，对只买 Steam 的读者那其实是新史低。"},
         {"k": "展示门槛", "v": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}；低于此不入列表"},
         {"k": "高热度档", "v": f"评价数 ≥ {notable:,}，不看好评率（热门游戏板块用它）"},
         {"k": "大额折扣档", "v": f"折扣 ≥ {int(cfg.get('big_cut_percent', DEFAULT_BIG_CUT))}%"},
@@ -1381,7 +1392,9 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         "list": payload["list"],
     }
     data_js = "window.REPORT_DATA = " + json.dumps(data_payload, ensure_ascii=False) + ";\n"
-    (output_dir / "data.js").write_text(data_js, encoding="utf-8")
+    # 原子写（code-audit-2026-10-09 #2）：打包/发布用 `!cancelled()` 兜底，崩溃留下的
+    # 半截文件会被上架且无自愈，故 output/ 的 HTML / JSON 产物与分片全走 atomic_write_text。
+    atomic_write_text(output_dir / "data.js", data_js)
 
     paths = {
         "index": str(output_dir / "index.html"),
@@ -1421,13 +1434,18 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
             for item in sorted(items, key=featured_sort_key)  # 原 featured 组的顺序（组已删，排序键保留）
         ],
     }
-    (output_dir / "latest.json").write_text(
-        json.dumps(latest, ensure_ascii=False, indent=2), encoding="utf-8"
+    atomic_write_text(
+        output_dir / "latest.json",
+        json.dumps(latest, ensure_ascii=False, indent=2),
     )
 
+    # ⚠️ autoescape=**True**，不能用 `select_autoescape(["html"])`（code-audit-2026-10-09 #1）：
+    # 模板名是 `index.html.j2` / `about.html.j2`，而 select_autoescape 按「扩展名结尾」匹配，
+    # `.j2` 不以 `.html` 结尾 → 实测返回 False，**两个页面的自动转义整体失效**。模板就这两个、
+    # 无动态 HTML 需求，显式全开最直白。守卫测试见 tests/test_report.py::AutoescapeGuardTest。
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
-        autoescape=select_autoescape(["html"]),
+        autoescape=True,
         trim_blocks=True,
         lstrip_blocks=True,
     )
@@ -1458,7 +1476,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         filter_groups=filter_specs(cfg, home_pool),
         filter_defaults=payload["filter_defaults"],
     )
-    (output_dir / "index.html").write_text(html, encoding="utf-8")
+    atomic_write_text(output_dir / "index.html", html)
 
     # ---- S9：「关于网站」页（其余概览数字 / 筛选口径 / 数据来源 / 汇率 / 更新日志）----
     about_tpl = env.get_template("about.html.j2")
@@ -1472,7 +1490,7 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         links=links,
         assets_version=version,
     )
-    (output_dir / "about.html").write_text(about_html, encoding="utf-8")
+    atomic_write_text(output_dir / "about.html", about_html)
     paths["about"] = str(output_dir / "about.html")
 
     return paths

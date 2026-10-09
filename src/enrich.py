@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Callable
 
 from . import fx as fx_module
+from .config import resolve_path
 from .httpclient import Blocked, HttpError
 from .steam import SteamClient
 
@@ -30,12 +31,10 @@ COMPARE_LABELS = {"UA": "乌克兰区", "IN": "印度区"}
 
 def load_fx(cfg: dict, today: str, log: Callable[[str], None]) -> dict | None:
     """取当天汇率（有缓存就复用）；失败时返回 None，**不让整轮失败**。"""
-    cache_path = cfg.get("fx_cache_path") or "data/fx_cache.json"
-    from pathlib import Path
-
-    path = Path(cache_path)
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent.parent / path
+    # 相对路径解析唯一出处 = config.resolve_path（code-audit-2026-10-09 #9）：
+    # 这里曾手抄一份 Path(__file__).parent.parent，且 `or "data/fx_cache.json"`
+    # 是 DEFAULTS["fx_cache_path"] 的第二份默认值。
+    path = resolve_path(cfg, "fx_cache_path")
     try:
         return fx_module.load_or_fetch(path, today=today, log=log,
                                        timeout=float(cfg.get("probe_timeout_seconds", 6)))

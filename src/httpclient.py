@@ -39,6 +39,11 @@ import requests
 #: 从 Windows 证书库导出的 CA bundle 放这里（gitignored，环境相关）
 CA_CACHE = Path(__file__).resolve().parent.parent / "data" / "ca_bundle.pem"
 
+#: ITAD / Steam / 汇率三个对外客户端的统一 UA —— **唯一出处**（code-audit-2026-10-09 #16）。
+#: 从前 itad / steam / fx 各写一份同样的字面量，改版本号要改四遍；链接也从占位的
+#: github.com 根补成真实仓库。（`heybox.py` 另有一套浏览器形 UA，与这里无关。）
+USER_AGENT = "SteamDailyLowest/1.0 (+https://github.com/Mumeione/SteamDailyLowest)"
+
 
 def system_ca_bundle(cache_path: Path = CA_CACHE) -> str | None:
     """把 Windows 证书库里的根证书导成一个 PEM，供 `requests` 当 CA 用。
@@ -132,11 +137,13 @@ class BaseHttpClient:
         max_attempts: int = 4,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda msg: None,
-        user_agent: str = "SteamDailyLowest/1.0 (+https://github.com/)",
+        user_agent: str = USER_AGENT,
     ):
         self.limiter = limiter
         self.timeout = timeout
         self.pause = pause
+        # 最小 2 次（code-audit-2026-10-09 #12）：宁慢勿快 —— 首次失败后至少再试一次；
+        # 传 1 会被静默抬到 2（历史遗留，无语义上的「只试一次」）。
         self.max_attempts = max(2, int(max_attempts))
         self._sleep = sleep
         self._log = log

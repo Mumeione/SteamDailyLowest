@@ -43,11 +43,10 @@ from typing import Callable
 
 import requests
 
-from .httpclient import BaseHttpClient, Blocked, HttpError
+from .httpclient import BaseHttpClient, Blocked, HttpError, USER_AGENT
 from .ratelimit import RateLimiter
 
 BASE = "https://store.steampowered.com"
-USER_AGENT = "SteamDailyLowest/1.0 (+https://github.com/)"
 
 #: 多 appid 时唯一可用的 filters 值（其他值一律 400）
 BATCH_FILTERS = "price_overview"

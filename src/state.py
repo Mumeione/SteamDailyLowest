@@ -586,17 +586,20 @@ class State:
         entry = self.game_meta.get(game_id)
         return (entry or {}).get("title_zh")
 
-    def set_title_zh(self, game_id: str, title: str | None, now: datetime | None = None) -> None:
+    def set_title_zh(self, game_id: str, title: str | None, now: datetime) -> None:
         """单独写中文名。
 
         ⚠️ **不能顺手改 `fetched_at`** —— 那个字段决定 `reviews` 的 TTL，
         而中文名与详情是两条独立的缓存。
+        ⚠️ `now` **必填**（code-audit-2026-10-09 #10）：从前兜底 `now or datetime.now()`
+        会产生 **naive 本地时间**，而全仓其余时刻一律 aware（读回时 `parse_time`
+        按 UTC 解释 → 本地跑（+08:00）写下的值偏 8 小时）。
         """
         if not title:
             return
         entry = self.game_meta.get(game_id) or {}
         entry["title_zh"] = title
-        entry["title_zh_at"] = (now or datetime.now()).isoformat(timespec="seconds")
+        entry["title_zh_at"] = now.isoformat(timespec="seconds")
         self.data["game_meta"][game_id] = entry
 
     # ------------------------------------------------------------------

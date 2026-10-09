@@ -15,12 +15,11 @@ from typing import Callable
 
 import requests
 
-from .httpclient import BaseHttpClient, Blocked, HttpError
+from .httpclient import BaseHttpClient, Blocked, HttpError, USER_AGENT
 from .ratelimit import RateLimiter
 
 BASE = "https://api.isthereanydeal.com"
 STEAM_SHOP_ID = 61
-USER_AGENT = "SteamDailyLowest/1.0 (+https://github.com/)"
 
 #: ``filter.type`` 里「本体游戏」的取值（1=Game / 2=DLC / 3=Package / 7=Software / 9=Hardware）
 GAME_TYPE_ID = 1

@@ -28,7 +28,8 @@ SNAPSHOT_VERSION = 3
 #: ``compare`` 来自 enrich 阶段、原样透传：输入已是进列表条目，理论上都该有比价，
 #: 个别为 null（某些区无售或拉取失败）—— 消费方降级省略比价行即可，不必过滤条目。
 #:
-#: v3（2026-09-30）新增四个字段，理由见 `.scratch/expiring-snapshot/v3-plan.md`：
+#: v3（2026-09-30）新增四个字段，理由见 `.scratch/expiring-snapshot/spec.md` §6
+#: 与 `changelog.md` v4（原 v3-plan.md 已按脱敏口径删除，勿再引用）：
 #: - ``low_class``：**Steam 口径**的史低分类（``new`` / ``tie`` / ``unknown``）。
 #:   ⚠️ 与 ``flag`` 是两套口径，别混用：``flag`` 是 ITAD 的**全商店**标记
 #:   （``N`` / ``H`` / ``S``），存在「Steam 店内首次到该价、但别家更早更便宜过」

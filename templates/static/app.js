@@ -34,9 +34,11 @@
   var breakpoint = listCfg.breakpoint;
   var mq = breakpoint ? window.matchMedia("(max-width: " + breakpoint + "px)") : null;
   // 列表加载参数**从配置来**（payload 的 list 段，见 report.render）——
-  // 不在前端再写死一份阈值（review-s9-01 确立的仓库约定）。
-  var LIST_BATCH = listCfg.batch || 30;        // 每批追加几条（refs.md §9.2「20~30 条」）
-  var LIST_AUTO_MAX = listCfg.auto_max || 300; // 自动追加的总上限（「不做无限追加」）
+  // 不在前端再写死一份阈值（review-s9-01 确立的仓库约定）。**刻意不给兜底数字**
+  // （code-audit-2026-10-09 #18，与上方断点同口径 2026-10-09 卡片 08）：取不到就按
+  // 自然降级走 —— batch 缺 → 不分批（全量展示、无分页条）；auto_max 缺 → 只留手动「加载更多」。
+  var LIST_BATCH = listCfg.batch;        // 每批追加几条（refs.md §9.2「20~30 条」）
+  var LIST_AUTO_MAX = listCfg.auto_max;  // 自动追加的总上限（「不做无限追加」）
   var TOP_SHOW_AT = 400;                       // 滚动多少像素后显示「返回顶部」
   var SCROLL_AHEAD = "200px";                  // 提前多远就开始加载下一批
 
@@ -397,7 +399,9 @@
   // ⚠️ PICK_MIN 要跟 app.css 里 .pick 的观感一致（约 150px 起才放得下封面+价+力度条）。
   var PICK_MIN = 150;
   var PICK_GAP = 12;
-  var PICK_MAX_COLS = (data && data.pick_page) || 5;
+  // 一排最多几张 = payload 的 pick_page（口径唯一来源）。**不再写 5 兜底**
+  // （code-audit-2026-10-09 #18）：取不到就不设上限（见下面 pickColumns 的判空）。
+  var PICK_MAX_COLS = (data && data.pick_page) || null;
 
   function pickColumns() {
     var width = picksTrack ? picksTrack.clientWidth : 0;
@@ -412,7 +416,8 @@
       width = (wrap && wrap.clientWidth) || Math.round((window.innerWidth || 1024) * 0.85);
     }
     var cols = Math.floor((width + PICK_GAP) / (PICK_MIN + PICK_GAP));
-    return Math.max(2, Math.min(PICK_MAX_COLS, cols));
+    // 取不到 pick_page → 不设上限（code-audit-2026-10-09 #18：别静默按 5 跑）
+    return PICK_MAX_COLS ? Math.max(2, Math.min(PICK_MAX_COLS, cols)) : Math.max(2, cols);
   }
 
   /** 每页张数 = 列数（2026-10-07 收尾，用户拍板）：原来手机 2 列 × 2 排 = 4 张
@@ -847,8 +852,11 @@
       ]));
     }
     var left = Math.max(0, total - shown.length);
-    if (left <= 0) {
-      if (total > LIST_BATCH) {
+    // 无分页参数（payload 缺 batch）→ 不分批：按「全部已加载」收尾，不挂分页条。
+    // （code-audit-2026-10-09 #18 判空跳过；否则 state.limit += undefined 得 NaN，
+    //   点「加载更多」会把列表清空 —— 这是 review 抓到的退化，必须在这里兜住。）
+    if (left <= 0 || !LIST_BATCH) {
+      if (total > (LIST_BATCH || 0)) {
         pagerBox.appendChild(el("div", { class: "pager" }, [
           el("span", { text: "已全部加载 " + total + " 条" })]));
       }
@@ -1351,8 +1359,10 @@
 
   function renderAlert() {
     if (!alertBox) return;
-    var warnHours = data.stale_warn_hours || 26;
-    var redHours = data.stale_banner_hours || 36;
+    // 两档陈旧阈值由 payload 下发，**不留兜底数字**（code-audit-2026-10-09 #18）：
+    // 取不到则该档告警不成立（`hours > undefined` 恒 false）→ 自然跳过，轮到站点通知。
+    var warnHours = data.stale_warn_hours;
+    var redHours = data.stale_banner_hours;
     var hours = (Date.now() - new Date(data.generated_at).getTime()) / 3600000;
     if (hours > redHours) {
       paintAlert("is-stale", "数据已 " + Math.round(hours) + " 小时没更新，今天可能没抓到 —— "
