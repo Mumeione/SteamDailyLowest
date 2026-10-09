@@ -1022,6 +1022,23 @@ expiry 缺失或解析不了的暂存键一并删（无法与折扣期绑定，�
 ⚠️ `compare_cache`（S7 起 `appid|cc` 永久键）**不在清理范围** —— 键不含
 expiry，若仍走 expiry 清理会被当成「绑定不了折扣期」整把误删（S7 头号坑）。
 
+**崩溃恢复 runbook（跨文件非原子，code-audit-2026-10-09 #3）**
+`State.save` 按 state → dynamic → cache **顺序做三次独立原子替换**（见 `state.py` 的
+`save()` 注释），**做不到跨文件原子**：进程若恰好死在「state 已写、dynamic 未写」之间，
+磁盘上会留下**新的 state + 旧的 dynamic**，旧 `fetched_at` 会被下一轮的四档 TTL 当成
+「详情已过期」而**整批重抓**（一轮全量详情请求，消耗 Steam 限流预算）。
+
+判定与处置（三件套都属可收敛，**不丢数据**，只是重抓一轮）：
+1. 某轮 `detail_fetched` 异常放大、或 about 页「中文名 / 评价」新取量突增 → 怀疑撞上该窗口；
+2. 与 data 分支历史比对：`git show origin/data:data/dynamic.json` 里的 `fetched_at`
+   是否**早于**同目录 `state.json` 的 `updated_at` 一大截；
+3. 属实则**什么都不用做** —— 跑完一轮即自愈（`seen_deal` 用幂等键，重抓覆盖）。
+   预算紧张时用手动 `workflow_dispatch` 只跑 `--prefetch`、分几天补完，不必改代码。
+
+> **不引入 `.bak` 备份方案**的理由：该窗口每轮仅约 10 次落盘、命中概率极低，恢复代价
+> 只是「多抓一轮」；而给保存主路径加备份 / 回滚会引入新的失败面，收益不划算
+> （用户 2026-10-09 裁决，故 #3 只落这条 runbook）。
+
 ***
 
 ## 6. 模块与文件布局

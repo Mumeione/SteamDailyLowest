@@ -477,11 +477,13 @@
     ]);
     // 底部色条走 lowClassOf（与行卡片同一个函数，改口径只改那一处）
     var card = el("article", { class: "pick " + lowClassOf(item) }, [art, body]);
-    // 点大卡 → 跳到「新史低」板块，**并记住这张卡**：落地后自动滚到对应行、展开详情
+    // 点大卡 → 跳到「新史低」板块（= payload sections 的第一项，顺序由服务端定，
+    // 前端不写板块名），**并记住这张卡**：落地后自动滚到对应行、展开详情
     // （2026-10-09 用户定案 A —— 原来只跳转，用户「不能一眼找到刚才点击的大卡详情」）。
     card.addEventListener("click", function () {
       pendingPick = item.game_id ? { gid: item.game_id, triedAll: false } : null;
-      openSection("new_low");
+      var firstSec = (data.sections || [])[0];
+      if (firstSec) openSection(firstSec.key);
     });
     return card;
   }
@@ -677,6 +679,14 @@
   // 「精选」排序 = 服务端给的板块顺序 = **分片的物理顺序**，按片号 0,1,2… 依次读出来
   // 就对了，前端仍然不复制任何排序规则。
 
+  /** 板块的 payload 元信息（key → {label, date_window, …}）—— 取自 data.sections，
+   *  前端**不再硬编码任何板块名**（code-audit-2026-10-09 #5）。 */
+  function sectionMeta(key) {
+    var list = data.sections || [];
+    for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
+    return null;
+  }
+
   /** 单卡在当前板块 + 当前筛选下要不要留下（判据只有这一份，服务端 `section_agg`
    *  用的是同一套，改这里必须同步改那边）。 */
   function cardPredicate(key) {
@@ -685,8 +695,10 @@
         if ((card.sections || []).indexOf(key) === -1) return false;
         if (!liveOk(card)) return false;
         // 「即将到期」本来就是按**到期时间**筛的，不再叠加用户选的日期窗口
-        // （refs.md §11.3：叠加会把最紧急的老折扣漏掉）
-        if (key !== "expiring" && !dateOk(card)) return false;
+        // （refs.md §11.3：叠加会把最紧急的老折扣漏掉）—— 由服务端下发的
+        // 板块 `date_window` 标志决定，前端不硬编码板块名。
+        var sec = sectionMeta(key);
+        if (!(sec && sec.date_window === false) && !dateOk(card)) return false;
       } else if (!dateOk(card)) {
         return false;
       }
@@ -1305,7 +1317,9 @@
   // ⚠️ 代价是只看首页不点分类的用户也会多下 ~100KB —— 用「近乎瞬开」换的，
   //    觉得不划算就把下面这段删掉，分类页仍然只比现在快 33 倍。
   (function prefetchShards() {
-    var keys = ["new_low", "expiring", "popular", "big_cut", "__all__"];
+    // 板块清单由 payload 的 sections 派生（code-audit-2026-10-09 #5）——
+    // 从前这里硬编码了整张板块 key 表，加板块要记得改前端。
+    var keys = (data.sections || []).map(function (s) { return s.key; }).concat("__all__");
     var i = 0;
     function step() {
       if (state.section) return;                 // 已经进板块了，不用预取

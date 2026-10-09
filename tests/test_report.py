@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unittest
 from datetime import datetime
@@ -1166,6 +1167,45 @@ class AutoescapeGuardTest(unittest.TestCase):
             html = (out / name).read_text(encoding="utf-8")
             self.assertNotIn(evil, html, name)
             self.assertIn("&lt;script&gt;", html, name)
+
+
+class SectionRegistryGuardTest(unittest.TestCase):
+    """板块口径单源（code-audit-2026-10-09 #5 + 可自动化检查项 #4）。
+
+    「加/改一个板块」从前要散着改：HOME_SECTIONS 条目 + `_in_section` +
+    `_section_sort` + `_section_members`（日期窗口）+ `section_agg` 的 expiring 位，
+    前端还要改 app.js 的板块 key 清单。现在判据 / 排序 / label / 日期窗口都出自
+    `report.SECTIONS` 一处，nav 与前端清单由它派生 —— 这条测试锁死这个单源。
+    """
+
+    def test_registry_shape_and_home_sections_share_source(self):
+        for spec in report.SECTIONS:
+            for field in ("key", "label", "match", "sort", "date_window"):
+                self.assertIn(field, spec, spec["key"])
+        self.assertEqual([s["key"] for s in report.HOME_SECTIONS],
+                         [s["key"] for s in report.SECTIONS])
+        self.assertEqual([s["label"] for s in report.HOME_SECTIONS],
+                         [s["label"] for s in report.SECTIONS])
+
+    def test_nav_is_derived_from_registry(self):
+        html = (_render([], datetime(2026, 10, 6, 5, 14)) / "index.html").read_text(
+            encoding="utf-8")
+        for spec in report.SECTIONS:
+            self.assertIn('data-section="%s"' % spec["key"], html)
+            self.assertIn(">%s<" % spec["label"], html)
+        self.assertIn('data-section="__all__"', html)
+        self.assertIn("全部折扣", html)
+
+    def test_app_js_hardcodes_no_section_labels_or_key_list(self):
+        js = (Path(report.TEMPLATES_DIR) / "static" / "app.js").read_text(encoding="utf-8")
+        # 先剥注释再扫 —— 注释里可以自由提到板块名，不该触发
+        code = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+        code = re.sub(r"//[^\n]*", "", code)
+        for spec in report.SECTIONS:
+            self.assertNotIn('"%s"' % spec["label"], code, spec["key"])
+            self.assertNotIn('"%s"' % spec["key"], code, spec["key"])
+        # 「全部折扣」这一个常量 label 仍允许（伪板块，无服务端来源）
+        self.assertIn('__all__: "全部折扣"', code)
 
 
 class TopbarTest(unittest.TestCase):

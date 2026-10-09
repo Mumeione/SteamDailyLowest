@@ -611,9 +611,11 @@ def section_agg(members: list[dict], cfg: dict, key: str) -> dict:
     rows = _agg_rows(members, cfg, key)
     cache: dict[tuple, int] = {}
     counts: dict[str, int] = {}
+    _spec = _SECTIONS_BY_KEY.get(key)
+    ignores_window = bool(_spec) and not _spec["date_window"]
     for di, d in enumerate(dates):
         # 「即将到期」忽略日期 ⇒ 5 个日期选项共用一份计数（靠 cache 只算一次）
-        bit = 16 if key == "expiring" else (1 << di)
+        bit = 16 if ignores_window else (1 << di)
         for ci in range(len(cuts)):
             for ri in range(len(revs)):
                 for oi in range(len(news)):
@@ -703,24 +705,14 @@ def write_all_shards(output_dir: Path, all_cards: list[dict], cfg: dict) -> dict
     return manifest
 
 
-#: 首页四板块（S9 定案 2026-10-06）。顺序由用户拍板：新史低 → 即将到期 → 热门游戏 → 大额折扣。
+#: 首页四板块的键与顺序 —— **从 :data:`SECTIONS` 注册表派生**（code-audit-2026-10-09 #5）。
+#: 注册表定义在文件下方（紧随各板块的判据 / 排序函数），此处仅留说明。
 #: ⚠️ **池子必须是「全部」视图那批卡片（``all_cards`` / ``all_shown``）** ——
 #: 绝不能用 ``seen_deal`` 全量（里面有同一游戏的历史价格变体，条数会放大十几倍）。
 #: ⚠️ 这里**不再写「入组条件」文案** —— 原先每个板块带一句 `criteria`（"评价数 ≥ 10000"、
 #: "折扣 ≥ 80%"），阈值是写死的字面量：改了 `notable_review_count` 之后页面还在说
-#: 10000，等于撒谎；而且**前端从头到尾没渲染过它**（refs B6 只要条数）—— 既是谎言
-#: 又是死数据（review-s9-01 补充审查 #1）。板块口径改在「关于网站」页由
-#: :func:`criteria_notes` 从配置生成，那里才是唯一来源。
-#: ⚠️ 加/改板块要同时动三处（这是已知的重复分派，暂时保留、改动面大）：
-#: ① :func:`_in_section`（判据）② :func:`_section_sort`（板块内排序）
-#: ③ :func:`all_section_orders`（列表页顺序 = 分片的物理顺序）—— 有单测与冒烟锁定。
-#:    （2026-10-08 起 `section_order` 不再单独下发：切片的顺序本身就是它。）
-HOME_SECTIONS = [
-    {"key": "new_low", "label": "新史低"},
-    {"key": "expiring", "label": "即将到期"},
-    {"key": "popular", "label": "热门游戏"},
-    {"key": "big_cut", "label": "大额折扣"},
-]
+#: 10000，等于撒谎；而且**前端从头到尾没渲染过它**（refs B6 只要条数）。板块口径改在
+#: 「关于网站」页由 :func:`criteria_notes` 从配置生成，那里才是唯一来源。
 
 
 #: 默认阈值的**唯一来源** = :data:`src.config.DEFAULTS`（2026-10-09 收编）。
@@ -756,26 +748,36 @@ def _is_live(card: dict) -> bool:
     return views is None or "active" in views
 
 
+def _match_new_low(card: dict, cfg: dict) -> bool:
+    return (card.get("low_class") == classify.STEAM_LOW_NEW) and _is_live(card)
+
+
+def _match_expiring(card: dict, cfg: dict) -> bool:
+    # 按「到期」这一维筛，**不叠加近 7 天**：7 天前开始的老折扣照样马上要过期，
+    # 按新增日期筛会把最紧急的那批漏掉（实测 107 → 23）。
+    views = card.get("views")
+    if views is not None:
+        return "upcoming" in views
+    # 没有 views 标志时（非 all_cards 的调用路径）按「剩 ≤2 天」近似
+    left = card.get("days_left")
+    return left is not None and left <= 2
+
+
+def _match_popular(card: dict, cfg: dict) -> bool:
+    return (review_count(card) >= int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
+            and _is_live(card))
+
+
+def _match_big_cut(card: dict, cfg: dict) -> bool:
+    return ((card.get("cut") or 0) >= int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT))
+            and _is_live(card))
+
+
 def _in_section(key: str, card: dict, cfg: dict) -> bool:
-    """单卡是否属于某个板块。**只判"性质"，不判日期窗口** ——
+    """单卡是否属于某个板块（判据见 :data:`SECTIONS`）。**只判"性质"，不判日期窗口** ——
     日期窗口（近 N 天）交给调用方，这样前端点「全部」胶囊时能跳过窗口看全量。"""
-    if key == "new_low":
-        return (card.get("low_class") == classify.STEAM_LOW_NEW) and _is_live(card)
-    if key == "expiring":
-        # 按「到期」这一维筛，**不叠加近 7 天**：7 天前开始的老折扣照样马上要过期，
-        # 按新增日期筛会把最紧急的那批漏掉（实测 107 → 23）。
-        views = card.get("views")
-        if views is not None:
-            return "upcoming" in views
-        # 没有 views 标志时（非 all_cards 的调用路径）按「剩 ≤2 天」近似
-        left = card.get("days_left")
-        return left is not None and left <= 2
-    if key == "popular":
-        return (review_count(card) >= int(cfg.get("notable_review_count", DEFAULT_NOTABLE))
-                and _is_live(card))
-    if key == "big_cut":
-        return (card.get("cut") or 0) >= int(cfg.get("big_cut_percent", DEFAULT_BIG_CUT)) and _is_live(card)
-    return False
+    spec = _SECTIONS_BY_KEY.get(key)
+    return bool(spec) and spec["match"](card, cfg)
 
 
 def section_keys(card: dict, cfg: dict) -> list[str]:
@@ -788,8 +790,9 @@ def section_keys(card: dict, cfg: dict) -> list[str]:
 def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     members = [c for c in cards if _in_section(key, c, cfg)]
-    # 「即将到期」不叠加日期窗口（见 _in_section 注释），其余三个要
-    if key == "expiring":
+    # 「即将到期」不叠加日期窗口（注册表 date_window=False，见 _match_expiring 注释），其余三个要
+    spec = _SECTIONS_BY_KEY.get(key)
+    if spec is not None and not spec["date_window"]:
         return members
     return [c for c in members if _is_fresh(c, days)]
 
@@ -814,16 +817,50 @@ def _section_sort(key: str, cfg: dict | None = None):
       平手比评价数 → title。恢复自然顺序后，板块内「折扣降序」排序选项重新被隐含
       （见 :func:`filter_specs` 的 implied 表）。
     """
-    if key == "expiring":
-        return lambda c: (c.get("days_left") if c.get("days_left") is not None else 99,
-                          -(c.get("cut") or 0), c.get("title") or "")
-    if key == "popular":
-        return lambda c: (-review_count(c),
-                          -((c.get("reviews") or {}).get("score") or 0),
-                          c.get("title") or "")
-    if key == "big_cut":
-        return lambda c: (-(c.get("cut") or 0), -review_count(c), c.get("title") or "")
+    spec = _SECTIONS_BY_KEY.get(key)
+    return (spec["sort"] if spec else _sort_new_low)(cfg)
+
+
+def _sort_new_low(cfg):
     return lambda c: (-featured_score(c, cfg), -review_count(c), c.get("title") or "")
+
+
+def _sort_expiring(cfg):
+    return lambda c: (c.get("days_left") if c.get("days_left") is not None else 99,
+                      -(c.get("cut") or 0), c.get("title") or "")
+
+
+def _sort_popular(cfg):
+    return lambda c: (-review_count(c),
+                      -((c.get("reviews") or {}).get("score") or 0),
+                      c.get("title") or "")
+
+
+def _sort_big_cut(cfg):
+    return lambda c: (-(c.get("cut") or 0), -review_count(c), c.get("title") or "")
+
+
+#: 板块注册表 —— 判据 / 排序 / label / 日期窗口的**唯一出处**（code-audit-2026-10-09 #5）。
+#: 从前「加/改一个板块」要散着改五处（HOME_SECTIONS 条目 + :func:`_in_section` +
+#: :func:`_section_sort` + :func:`_section_members` 的日期窗口特判 + :func:`section_agg`
+#: 的 expiring 位），前端 app.js 还硬编码了板块 key 清单；现在这些都从这里派生。
+#: · ``match(card, cfg)``：是否属于该板块（只判性质，日期窗口见 ``date_window``）；
+#: · ``sort(cfg)``：板块内「精选」排序键；
+#: · ``date_window``：True = 叠加「近 N 天新增」窗口；「即将到期」为 False。
+SECTIONS = [
+    {"key": "new_low", "label": "新史低", "match": _match_new_low,
+     "sort": _sort_new_low, "date_window": True},
+    {"key": "expiring", "label": "即将到期", "match": _match_expiring,
+     "sort": _sort_expiring, "date_window": False},
+    {"key": "popular", "label": "热门游戏", "match": _match_popular,
+     "sort": _sort_popular, "date_window": True},
+    {"key": "big_cut", "label": "大额折扣", "match": _match_big_cut,
+     "sort": _sort_big_cut, "date_window": True},
+]
+_SECTIONS_BY_KEY = {s["key"]: s for s in SECTIONS}
+
+#: 首页四板块（键 + label，顺序即 nav 与分片顺序）—— 上表的派生视图。
+HOME_SECTIONS = [{"key": s["key"], "label": s["label"]} for s in SECTIONS]
 
 
 def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
@@ -845,7 +882,7 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
     preview = int(cfg.get("home_section_preview", DEFAULT_HOME_SECTION_PREVIEW))
     floor = int(cfg.get("home_section_preview_min", DEFAULT_HOME_SECTION_FLOOR))
     boards = []
-    for spec in HOME_SECTIONS:
+    for spec in SECTIONS:
         members = _section_members(spec["key"], cards, cfg)
         members.sort(key=_section_sort(spec["key"], cfg))
         boards.append((spec, members))
@@ -856,6 +893,9 @@ def build_sections(cards: list[dict], cfg: dict) -> list[dict]:
         out.append({
             "key": spec["key"],
             "label": spec["label"],
+            #: 下发日期窗口标志，前端据此决定「是否叠加 dateOk」，不再硬编码板块名
+            #: （code-audit-2026-10-09 #5）。
+            "date_window": spec["date_window"],
             "count": len(members),
             "items": members[:k],
         })
@@ -1283,34 +1323,10 @@ def criteria_notes(cfg: dict) -> list[dict]:
     ]
 
 
-def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
-           *, fx: dict | None = None, steam: dict | None = None,
-           all_cards: list[dict] | None = None,
-           run_log: list[dict] | None = None) -> dict:
-    """写出一整套静态文件，返回产出路径。
-
-    ``items`` 为当日新增的原始卡片：计入 low_points，``all_cards`` 缺席时兜底作
-    首页板块池子（兼容直接调用 render 的测试与工具）。
-
-    ``all_cards``：「全部」视图的数据 —— 今日筛选链通过的全量卡片，每张带
-    ``views`` 列表（week/active/new_today/upcoming 成员标志，run.py 计算）；
-    传了就写出板块完整列表的分片 ``all/<key>_<n>.js``（2026-10-08 起取代单文件
-    ``all.js`` —— 见 :func:`write_all_shards` 的注释）。
-
-    ⚠️ 2026-10-08：payload 不再下发 ``views`` / ``groups`` / ``view_groups``
-    （首屏瘦身）—— 视图按钮与「即将过期」卡片都无前端消费者；「即将到期」板块的
-    完整列表走 ``all/`` 分片的 ``expiring`` 板块，expiring.json 快照导出由 run.py 的
-    ``upcoming_shown_items`` 负责。
-    """
-    output_dir = Path(cfg["output_dir"])
-    if not output_dir.is_absolute():
-        output_dir = ROOT / output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "static").mkdir(parents=True, exist_ok=True)
-
-    for name in ("app.css", "app.js"):
-        shutil.copyfile(STATIC_DIR / name, output_dir / "static" / name)
-
+def _build_payload(cfg: dict, items: list[dict], stats: dict, now: datetime,
+                   fx: dict | None, steam: dict | None,
+                   all_cards: list[dict] | None) -> tuple[dict, dict, list[dict], str]:
+    """组装 payload，并返回其伴生产物（low_points / 首页板块池子 / 资源版本）。"""
     version = str(int(now.timestamp()))
 
     # 批 E spec E4：概览的「史低构成」色点 —— 直接数 cards，
@@ -1373,7 +1389,11 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         # 页面上唯一的消费者 `<p class="notice">` 没了，而文案讲的又是已经不存在的
         # 五个视图 —— 留着就是死数据（review-s9-01 #4）。
     }
+    return payload, low_points, home_pool, version
 
+
+def _write_data_js(output_dir: Path, payload: dict) -> None:
+    """写 ``data.js``（只放**前端真的会读**的键）。"""
     # ---- data.js 只放**前端真的会读**的键（2026-10-09，卡片 08）----
     # 之前是把整个 payload 塞进去，于是 data.js 里躺着 overview / fx / steam / sweep /
     # low_points / filter_defaults / generated_at_text —— 前端 app.js 一个都不读
@@ -1396,49 +1416,16 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     # 半截文件会被上架且无自愈，故 output/ 的 HTML / JSON 产物与分片全走 atomic_write_text。
     atomic_write_text(output_dir / "data.js", data_js)
 
-    paths = {
-        "index": str(output_dir / "index.html"),
-        "data_js": str(output_dir / "data.js"),
-        "latest_json": str(output_dir / "latest.json"),
-        "item_count": len(items),
-    }
 
-    # 板块完整列表（首页点「查看更多」进去的那张页）—— 2026-10-08 起**按板块顺序
-    # 切成 all/<key>_<n>.js 分片**，取代原先的单文件 all.js（5.81MB raw / 729KB gzip）。
-    # 顺序不再单独下发：它就是分片的物理顺序，前端按片号依次读即得到板块顺序，
-    # 排序口径仍然只有服务端一份（:func:`_section_sort`）。
-    if all_cards is not None:
-        manifest = write_all_shards(output_dir, all_cards, cfg)
-        paths["all_shards"] = manifest
-        paths["all_dir"] = str(output_dir / "all")
+def _write_shards(output_dir: Path, all_cards: list[dict], cfg: dict) -> dict:
+    """调 :func:`write_all_shards` 写出板块完整列表分片，返回 manifest。"""
+    return write_all_shards(output_dir, all_cards, cfg)
 
-    latest = {
-        "generated_at": payload["generated_at"],
-        "sweep": payload["sweep"],
-        "overview": stats,
-        #: 史低构成（色点）—— data.js 已不再下发（前端不读，摘要由模板渲染）；
-        #: 放在这里给 tools/check_payload.py 做「色点之和 == 进列表条数」的自洽校验。
-        "low_points": low_points,
-        #: 字段名与含义严格对应：`new_today_raw` 是真实新增量（可能远大于进列表的条数），
-        #: 这里列出的是**实际进列表**的条目，故叫 `shown`
-        "shown": [
-            {
-                "title": item["title"],
-                "title_zh": item["title_zh"],
-                "appid": item["appid"],
-                "low_class": item["low_class"],
-                "low_label": item["low_label"],
-                "price_text": item["price_text"],
-                "tier": item["tier"],
-            }
-            for item in sorted(items, key=featured_sort_key)  # 原 featured 组的顺序（组已删，排序键保留）
-        ],
-    }
-    atomic_write_text(
-        output_dir / "latest.json",
-        json.dumps(latest, ensure_ascii=False, indent=2),
-    )
 
+def _render_pages(output_dir: Path, cfg: dict, payload: dict, stats: dict,
+                  low_points: dict, run_log: list[dict] | None, version: str,
+                  links: dict, messages: dict, home_pool: list[dict]) -> dict:
+    """渲染 index / about 两个页面并写文件，返回 index/about 路径片段。"""
     # ⚠️ autoescape=**True**，不能用 `select_autoescape(["html"])`（code-audit-2026-10-09 #1）：
     # 模板名是 `index.html.j2` / `about.html.j2`，而 select_autoescape 按「扩展名结尾」匹配，
     # `.j2` 不以 `.html` 结尾 → 实测返回 False，**两个页面的自动转义整体失效**。模板就这两个、
@@ -1453,11 +1440,6 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
     nav = ([{"key": spec["key"], "label": spec["label"]} for spec in HOME_SECTIONS]
            + [{"key": "__all__", "label": "全部折扣"}])
 
-    links = site_links(cfg)
-    # S9-3 顶部消息区（refs.md §4 A-3 / B2）：**渲染时**按北京时间筛出「正在进行」的
-    # 活动与通知 —— 前端不判日期（访客本机时区会把日子算错，见 announcements.py）。
-    # 筛不出东西就是 None，模板里那一行整块不渲染（用户口径：没活动就不显示）。
-    messages = announcements.current(now, cfg.get("announcements_path"))
     template = env.get_template("index.html.j2")
     # ⚠️ `overview` 不再传：首页模板里最后一个消费者（页脚那行「生成时间 + 状态库最近一次运行」）
     # 已被用户要求删掉，其余概览数字都在 about 页（那里仍然传）。payload["overview"] 保留 ——
@@ -1491,6 +1473,96 @@ def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
         assets_version=version,
     )
     atomic_write_text(output_dir / "about.html", about_html)
-    paths["about"] = str(output_dir / "about.html")
+    return {
+        "index": str(output_dir / "index.html"),
+        "about": str(output_dir / "about.html"),
+    }
+
+
+def render(cfg: dict, items: list[dict], stats: dict, now: datetime,
+           *, fx: dict | None = None, steam: dict | None = None,
+           all_cards: list[dict] | None = None,
+           run_log: list[dict] | None = None) -> dict:
+    """写出一整套静态文件，返回产出路径。
+
+    ``items`` 为当日新增的原始卡片：计入 low_points，``all_cards`` 缺席时兜底作
+    首页板块池子（兼容直接调用 render 的测试与工具）。
+
+    ``all_cards``：「全部」视图的数据 —— 今日筛选链通过的全量卡片，每张带
+    ``views`` 列表（week/active/new_today/upcoming 成员标志，run.py 计算）；
+    传了就写出板块完整列表的分片 ``all/<key>_<n>.js``（2026-10-08 起取代单文件
+    ``all.js`` —— 见 :func:`write_all_shards` 的注释）。
+
+    ⚠️ 2026-10-08：payload 不再下发 ``views`` / ``groups`` / ``view_groups``
+    （首屏瘦身）—— 视图按钮与「即将过期」卡片都无前端消费者；「即将到期」板块的
+    完整列表走 ``all/`` 分片的 ``expiring`` 板块，expiring.json 快照导出由 run.py 的
+    ``upcoming_shown_items`` 负责。
+    """
+    output_dir = Path(cfg["output_dir"])
+    if not output_dir.is_absolute():
+        output_dir = ROOT / output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "static").mkdir(parents=True, exist_ok=True)
+
+    for name in ("app.css", "app.js"):
+        shutil.copyfile(STATIC_DIR / name, output_dir / "static" / name)
+
+    payload, low_points, home_pool, version = _build_payload(
+        cfg, items, stats, now, fx, steam, all_cards)
+
+    _write_data_js(output_dir, payload)
+
+    paths = {
+        "index": str(output_dir / "index.html"),
+        "data_js": str(output_dir / "data.js"),
+        "latest_json": str(output_dir / "latest.json"),
+        "item_count": len(items),
+    }
+
+    # 板块完整列表（首页点「查看更多」进去的那张页）—— 2026-10-08 起**按板块顺序
+    # 切成 all/<key>_<n>.js 分片**，取代原先的单文件 all.js（5.81MB raw / 729KB gzip）。
+    # 顺序不再单独下发：它就是分片的物理顺序，前端按片号依次读即得到板块顺序，
+    # 排序口径仍然只有服务端一份（:func:`_section_sort`）。
+    if all_cards is not None:
+        manifest = _write_shards(output_dir, all_cards, cfg)
+        paths["all_shards"] = manifest
+        paths["all_dir"] = str(output_dir / "all")
+
+    latest = {
+        "generated_at": payload["generated_at"],
+        "sweep": payload["sweep"],
+        "overview": stats,
+        #: 史低构成（色点）—— data.js 已不再下发（前端不读，摘要由模板渲染）；
+        #: 放在这里给 tools/check_payload.py 做「色点之和 == 进列表条数」的自洽校验。
+        "low_points": low_points,
+        #: 字段名与含义严格对应：`new_today_raw` 是真实新增量（可能远大于进列表的条数），
+        #: 这里列出的是**实际进列表**的条目，故叫 `shown`
+        "shown": [
+            {
+                "title": item["title"],
+                "title_zh": item["title_zh"],
+                "appid": item["appid"],
+                "low_class": item["low_class"],
+                "low_label": item["low_label"],
+                "price_text": item["price_text"],
+                "tier": item["tier"],
+            }
+            for item in sorted(items, key=featured_sort_key)  # 原 featured 组的顺序（组已删，排序键保留）
+        ],
+    }
+    atomic_write_text(
+        output_dir / "latest.json",
+        json.dumps(latest, ensure_ascii=False, indent=2),
+    )
+
+    links = site_links(cfg)
+    # S9-3 顶部消息区（refs.md §4 A-3 / B2）：**渲染时**按北京时间筛出「正在进行」的
+    # 活动与通知 —— 前端不判日期（访客本机时区会把日子算错，见 announcements.py）。
+    # 筛不出东西就是 None，模板里那一行整块不渲染（用户口径：没活动就不显示）。
+    messages = announcements.current(now, cfg.get("announcements_path"))
+    paths.update(_render_pages(
+        output_dir, cfg, payload, stats, low_points, run_log, version,
+        links, messages, home_pool,
+    ))
 
     return paths
