@@ -28,11 +28,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from src import classify, enrich, report, snapshot
+from src import classify, enrich, snapshot
 from src.config import (
     DEFAULTS,
     ConfigError,
-    api_key,
     load_config,
     parse_rate_limit,
     resolve_path,
@@ -47,14 +46,15 @@ from src.itad import (
     build_client as itad_build_client,
 )
 from src.classify import (   # 领域判定归位 classify（卡片 07）；此处只做转发/复用
-    discount_active,
     entry_needs_detail,
-    refresh_ttl_days,
     unlisted_frozen,
 )
 # 渲染层已下沉 src.pipeline（卡片 05：tools/render_report 不再 import 本入口 module）。
 # 这几个名字**转发导出**，老调用点与测试照常 `from run import render_pass`。
-from src.pipeline import build_stats, count_backlog, log, merge_details, render_pass
+from src.pipeline import build_stats, count_backlog, log, render_pass
+# merge_details 在 run.py 内部无使用，但属**刻意转发导出**（tests/test_pipeline.py 钉住了
+# 这张转发清单）—— 用 noqa 显式登记，免得被未用导入检查当死代码删掉（code-audit 第四节 #2）。
+from src.pipeline import merge_details  # noqa: F401
 from src.ratelimit import RateLimiter
 from src.state import State
 from src.steam import SteamClient
@@ -136,8 +136,15 @@ def build_client(cfg: dict) -> ItadClient:
     return itad_build_client(cfg, log=log)
 
 
-def build_steam_client(cfg: dict) -> SteamClient:
-    """Steam store 全站按**同一个预算**合并计数（§2.2 / §3.3）。"""
+def build_steam_client(cfg: dict, *,
+                       timeout_key: str = "steam_timeout_seconds") -> SteamClient:
+    """Steam store 全站按**同一个预算**合并计数（§2.2 / §3.3）。
+
+    ``timeout_key``：超时取自哪个配置键 —— 日常用 ``steam_timeout_seconds``(15)，
+    探针用 ``probe_timeout_seconds``(6，§9 的独立短超时)。**不再各写一份构造器**
+    （code-audit-2026-10-09 #17：从前两处限流器五参数逐字重复，改一处漏一处），
+    默认值也统一取 ``DEFAULTS``，不在此处写第三遍字面量。
+    """
     calls, window = parse_rate_limit(cfg["steam_rate_limit"], default=(150, 300))
     limiter = RateLimiter(
         name="steam",
@@ -147,11 +154,11 @@ def build_steam_client(cfg: dict) -> SteamClient:
     )
     return SteamClient(
         limiter=limiter,
-        timeout=float(cfg.get("steam_timeout_seconds", 15)),
+        timeout=float(cfg.get(timeout_key, DEFAULTS[timeout_key])),
         pause=float(cfg["request_pause_seconds"]),
         log=log,
         lang=cfg.get("steam_lang", "schinese"),
-        batch_size=int(cfg.get("steam_batch_size", 20)),
+        batch_size=int(cfg.get("steam_batch_size", DEFAULTS["steam_batch_size"])),
     )
 
 
@@ -1089,24 +1096,6 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     return 0
 
 
-def build_probe_steam_client(cfg: dict) -> SteamClient:
-    """探针专用 Steam 客户端：超时用 `probe_timeout_seconds`（§9 的独立短超时）。"""
-    calls, window = parse_rate_limit(cfg["steam_rate_limit"], default=(150, 300))
-    limiter = RateLimiter(
-        name="steam",
-        max_calls=calls,
-        window_seconds=window,
-        min_interval=float(cfg["steam_min_interval"]),
-    )
-    return SteamClient(
-        limiter=limiter,
-        timeout=float(cfg.get("probe_timeout_seconds", 6)),
-        pause=float(cfg["request_pause_seconds"]),
-        log=log,
-        lang=cfg.get("steam_lang", "schinese"),
-    )
-
-
 def run_probe(cfg: dict, *, state: State | None = None,
               steam: SteamClient | None = None,
               log: Callable[[str], None] = log) -> int:
@@ -1126,7 +1115,8 @@ def run_probe(cfg: dict, *, state: State | None = None,
     if state is None:
         state = State(resolve_path(cfg, "state_path"), tz=tz).load()
     if steam is None:
-        steam = build_probe_steam_client(cfg)
+        # 与日常同一个构造器，只是换成探针的独立短超时键（code-audit-2026-10-09 #17）
+        steam = build_steam_client(cfg, timeout_key="probe_timeout_seconds")
 
     # ---- 抽样：按 game_id 取最近一次出现的折扣，要求缓存里有 appid + 好评率 ----
     # 去重逻辑只有 latest_entries 一份（卡片 05）

@@ -4,14 +4,16 @@
 
 **为什么需要它**：checks.yml 改成只手动触发之后，「本地必须跑齐」成了**唯一的**
 安全网 —— daily.yml 不看它，而发布跑的是 main 上最新的代码。可原来跑齐要敲五条
-命令、还要记得设 `NODE_PATH`，漏掉任何一条，这张网就破一个洞。这里把四道锁串成
+命令、还要记得设 `NODE_PATH`，漏掉任何一条，这张网就破一个洞。这里把六道锁串成
 一条，并在最后给一张通过/失败表：
 
   ① workflow YAML 严格校验（重复键直接报错）
   ② pytest（判定 / 渲染 / 状态库 / 传输底座）
   ③ ``tools/render_report.py --at latest``（后面的检查都要读 output/，零网络）
   ④ ``tools/check_payload.py``（报表产物的跨端字面量双向比对）
-  ⑤ ``tests/jsdom/smoke_s9.js``（前端 DOM 行为冒烟）
+  ⑤ ``tools/check_code_hygiene.py``（代码卫生静态检查：未用导入 / 注释失效引用 /
+     CSS 相邻重复选择器 / 常量单源 / 前端兜底，零依赖）
+  ⑥ ``tests/jsdom/smoke_s9.js``（前端 DOM 行为冒烟）
 
 ``checks.yml`` 里跑的就是本文件 —— **本地和 CI 是同一套**，不会出现「本地绿、
 CI 红」这种最浪费时间的情况。
@@ -133,6 +135,8 @@ def build_steps(args) -> list[Step]:
              [py, "tools/render_report.py", "--at", "latest"], timeout=600),
         Step("payload", "报表契约前后端比对",
              [py, "tools/check_payload.py"], needs="render", timeout=300),
+        Step("hygiene", "代码卫生静态检查（零依赖）",
+             [py, "tools/check_code_hygiene.py"], timeout=120),
     ]
     if node is None:
         steps.append(Step("smoke", "前端行为冒烟（缺 node）", [], needs="render"))
@@ -199,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="一条命令跑齐所有契约锁（本地与 checks.yml 同一套）")
     parser.add_argument("--only", action="append", metavar="名字",
-                        help="只跑某一项（可重复）：workflow / pytest / render / payload / smoke")
+                        help="只跑某一项（可重复）：workflow / pytest / render / payload / hygiene / smoke")
     parser.add_argument("--skip-smoke", action="store_true",
                         help="临时不跑前端冒烟（会让安全网少一块，仅排查时用）")
     parser.add_argument("-v", "--verbose", action="store_true",

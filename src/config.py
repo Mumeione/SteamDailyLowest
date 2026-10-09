@@ -6,6 +6,7 @@ key 优先取环境变量 ``ITAD_API_KEY``（GitHub Actions 用），否则取 `
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -135,7 +136,10 @@ def load_config(path: str | Path | None = None) -> dict:
         if not isinstance(user_cfg, dict):
             raise ConfigError(f"配置文件顶层必须是对象：{cfg_path}")
 
-    cfg = dict(DEFAULTS)
+    #: ⚠️ **深拷贝**（code-audit-2026-10-09 #11）：`dict(DEFAULTS)` 是浅拷贝，
+    #: `compare_countries`（list）等嵌套值与模块级 DEFAULTS **共享引用** ——
+    #: 调用方一句 `cfg["compare_countries"].append(...)` 就会污染默认表、跨测试串味。
+    cfg = copy.deepcopy(DEFAULTS)
     cfg.update(user_cfg)
 
     for env_name, key in ENV_OVERRIDES.items():

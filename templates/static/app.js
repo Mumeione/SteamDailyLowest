@@ -833,8 +833,11 @@
     //   ③ 「新史低」板块找不到（大卡可能是**平史低补位**，该板块不含平史低）→ 退到
     //      「全部折扣」再找一遍；④ 仍找不到 → 放弃定位，别卡住。
     if (pendingPick) {
+      // gid 来自 ITAD uuid（服务方控制）—— 必须过 CSS.escape，否则含 `"` / `\` 时
+      // 选择器语法抛异常、定位功能整段失效（code-audit-2026-10-09 #19）。
       var hit = pendingPick.gid
-        ? rowsBox.querySelector('.row[data-gid="' + pendingPick.gid + '"]') : null;
+        ? rowsBox.querySelector('.row[data-gid="' + CSS.escape(pendingPick.gid) + '"]')
+        : null;
       if (hit) {
         hit.classList.add("open");
         if (hit.scrollIntoView) hit.scrollIntoView({ block: "center" });

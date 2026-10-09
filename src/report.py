@@ -11,7 +11,6 @@ import json
 import math
 import re
 import shutil
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
