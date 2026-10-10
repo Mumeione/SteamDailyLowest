@@ -36,7 +36,7 @@ from src.config import (
     parse_rate_limit,
     resolve_path,
 )
-from src.httpclient import Blocked, HttpError
+from src.httpclient import BaseHttpClient, Blocked, HttpError
 from src.itad import (
     SWEEP_FULL,
     SWEEP_LOW_ONLY,
@@ -134,6 +134,27 @@ def write_step_summary(title: str, rows: list[tuple[str, object]]) -> None:
 def build_client(cfg: dict) -> ItadClient:
     # 构造口径只留一份（限流参数、超时、pause）—— 见 src.itad.build_client 的注释
     return itad_build_client(cfg, log=log)
+
+
+def run_deadline(cfg: dict) -> float | None:
+    """本轮运行的总墙钟截止时刻（``time.monotonic`` 口径；None = 不限）。
+
+    由 ``http_budget_seconds`` 驱动；同一轮里所有客户端共用它 = 「一轮的总时间上限」。
+    到点由客户端主动抛错中止，走正常失败路径（页面有首版兜底、下一轮派生自愈），
+    而不是被 Actions 的 ``timeout-minutes`` 硬杀。见 ``BaseHttpClient.set_deadline``。
+    """
+    budget = float(cfg.get("http_budget_seconds") or 0)
+    return time.monotonic() + budget if budget > 0 else None
+
+
+def arm_budget(client: object, deadline: float | None) -> None:
+    """给**真实**传输客户端绑定本轮截止时刻。
+
+    测试替身不是 :class:`BaseHttpClient`（没有 ``set_deadline``）→ 自然跳过，
+    无须为了打桩在替身上补方法。
+    """
+    if isinstance(client, BaseHttpClient):
+        client.set_deadline(deadline)
 
 
 def build_steam_client(cfg: dict, *,
@@ -657,7 +678,9 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     sweep = resolve_sweep(cfg, audit)
 
     state = State(resolve_path(cfg, "state_path"), tz=tz).load()
+    deadline = run_deadline(cfg)
     client = build_client(cfg)
+    arm_budget(client, deadline)
     clock = StageClock()
 
     mode_label = "体检 --audit" if audit else "日常运行"
@@ -755,6 +778,8 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     fx_rates = enrich.load_fx(cfg, today.isoformat(), log)
     steam_client = build_steam_client(cfg)
     browse_client = build_steam_browse_client(cfg)
+    arm_budget(steam_client, deadline)      # 与 ITAD 共用同一个本轮截止时刻
+    arm_budget(browse_client, deadline)
 
     def stats_of(detail_fetched: int, backlog: int):
         def build(info: dict) -> dict:
@@ -881,6 +906,7 @@ def run_baseline(cfg: dict) -> int:
     sweep = resolve_sweep(cfg, audit=False)
     state = State(resolve_path(cfg, "state_path"), tz=tz).load()
     client = build_client(cfg)
+    arm_budget(client, run_deadline(cfg))   # 与 daily/prefetch 同一条总预算（唯一遗漏点补齐）
 
     log("=" * 70)
     log(f"SteamDailyLowest --baseline {now.isoformat(timespec='seconds')}"
@@ -993,9 +1019,12 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     tz = classify.zone(cfg["timezone"])
     now = datetime.now(tz)
     state = state or State(resolve_path(cfg, "state_path"), tz=tz).load()
+    deadline = run_deadline(cfg)
     client = client or build_client(cfg)
     steam = steam or build_steam_client(cfg)
     browse = browse or build_steam_browse_client(cfg)
+    for _c in (client, steam, browse):
+        arm_budget(_c, deadline)
     clock = StageClock()
 
     log("=" * 70)
@@ -1117,6 +1146,7 @@ def run_probe(cfg: dict, *, state: State | None = None,
     if steam is None:
         # 与日常同一个构造器，只是换成探针的独立短超时键（code-audit-2026-10-09 #17）
         steam = build_steam_client(cfg, timeout_key="probe_timeout_seconds")
+    arm_budget(steam, run_deadline(cfg))
 
     # ---- 抽样：按 game_id 取最近一次出现的折扣，要求缓存里有 appid + 好评率 ----
     # 去重逻辑只有 latest_entries 一份（卡片 05）

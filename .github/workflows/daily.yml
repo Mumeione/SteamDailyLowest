@@ -330,7 +330,9 @@ jobs:
             if [ "$2" = "failure" ]; then failed="$failed $1"; fi
           done
           echo "jobs=$failed" >> "$GITHUB_OUTPUT"
-          echo "title=每日运行失败 $(date -u +%F)：$failed" >> "$GITHUB_OUTPUT"
+          # 标题日期用北京时间（AGENTS.md：一律北京时间；主跑 03:14 CST = UTC 前一天，
+          # 用 UTC 日期会让当天失败落到「昨天」标题上，去重语义也错位）
+          echo "title=每日运行失败 $(TZ='Asia/Shanghai' date +%F)：$failed" >> "$GITHUB_OUTPUT"
           if [ -n "$RUN_CODE" ] && [ "$RUN_CODE" != "0" ]; then
             echo "code_line=run.py 退出码 \`$RUN_CODE\`" >> "$GITHUB_OUTPUT"
           fi
@@ -345,7 +347,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_CRON: ${{ github.event.schedule }}
         run: |
-          if [ -n "$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq 'length')" ]; then
+          # ⚠️ 必须按**数值**比较：`--jq 'length'` 输出 "0"/"3" 都是非空字符串，
+          # 用 `[ -n ... ]` 会恒真、永远走「跳过」分支（= 告警从未真正开出过 Issue）。
+          count=$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq 'length')
+          if [ "${count:-0}" -gt 0 ]; then
             echo "今天已有同因失败 Issue（$TITLE），跳过重复创建"
             exit 0
           fi

@@ -27,17 +27,41 @@ import base64
 import os
 import platform
 import random
+import re
 import ssl
 import textwrap
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import requests
 
 #: 从 Windows 证书库导出的 CA bundle 放这里（gitignored，环境相关）
 CA_CACHE = Path(__file__).resolve().parent.parent / "data" / "ca_bundle.pem"
+
+#: ``Retry-After`` 的等待上限（秒）。服务端回一个超大值不能让单次调用睡穿
+#: job 的墙钟预算 —— 与 403 的「等 5 分钟」同量级封顶。
+MAX_RETRY_AFTER = 300.0
+
+#: URL 查询串里的密钥类参数名（脱敏用，见 :func:`redact_secrets`）。
+_SECRET_PARAM_RE = re.compile(
+    r"(?i)([?&](?:key|api[-_]?key|apikey|token|secret|password)=)([^&\s\"']+)"
+)
+
+
+def redact_secrets(text: str, secrets: Iterable[str] = ()) -> str:
+    """把文本里的密钥抹掉 —— 传输事件会随 ``run_log`` 落到**公开**的 data 分支。
+
+    两重保险：① 通用参数名正则（``?key=``/``&api_key=``…）无需知道具体密钥；
+    ② 已知密钥值（长度 ≥ 8，避免误伤短字符串）显式替换，覆盖非 query 形态的残留。
+    """
+    out = _SECRET_PARAM_RE.sub(r"\1***", text)
+    for secret in secrets:
+        if secret and len(secret) >= 8:
+            out = out.replace(secret, "***")
+    return out
+
 
 #: ITAD / Steam / 汇率三个对外客户端的统一 UA —— **唯一出处**（code-audit-2026-10-09 #16）。
 #: 从前 itad / steam / fx 各写一份同样的字面量，改版本号要改四遍；链接也从占位的
@@ -138,10 +162,14 @@ class BaseHttpClient:
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda msg: None,
         user_agent: str = USER_AGENT,
+        monotonic: Callable[[], float] = time.monotonic,
     ):
         self.limiter = limiter
         self.timeout = timeout
         self.pause = pause
+        self._monotonic = monotonic
+        #: 本轮截止时刻（``time.monotonic`` 口径；None = 不限），见 :meth:`set_deadline`
+        self._deadline: float | None = None
         # 最小 2 次（code-audit-2026-10-09 #12）：宁慢勿快 —— 首次失败后至少再试一次；
         # 传 1 会被静默抬到 2（历史遗留，无语义上的「只试一次」）。
         self.max_attempts = max(2, int(max_attempts))
@@ -156,6 +184,8 @@ class BaseHttpClient:
         self.soft_null_events = 0
         self.events: list[dict] = []
         self._consecutive_403 = 0
+        #: 需要从事件 / 日志里抹掉的密钥值（子类覆盖，如 ITAD 把 api_key 填进来）
+        self.secrets: tuple[str, ...] = ()
 
     def _new_session(self, user_agent: str) -> requests.Session:
         s = requests.Session()
@@ -181,12 +211,35 @@ class BaseHttpClient:
     # 基础请求
     # ------------------------------------------------------------------
     def _record(self, kind: str, path: str, **extra: Any) -> None:
-        event = {"kind": kind, "path": path, "at": _now_iso()}
-        event.update(extra)
+        """留痕一条传输事件。**入出口统一脱敏**（P0-2）：``error=str(exc)`` 里
+        ``requests`` 的异常原文含完整 URL（ITAD 的 key 在 query 上），这些事件会经
+        ``run_log.errors`` 落到公开的 data 分支 —— 必须在这里抹掉，别散在调用点。"""
+        safe_path = redact_secrets(path, self.secrets)
+        safe_extra = {k: (redact_secrets(v, self.secrets) if isinstance(v, str) else v)
+                      for k, v in extra.items()}
+        event = {"kind": kind, "path": safe_path, "at": _now_iso()}
+        event.update(safe_extra)
         self.events.append(event)
-        self._log(f"[{self._endpoint(path)}] 异常事件 {kind} {path} {extra}")
+        self._log(f"[{self._endpoint(path)}] 异常事件 {kind} {safe_path} {safe_extra}")
+
+    def set_deadline(self, deadline: float | None) -> None:
+        """绑定**本轮的总墙钟截止时刻**（``time.monotonic()`` 口径；None = 不限）。
+
+        多个客户端共用同一个 deadline 即得「一轮运行的总时间上限」：超了就抛错
+        主动中止（走正常失败路径 —— 页面有首版兜底、下一轮派生自愈），而不是被
+        Actions 的 ``timeout-minutes`` 硬杀（那会漏发布报表、漏回写状态，且走
+        ``cancelled`` 不触发告警）。由 ``run.py`` 的 ``http_budget_seconds`` 驱动。
+        """
+        self._deadline = deadline
+
+    def _check_budget(self, need: float = 0.0) -> None:
+        """剩余时间不够 ``need`` 秒（含 0）就中止本轮。"""
+        if self._deadline is not None and self._monotonic() + need > self._deadline:
+            raise self.error_cls(
+                "超出本轮总时间预算（http_budget_seconds），主动中止以避免被 job timeout 硬杀")
 
     def _backoff_wait(self, seconds: float) -> None:
+        self._check_budget(seconds)
         self.limiter.wait(seconds)
 
     def request(self, method: str, path: str, params: dict | None = None,
@@ -204,6 +257,7 @@ class BaseHttpClient:
         extra_headers = {"headers": headers} if headers else {}
         while True:
             attempt += 1
+            self._check_budget()      # 预算已耗尽就别再发（也不进 limiter 排队）
             self.limiter.acquire()
             if self.pause:
                 self._sleep(self.pause)
@@ -214,9 +268,11 @@ class BaseHttpClient:
                 )
             except requests.RequestException as exc:
                 self.network_errors += 1
-                self._record("network", path, error=str(exc), attempt=attempt)
+                # 同一份安全串：留痕与上抛都用它（异常原文含完整 URL，key 在 query 上）
+                safe = redact_secrets(str(exc), self.secrets)
+                self._record("network", path, error=safe, attempt=attempt)
                 if attempt >= self.max_attempts:
-                    raise self.error_cls(f"网络异常，重试 {attempt} 次仍失败：{exc}") from exc
+                    raise self.error_cls(f"网络异常，重试 {attempt} 次仍失败：{safe}") from exc
                 self._backoff_wait(min(2 ** attempt + random.uniform(0, 1), 60))
                 continue
 
@@ -307,7 +363,8 @@ def _retry_after_seconds(resp: requests.Response) -> float | None:
     if not raw:
         return None
     try:
-        return max(0.0, float(raw))
+        # 封顶：服务端回一个超大 Retry-After 也不能让单次调用睡穿 job 预算（P0-6）
+        return min(MAX_RETRY_AFTER, max(0.0, float(raw)))
     except ValueError:
         return None
 

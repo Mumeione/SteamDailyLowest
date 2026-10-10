@@ -154,6 +154,9 @@ class ItadClient(BaseHttpClient):
             log=log,
             user_agent=USER_AGENT,
         )
+        # key 走 query（/deals/v2 等）→ 网络异常的原文含完整 URL：留给底座在
+        # _record 出入口统一脱敏，别把密钥写进会推公开 data 分支的 run_log.errors
+        self.secrets = (api_key,) if api_key else ()
 
     def _prepare(self, path: str, params: dict | None) -> tuple[str, dict]:
         query = dict(params or {})

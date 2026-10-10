@@ -22,6 +22,7 @@
   "output_dir": "output",
   "request_pause_seconds": 0.3,
   "request_timeout_seconds": 25,
+  "http_budget_seconds": 2700,
   "steam_timeout_seconds": 15,
   "notable_review_count": 10000,
   "absolute_min_positive_ratio": null,

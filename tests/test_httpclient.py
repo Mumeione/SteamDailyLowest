@@ -126,6 +126,74 @@ class RetryAfterTest(unittest.TestCase):
             client.request("GET", "/x")
         self.assertEqual(limiter.waits, [10.0])
 
+    def test_huge_retry_after_is_capped(self):
+        """P0-6：服务端回一个超大 Retry-After 不能睡穿 job 预算 —— 封顶 300s。"""
+        client, limiter, _ = make([Resp(429, headers={"Retry-After": "99999"})], max_attempts=2)
+        with self.assertRaises(HttpError):
+            client.request("GET", "/x")
+        self.assertEqual(limiter.waits, [300.0])
+
+
+class SecretRedactionTest(unittest.TestCase):
+    """传输事件会随 ``run_log.errors`` 落到**公开**的 data 分支 —— 密钥必须已抹掉。"""
+
+    def test_known_key_in_network_error_is_redacted(self):
+        key = "secret-key-1234"
+        boom = requests.ConnectionError(
+            "HTTPSConnectionPool(host='api.isthereanydeal.com', port=443): Max retries "
+            f"exceeded with url: /deals/v2?key={key}&country=US&shops=61")
+        client = ItadClient(api_key=key, limiter=FakeLimiter(), session=FakeSession([boom]),
+                            max_attempts=2, sleep=lambda s: None)
+        with self.assertRaises(ItadError) as ctx:
+            client.request("GET", "/deals/v2")
+        event = next(e for e in client.events if e["kind"] == "network")
+        self.assertNotIn(key, event["error"])
+        self.assertIn("key=***", event["error"])
+        self.assertNotIn(key, str(ctx.exception))          # 上抛的异常也脱敏（会进日志）
+
+    def test_generic_param_redacted_without_known_secret(self):
+        """底座不知道密钥也能抹掉：``?api_key=`` 走正则，无需子类注册。"""
+        boom = requests.ConnectionError("Max retries exceeded with url: /x?api_key=abcdef123456&y=1")
+        client, _, _ = make([boom], max_attempts=2)
+        with self.assertRaises(HttpError):
+            client.request("GET", "/x")
+        event = next(e for e in client.events if e["kind"] == "network")
+        self.assertNotIn("abcdef123456", event["error"])
+        self.assertIn("api_key=***", event["error"])
+
+
+class BudgetTest(unittest.TestCase):
+    """P0-6：本轮**总墙钟预算**到点即主动中止（走正常失败路径），别被 job timeout 硬杀。"""
+
+    def test_deadline_exceeded_aborts_instead_of_waiting(self):
+        now = [4.0]                       # 已用 4 秒
+        limiter = FakeLimiter()
+        session = FakeSession([Resp(429, headers={"Retry-After": "10"})])
+        client = BaseHttpClient(limiter=limiter, session=session, max_attempts=5,
+                                sleep=lambda s: None, monotonic=lambda: now[0])
+        client.set_deadline(5.0)          # 预算 5 秒 → 剩 1 秒，不够等 10 秒
+        with self.assertRaises(HttpError) as ctx:
+            client.request("GET", "/x")
+        self.assertIn("预算", str(ctx.exception))
+        self.assertEqual(limiter.waits, [])       # 没有真的睡下去
+        self.assertEqual(session.calls, 1)
+
+    def test_within_budget_proceeds_normally(self):
+        now = [0.0]
+        session = FakeSession([Resp(200, payload={"ok": 1})])
+        client = BaseHttpClient(limiter=FakeLimiter(), session=session,
+                                sleep=lambda s: None, monotonic=lambda: now[0])
+        client.set_deadline(100.0)
+        self.assertEqual(client.request("GET", "/x"), {"ok": 1})
+
+    def test_no_deadline_means_unlimited(self):
+        """默认不限（``set_deadline(None)``）：老行为不受影响。"""
+        client, limiter, _ = make([Resp(429, headers={"Retry-After": "99999"})], max_attempts=2)
+        client.set_deadline(None)
+        with self.assertRaises(HttpError):
+            client.request("GET", "/x")
+        self.assertEqual(limiter.waits, [300.0])  # 仍是 Retry-After 封顶那条路
+
 
 class BlockedTest(unittest.TestCase):
     """403 比 429 严重：单次先等 5 分钟，连续 2 次直接中止本轮。"""

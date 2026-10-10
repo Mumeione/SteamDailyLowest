@@ -82,28 +82,40 @@ jobs:
       - name: 安装依赖
         run: pip install requests
 
+      # ⚠️ 入参一律经 env 传来，绝不直接插值进 shell（${{ inputs.x }} 含引号/`;`
+      # 会逃逸成命令注入；job 持 contents:write + ITAD key）。env 传值后 shell
+      # 只做参数展开，不会把值当语法重新解析。
       - name: 跑探针
         env:
           PYTHONUNBUFFERED: "1"
           # 只有 reviews 探针会用到；key 只走请求头，报告落盘前还会再抹一次
           ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+          PROBES: ${{ inputs.probes }}
+          INTERVAL: ${{ inputs.interval }}
+          MAX_BATCHES: ${{ inputs.max_batches }}
+          HARD_CAP: ${{ inputs.hard_cap }}
         run: |
           python tools/probe_api_limits.py \
             --state statedata/data/state.json \
-            --probes "${{ inputs.probes }}" \
-            --interval "${{ inputs.interval }}" \
-            --max-batches "${{ inputs.max_batches }}" \
-            --hard-cap "${{ inputs.hard_cap }}" \
+            --probes "$PROBES" \
+            --interval "$INTERVAL" \
+            --max-batches "$MAX_BATCHES" \
+            --hard-cap "$HARD_CAP" \
             --out probe_report.md
 
       - name: 写进本次运行的 Summary
         if: always()
+        env:
+          PROBES: ${{ inputs.probes }}
+          INTERVAL: ${{ inputs.interval }}
+          MAX_BATCHES: ${{ inputs.max_batches }}
+          HARD_CAP: ${{ inputs.hard_cap }}
         run: |
           if [ -f probe_report.md ]; then
             {
               echo ""
               echo "---"
-              echo "_探针参数：probes=\`${{ inputs.probes }}\` interval=${{ inputs.interval }}s max_batches=${{ inputs.max_batches }} hard_cap=${{ inputs.hard_cap }}_"
+              echo "_探针参数：probes=\`$PROBES\` interval=${INTERVAL}s max_batches=$MAX_BATCHES hard_cap=${HARD_CAP}_"
             } >> "$GITHUB_STEP_SUMMARY"
             cat probe_report.md >> "$GITHUB_STEP_SUMMARY"
           else

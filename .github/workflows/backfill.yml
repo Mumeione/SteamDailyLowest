@@ -78,27 +78,37 @@ jobs:
         run: cp config.example.json config.json
 
       # 防路径穿越 + 提前报错：只允许 tools/ 下的 backfill_*.py
+      # ⚠️ 入参一律经 env 传来，**绝不**直接插值进 shell：`${{ inputs.x }}` 若含引号
+      # 或 `;` 会逃逸成命令注入（job 持 contents:write + ITAD key，可外泄密钥并写分支）。
+      # 经 env 传后 shell 只做参数展开、不会把值重新当语法解析。
       - name: 校验脚本名
+        env:
+          SCRIPT: ${{ inputs.script }}
         run: |
           set -euo pipefail
-          name="${{ inputs.script }}"
+          name="$SCRIPT"
           case "$name" in
+            */*) echo "::error::脚本名不得含路径分隔符（收到：$name）"; exit 2 ;;
             backfill_*.py) ;;
             *) echo "::error::脚本名必须以 backfill_ 开头且为 .py（收到：$name）"; exit 2 ;;
           esac
           test -f "tools/$name" || { echo "::error::找不到 tools/$name"; exit 2; }
 
-      - name: 运行回填脚本（tools/${{ inputs.script }}）
+      - name: 运行回填脚本
         id: run_script
         env:
           # 脚本里 50 分钟量级的心跳/进度全靠 stdout，不缓冲才能在 UI 实时看到
           PYTHONUNBUFFERED: "1"
+          SCRIPT: ${{ inputs.script }}
+          ARGS: ${{ inputs.args }}
         # 捕获退出码再原样上抛（daily.yml 同款）：0 成功 · 1 未预期 ·
         # 2 配置错误 · 3 滥用封禁/风控中止。2/3 顺手打 ::error:: 注解，
         # 在 UI 上一眼可辨（审查 #2/#4）。
+        # `$ARGS` 故意不加引号（要按空白拆成多个参数）—— 变量展开后的 `;`/`|`
+        # 只是普通字面量，不会被 shell 当运算符，故无注入面。
         run: |
           set +e
-          python "tools/${{ inputs.script }}" ${{ inputs.args }} 2>&1 | tee backfill_output.log
+          python "tools/$SCRIPT" $ARGS 2>&1 | tee backfill_output.log
           code=${PIPESTATUS[0]}
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -174,8 +184,10 @@ jobs:
           ARGS: ${{ inputs.args }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          TITLE="backfill 运行失败 $(date -u +%F)"
-          if [ -n "$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq 'length')" ]; then
+          TITLE="backfill 运行失败 $(TZ='Asia/Shanghai' date +%F)"   # 北京时间（AGENTS.md）
+          # 按**数值**比较（`--jq 'length'` 的 "0"/"3" 都是非空字符串，[ -n ] 会恒真）
+          count=$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq 'length')
+          if [ "${count:-0}" -gt 0 ]; then
             echo "今天已有同因失败 Issue（$TITLE），跳过重复创建"
             exit 0
           fi

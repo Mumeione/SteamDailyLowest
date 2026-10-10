@@ -1324,6 +1324,7 @@ about.html：抓取概览 / 史低构成 / 筛选口径 / 数据来源 / 汇率 
 | `output_dir`                  | `"output"`             | 生成物目录                                                                                                                                    |
 | `request_pause_seconds`       | `0.3`                  | 请求间隔                                                                                                                                     |
 | `request_timeout_seconds`     | `25`                   | ITAD 请求超时                                                                                                                                |
+| `http_budget_seconds`         | `2700`                 | 一轮运行的**总墙钟预算**（秒；`0` = 不限）。同一轮所有传输客户端共享它：到点主动中止（走退出码 5 + 首版报表兜底 + 下一轮自愈），避免被 job 的 `timeout-minutes` 硬杀 |
 | `probe_timeout_seconds`       | `6`                    | 探测类请求的**单独短超时**                                                                                                                          |
 | `notable_review_count`        | `10000`                | 「高热度 · 口碑不一」档的评价数门槛（§3.5）                                                                                                                |
 | `absolute_min_positive_ratio` | `null`                 | 绝对好评率下限；`null` = 不启用                                                                                                                     |

@@ -185,5 +185,32 @@ class RunDailyExitCodeTest(unittest.TestCase):
         self.assertEqual(disk.last_run().get("detail_fetched"), 1)
 
 
+class RunDeadlineTest(unittest.TestCase):
+    """P0-6：`http_budget_seconds` → 本轮总墙钟截止时刻；替身不打桩也安全。"""
+
+    def test_disabled_when_zero_or_missing(self):
+        from run import run_deadline
+        self.assertIsNone(run_deadline({}))
+        self.assertIsNone(run_deadline({"http_budget_seconds": 0}))
+
+    def test_returns_future_deadline(self):
+        import time
+
+        from run import run_deadline
+        deadline = run_deadline({"http_budget_seconds": 60})
+        self.assertGreater(deadline, time.monotonic())
+        self.assertLessEqual(deadline, time.monotonic() + 61)
+
+    def test_arm_budget_skips_test_doubles(self):
+        from run import arm_budget
+
+        class Fake:
+            pass
+
+        fake = Fake()
+        arm_budget(fake, 123.0)                  # 替身没有 set_deadline，不应抛
+        self.assertFalse(hasattr(fake, "_deadline"))
+
+
 if __name__ == "__main__":
     unittest.main()
