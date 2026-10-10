@@ -554,12 +554,16 @@ class AllShardsTest(unittest.TestCase):
             self.assertEqual(dims[key], specs[key], f"维度 {key} 与筛选选项不一致")
 
     def test_shard_order_equals_section_order(self):
-        """顺序 = 分片的物理顺序：每个板块的分片拼起来，必须等于该板块自己的排序。"""
+        """顺序 = 分片的物理顺序：每个板块的分片拼起来，必须等于该板块自己的排序。
+
+        分片口径 = 板块性质全量（与首页板块同源，2026-10-10 去窗口烘焙）：
+        expected 也必须按同一口径取，否则窗口外的卡会被算成「顺序不符」。"""
         cards = self.cards()
         orders = report.all_section_orders(cards, CFG)
         for key in ("new_low", "expiring", "popular", "big_cut"):
-            expected = sorted(report._section_members(key, cards, CFG),
-                              key=report._section_sort(key, CFG))
+            expected = sorted(
+                report._section_members(key, cards, CFG),
+                key=report._section_sort(key, CFG))
             self.assertEqual([c["appid"] for c in orders[key]],
                              [c["appid"] for c in expected], f"板块 {key} 顺序不符")
 
@@ -633,6 +637,35 @@ class AllShardsTest(unittest.TestCase):
             self.assertEqual(report.section_agg(members, CFG, key)["counts"],
                              brute(members, key), f"板块 {key} 预聚合计数不符")
 
+    def test_section_orders_keep_out_of_window_members(self):
+        """板块完整列表必须保留「性质匹配但已出 7 天窗口」的卡（分片=性质全量口径，
+        窗口交回前端 dateOk；回归形状见 docs/CHANGELOG.md 2026-10-10）。
+        """
+        days = int(CFG.get("home_new_low_days", report.DEFAULT_HOME_DAYS))
+        cards = self.cards()
+        stale = self.card("stale-new", 9, ago=days + 30, cut=85, count=20000,
+                          low="new", live=True)          # 新史低 · 在期内 · 出窗口
+        cards.append(stale)
+        for c in cards:
+            c.setdefault("sections", report.section_keys(c, CFG))
+        orders = report.all_section_orders(cards, CFG)
+        self.assertIn(9, [c["appid"] for c in orders["new_low"]],
+                      "新史低板块分片丢了出窗口的卡（窗口被烘焙进分片）")
+        self.assertIn(9, [c["appid"] for c in orders["big_cut"]],
+                      "大额折扣板块分片丢了出窗口的卡")
+        # agg 表随之覆盖全量：「全部」档 = 性质全量 members 数；「近 N 天」档
+        # 只数窗口内（start 未知 ∉ 任何具体日期档），两者必须拉开
+        members = orders["new_low"]
+        agg = report.section_agg(members, CFG, "new_low")["counts"]
+        in_window = [c for c in members
+                     if c.get("start_days_ago") is not None
+                     and c["start_days_ago"] <= days]
+        self.assertEqual(agg["all|all|all|all"], len(members),
+                         "agg「全部」档应等于性质全量 members 数")
+        self.assertEqual(agg[f"d{days}|all|all|all"], len(in_window),
+                         "agg「近 N 天」档应只含窗口内成员")
+        self.assertGreater(agg["all|all|all|all"], agg[f"d{days}|all|all|all"])
+
 
 
 class HomeSectionsTest(unittest.TestCase):
@@ -660,11 +693,15 @@ class HomeSectionsTest(unittest.TestCase):
     def sections(self, cards):
         return {s["key"]: s for s in report.build_sections(cards, self.CFG)}
 
-    def test_seven_day_window(self):
+    def test_home_sections_are_property_full(self):
+        """首页四板块 = **性质全量**（2026-10-10 用户定案）：取消「近 N 天」默认窗口，
+        出窗口的老折扣照样进板块（板块语义只看性质 + 在期内）；日期收窄交给用户
+        在筛选抽屉里自己选。"""
         got = self.sections([self.card("在窗口内", ago=7), self.card("刚出窗口", ago=8)])
         titles = [i["title"] for i in got["new_low"]["items"]]
         self.assertIn("在窗口内", titles)
-        self.assertNotIn("刚出窗口", titles)
+        self.assertIn("刚出窗口", titles)
+        self.assertEqual(got["new_low"]["count"], 2)
 
     def test_expired_is_excluded(self):
         """首页不能摆「已经买不到」的折扣（all_shown 里含过期留存）。"""
@@ -1121,10 +1158,12 @@ class FilterSpecsTest(unittest.TestCase):
         self.assertEqual(values, ["all", "50", "80", "90"])
         self.assertNotIn("70", values)
 
-    def test_defaults_follow_config(self):
-        self.assertEqual(report.filter_defaults(self.CFG)["date"], "d7")
-        self.assertEqual(
-            report.filter_defaults(dict(self.CFG, home_new_low_days=3))["date"], "d3")
+    def test_date_default_is_all(self):
+        """日期默认 = **「全部」**（2026-10-10 用户定案）：板块不再默认收窄到
+        「近 N 天」，用户自己选了限制（或清空条件）才切。「近 N 天」仍是可选档
+        （选项值跟 home_new_low_days 走，见 test_filter_dim_values_matches_filter_specs），
+        只是不再当默认。"""
+        self.assertEqual(report.filter_defaults(self.CFG)["date"], "all")
 
     def test_rendered_html_has_drawer(self):
         html = (_render([], datetime(2026, 10, 6, 5, 14)) / "index.html").read_text(
@@ -1333,7 +1372,8 @@ class CardTierColourTest(unittest.TestCase):
             self.assertEqual(report.days_tier(days, CFG), expect, f"剩 {days} 天")
 
     def test_days_tier_bounds_come_from_config(self):
-        """urgent 边界 = 即将过期窗口（48h → 2 天）；later 边界 = 三板块时间窗（7 天）。"""
+        """urgent 边界 = 即将过期窗口（48h → 2 天）；later 边界 = home_new_low_days
+        （「N 天前」的上色分档仍读它，只是它不再当筛选默认）。"""
         cfg = {"upcoming_expiry_hours": 72, "home_new_low_days": 14}
         self.assertEqual(report.days_tier(0, cfg), "final")      # 「今天结束」永远单独一档
         self.assertEqual(report.days_tier(3, cfg), "urgent")     # 72h 窗口 → 3 天内都算急

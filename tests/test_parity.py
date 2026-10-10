@@ -71,16 +71,10 @@ class FilterParityTest(unittest.TestCase):
 
     def _cards(self):
         """刻意覆盖边界的卡片（约 20~40 张）：ago=0/1/2/dN 边界、无 views、过期、
-        reviews 为 None、cut 缺失、折扣/评价数正好压在档位线上。
-
-        ⚠️ **构造约束**（否则 date="all" 会让两侧计数天然不等，把测试变成假红）：
-        凡是属于某个 ``date_window=True`` 板块（new_low/popular/big_cut）的卡片，
-        其 ``start_days_ago`` 必须 ≤ ``home_new_low_days``。原因：分片里的板块成员
-        在服务端**已被窗口预筛**（``_section_members``），date="all" 在该板块内不再
-        叠加窗口；而前端 ``dateOk("all")`` 恒真 —— 若塞入「板块属性命中但已出窗口」
-        的卡片，前端会多算、服务端不算。出窗口只能落在 ``expiring``（无窗口）里
-        （见下面的 g05）或干脆不属于任何板块（见 g14）。下方 ``_assert_window_invariant``
-        把这个约束钉死。
+        reviews 为 None、cut 缺失、折扣/评价数正好压在档位线上，以及
+        **「板块属性命中但已出窗口」**的卡（g24）—— 夹具里没有出窗口的卡，
+        对拍就覆盖不到「全部 vs 近 N 天」档位的分叉（2026-10-10 那次回归的形状，
+        见 docs/CHANGELOG.md 当日条目）。
         """
         raw = [
             # ① ago 边界：今天 / 昨天 / 前天 / 正好 dN（=7）/ 无 views / 出窗口
@@ -113,20 +107,24 @@ class FilterParityTest(unittest.TestCase):
             self._card("g22", low="tie", ago=3, cut=80, reviews=(80, 100),
                        views=("active", "upcoming")),                       # 大折 + 临期（live）
             self._card("g23", ago=3, days_left=10, cut=50, reviews=(50, 100)),
+            self._card("g24", ago=30, cut=90, reviews=(90, 20000)),   # 出窗口：新+热+大折
         ]
         for card in raw:
             card["sections"] = report.section_keys(card, CFG)
         return raw
 
     def _assert_window_invariant(self, cards):
-        """见 :meth:`_cards` 的构造约束：date_window 板块的卡片不得出窗口。"""
+        """见 :meth:`_cards` 的构造约束：夹具必须含「板块属性命中但已出窗口」的卡
+        （否则 date="all" 与 "dN" 档的跨语言等价没有被真正测到）。"""
         days = CFG["home_new_low_days"]
-        for c in cards:
-            for key in ("new_low", "popular", "big_cut"):
-                if key in c["sections"]:
-                    ago = c["start_days_ago"]
-                    self.assertIsNotNone(ago, c["game_id"])
-                    self.assertLessEqual(ago, days, f"{c['game_id']} 出窗口但属于 {key}")
+        out_of_window = [
+            c["game_id"] for c in cards
+            if any(key in c["sections"] for key in ("new_low", "popular", "big_cut"))
+            and c.get("start_days_ago") is not None
+            and c["start_days_ago"] > days
+        ]
+        self.assertTrue(out_of_window,
+                        "夹具缺「出窗口但板块属性命中」的卡，对拍覆盖不到日期档位分叉")
 
     def test_python_agg_matches_frontend_card_predicate(self):
         cards = self._cards()

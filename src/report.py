@@ -647,8 +647,8 @@ def section_agg(members: list[dict], cfg: dict, key: str) -> dict:
 def all_section_orders(all_cards: list[dict], cfg: dict) -> dict[str, list[dict]]:
     """每个板块**完整列表**的卡片顺序，分片就按它切。
 
-    与首页四板块预览（:func:`build_sections`）同源、同排序 —— 点「查看更多」
-    进去看到的顺序和首页预览一致。
+    与首页四板块预览（:func:`build_sections`）同源同口径 —— 都是板块的性质全量
+    （见 :func:`_section_members`），「近 N 天」由前端日期筛选现切，agg 各档精确。
 
     ``"__all__"``（全部折扣）没有板块排序语义，沿用**池顺序**：tier 分组 +
     折扣降序，与前端原本展开 ``groups`` 的顺序一致（分片后就是这个顺序），别改成
@@ -790,13 +790,15 @@ def section_keys(card: dict, cfg: dict) -> list[str]:
 
 
 def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
-    days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
-    members = [c for c in cards if _in_section(key, c, cfg)]
-    # 「即将到期」不叠加日期窗口（注册表 date_window=False，见 _match_expiring 注释），其余三个要
+    """板块成员集 = **性质全量**：板块 match + 在期内（live），不带任何日期窗口。
+
+    「近 N 天」窗口已从板块口径整体退场（2026-10-10 用户定案：首页板块与分片、
+    agg 一律全量，日期收窄只由用户在筛选抽屉里选）—— 分片若预筛窗口，板块页
+    「日期=全部」会失效、agg 各档计数缩水（cb95120 回归，详见 docs/CHANGELOG.md
+    当日条目）。仍在用「近 N 天」口径的只有大卡候选池（见 PICKS 权重表上方）。
+    """
     spec = _SECTIONS_BY_KEY.get(key)
-    if spec is not None and not spec["date_window"]:
-        return members
-    return [c for c in members if _is_fresh(c, days)]
+    return [c for c in cards if bool(spec) and spec["match"](c, cfg)]
 
 
 def _section_sort(key: str, cfg: dict | None = None):
@@ -1288,11 +1290,16 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
 def filter_defaults(cfg: dict) -> dict:
     """筛选的默认值 —— 前端 `state.filters` 的初始状态，也是「已选 N 项」角标的基准。
 
-    「日期」默认跟着 `home_new_low_days` 走（现在 7 天），不写死 d7。
+    日期默认 = **「全部」**（2026-10-10 用户定案）：板块与「全部折扣」页都按
+    性质全量展示，不默认收窄到「近 N 天」—— 想看窗口内的新增，用户自己在
+    抽屉里选（「近 N 天」仍是可选档，选项文案跟着 `home_new_low_days` 走）。
+    这同时消掉了旧默认 d7 与「全部折扣页自动放开 all」互相打架的死链
+    （✕「全部」恢复默认 d7、又被页面隐式约定放开回 all，看起来 ✕ 失效）。
     """
+    del cfg   # 日期默认已不跟 home_new_low_days 走（2026-10-10）；参数保留给调用方签名
     return {
         "sort": "featured",
-        "date": f"d{int(cfg.get('home_new_low_days', DEFAULT_HOME_DAYS))}",
+        "date": "all",
         "cut": "all",
         "reviews": "all",
         "only_new": "all",
@@ -1322,9 +1329,10 @@ def criteria_notes(cfg: dict) -> list[dict]:
         {"k": "展示门槛", "v": f"好评率 ≥ {pct}% 且 评价数 ≥ {min_count}；低于此不入列表"},
         {"k": "高热度档", "v": f"评价数 ≥ {notable:,}，不看好评率（热门游戏板块用它）"},
         {"k": "大额折扣档", "v": f"折扣 ≥ {int(cfg.get('big_cut_percent', DEFAULT_BIG_CUT))}%"},
-        {"k": "板块时间窗", "v": f"首页三板块（新史低/热门/大额折扣）只看近 "
-                                f"{int(cfg.get('home_new_low_days', DEFAULT_HOME_DAYS))} 天新增；"
-                                "「即将到期」按到期时间算，不叠加时间窗"},
+        {"k": "板块口径", "v": "首页四板块与「全部折扣」页都按性质全量展示"
+                              "（新史低/热门/大额折扣 = 达标折扣里性质命中的全部，"
+                              "不限开始日期）；「即将到期」按到期时间算。"
+                              "想只看近几日的新增，用列表页筛选里的「日期」档"},
         {"k": "即将到期", "v": f"距折扣结束 ≤ {int(cfg.get('upcoming_expiry_hours', DEFAULT_UPCOMING_HOURS))} 小时"},
         {"k": "多版本去重", "v": "同一 appid 只保留价格最低的那条"},
         {"k": "留存", "v": f"折扣过期后仍保留 {int(cfg.get('expired_retention_days', 7))} 天"},

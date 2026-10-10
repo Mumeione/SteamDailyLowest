@@ -53,7 +53,7 @@
 | `list_batch` / `list_auto_max` | 滚动加载：每次追加条数 / 自动追加总上限（到了只留手动） |
 | `page_size_mobile` / `page_size_desktop` | 每屏条数（手机 / 桌面） |
 | `mobile_breakpoint_px` / `tablet_breakpoint_px` | 断点：手机档上限 / 平板档上限。**CSS 的 `@media` 必须与它一致**（经 `payload.list` 下发 + 机械校验断言） |
-| `home_new_low_days` | 大卡池「一周内」分界；也是筛选面板「日期」默认档与「N 天新增」的口径来源 |
+| `home_new_low_days` | 大卡池「一周内」分界；也是筛选面板「近 N 天」**选项**与卡片「N 天前」上色分档的口径来源（⚠️ **不再是筛选默认**——日期默认已改「全部」，2026-10-10） |
 | `home_picks` | 顶部大卡**总张数上限**（5 的整数倍）；实际取数张数的公式唯一成文处见 [report-design.md](report-design.md)「大卡」 |
 | `home_section_preview` / `home_section_preview_min` | 四板块栏位数**上限 / 下限**（池子不足时如实显示池量、不凑数） |
 | `big_cut_percent` | 「大额折扣」板块阈值（折扣 ≥ 它入选）；筛选面板的 implied 选项文案跟着它变 |

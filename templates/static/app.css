@@ -102,6 +102,15 @@
   /* 力度条在**两行结构**（手机/窄行）里的兜底宽度 —— 一行结构里的宽度由
      `--tags-col` 反推出来，不读这个值。 */
   --cut-bar-max: 150px;
+
+  /* ===== 内容区宽度（.wrap 与浮动按钮的移动边界共用，2026-10-10）=====
+     用户：右侧功能按钮大屏时悬在**内容卡片外侧**的留白带里，按钮左缘距内容
+     卡片右缘 = --floater-gap（18px，2026-10-10 用户定值；嫌半列距 12px 太紧）。
+     改 .wrap 宽度 / .btn-float 尺寸 / 间距时这几个变量要一起看。 */
+  --wrap-max: 1200px;
+  --wrap-pad: clamp(12px, 4vw, 56px);
+  --btn-float-w: 46px;
+  --floater-gap: 18px;
 }
 
 * { box-sizing: border-box; }
@@ -116,9 +125,9 @@ html, body {
 }
 
 .wrap {
-  max-width: 1200px;
+  max-width: var(--wrap-max);
   margin: 0 auto;
-  padding: 0 clamp(12px, 4vw, 56px);
+  padding: 0 var(--wrap-pad);
 }
 
 /* ================= 顶栏（吸顶）================= */
@@ -659,10 +668,18 @@ html, body {
 .pager .load-more { padding: 6px 16px; border-radius: 999px; }
 
 /* ================= 浮动按钮 + 无图精简模式 ================= */
-/* right:12px 与 .drawer 的 right:12px 同一条竖线（2026-10-08 全端统一后抽屉贴按钮上沿） */
-.floaters { position: fixed; right: 12px; bottom: 14px; z-index: 30; display: flex; flex-direction: column; gap: var(--sp-2); }
+/* 抽屉（.drawer）的 bottom/right 由 app.js placeDrawer 按按钮**实际位置**在打开
+   那一刻写入（浮动按钮堆叠高度会变 + 大屏有内移边界，纯 CSS 算不出）——
+   本文件末尾那条 .drawer 的 64px/12px 只是 JS 没跑时的兜底，不是第二份口径 */
+/* 大屏边界（2026-10-10 用户）：按钮**左缘**距内容卡片右缘 = --floater-gap（18px
+   定值）—— 整列悬在卡片外侧的留白带里；换算成 right（按钮右缘距视口右缘）=
+   留白 + 内边距 − 间距 − 按钮宽。视口窄到留白带放不下按钮时（calc 结果 ≤ 12px），
+   max() 回落贴边 12px —— 与 @media ≤600 的覆盖条同值。
+   ⚠️ 约 ≤1230px 的较窄视口回落贴屏时按钮可能压卡（留白带 < 按钮宽 + 间距的
+   物理极限），1250px 起即为标准的 18px 间距。 */
+.floaters { position: fixed; right: max(12px, calc((100vw - var(--wrap-max)) / 2 + var(--wrap-pad) - var(--floater-gap) - var(--btn-float-w))); bottom: 14px; z-index: 30; display: flex; flex-direction: column; gap: var(--sp-2); }
 .btn-float {
-  width: 46px; height: 44px; padding: 0; border-radius: 10px;
+  width: var(--btn-float-w); height: 44px; padding: 0; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--text);
   font: inherit; font-size: var(--fs-sub); line-height: 1.15; cursor: pointer;
   display: flex; align-items: center; justify-content: center; text-align: center;
@@ -940,7 +957,10 @@ body.compact .days-final {
    · `max-height` 取 70vh 与 560px 的小者 + 面板内部滚动。
    ⚠️ 面板仍是 `.filterbar` 的子元素（`.filterbar{position:relative}`）—— 那个锚点
      现在**不用于定位**（fixed 贴视口），只是 DOM 结构；别把面板挪出 .filterbar。
-   ⚠️ 别把 `top/left` 写进这条 —— 面板只从右下往上长。 */
+   ⚠️ 别把 `top/left` 写进这条 —— 面板只从右下往上长。
+   ⚠️ `right:12px` / `bottom:64px` 都是 **JS 没跑时的兜底**：app.js placeDrawer 打开
+     面板那一刻按「筛选」按钮的实际位置重写 bottom/right（2026-10-10 起大屏按钮
+     有内移边界，面板必须跟着对齐，写死必然错开）。 */
 .drawer {
   position: fixed; left: auto; right: 12px; top: auto; bottom: 64px;
   width: min(400px, calc(100vw - 24px)); max-height: min(70vh, 560px);

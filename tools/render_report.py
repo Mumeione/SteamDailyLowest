@@ -125,6 +125,21 @@ def graft_compare_from_cache(state, cfg: dict, entries: list[dict], fx: dict | N
     return added
 
 
+def pool_entries(entries: list[dict], now: datetime) -> list[dict]:
+    """「全部折扣」预览池 = seen_deal 的**折扣期内（active）子集**。
+
+    线上口径 = 当日 ITAD deals（当前挂着的折扣）；本工具没有「当日 deals」，
+    用 seen_deal 里 ``expiry`` 仍在未来的条目近似 —— 全量池会把过期已久的历史
+    留存全灌进页面（2026-10-10 回归，实测数字见 docs/CHANGELOG.md 当日条目）。
+    """
+    pool = []
+    for entry in entries:
+        expiry = classify.parse_time(entry.get("expiry"), now.tzinfo)
+        if expiry is not None and expiry > now:
+            pool.append(entry)
+    return pool
+
+
 def last_daily_stats(state: State) -> dict:
     """最近一次日常运行的统计记录（概览数字以它为准）。"""
     for entry in reversed(state.run_log):
@@ -229,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         log("[warn] 汇率缓存缺失：本轮页脚不显示汇率、比价行只有原币种价（不换算 CNY）")
 
     last = last_daily_stats(state)
-    hist_low_all = list(state.seen_deal.values())
+    # 池子只收折扣期内的条目（对齐线上「当日 deals」口径），过期历史留存不进预览页
+    hist_low_all = pool_entries(state.seen_deal.values(), now)
     # 待补数以最近一次日常运行的口径为准（它只数那一轮的史低目录，
     # 而不是状态库里跨天攒下的全量 seen_deal）；没有记录时才用全量兜底
     if last.get("detail_backlog") is not None:

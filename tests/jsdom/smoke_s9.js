@@ -196,9 +196,13 @@ check("筛选按钮带漏斗图标 / 计数 / 折角",
 check("筛选面板挂在 .filterbar 里（E1 定位锚点）",
   doc.querySelector(".filterbar > #drawer") === drawer,
   drawer.parentNode.className);
-check("未选条件时：按钮不带 is-on、没有已选小标签",
+// 2026-10-10 起 date chip 恒显示当前生效窗口（见 renderActiveChips），不再是
+// 「差值才出现」——「已选」断言只针对**其他维度**（date 的标签是页面隐式状态）
+const nonDateChips = () => $$("#active-chips .a-chip")
+  .filter((c) => !/近|全部|今天|昨天|前天/.test(c.textContent));
+check("未选条件时：按钮不带 is-on、没有非 date 的已选标签",
   !doc.getElementById("filter-open").classList.contains("is-on") &&
-  $$("#active-chips .a-chip").length === 0);
+  nonDateChips().length === 0);
 doc.getElementById("filter-open").click();
 check("点筛选 → 抽屉打开", !drawer.hidden && !doc.getElementById("drawer-mask").hidden);
 // 排序不算「筛选」：改排序不该点亮角标（review 补充审查 #6）
@@ -221,20 +225,20 @@ check("选了筛选 → 该选项高亮", cutOpts[cutOpts.length - 1].classList.
 // B3：按钮整体变蓝 + 右边出现一枚已选条件小标签（文案取自抽屉里的同名选项）
 check("选了筛选 → 按钮变 is-on 态", doc.getElementById("filter-open").classList.contains("is-on"));
 check("选了筛选 → 出现已选小标签（文案与抽屉一致）",
-  $$("#active-chips .a-chip").length === 1 &&
-  $$("#active-chips .a-chip")[0].textContent.replace("✕", "").trim() === topCutLabel,
-  $$("#active-chips .a-chip")[0] && $$("#active-chips .a-chip")[0].textContent.trim());
+  nonDateChips().length === 1 &&
+  nonDateChips()[0].textContent.replace("✕", "").trim() === topCutLabel,
+  nonDateChips()[0] && nonDateChips()[0].textContent.trim());
 // 每页条数固定，所以看**总条数**变化，不是看这一页的行数
 const totalAfter = doc.getElementById("lv-count").textContent;
 check("筛选真的作用到列表", totalAfter !== totalBefore, totalBefore + " → " + totalAfter);
 // 小标签上的 ✕ 要能单独去掉这个条件（回到默认 = 不限）
-$$("#active-chips .a-chip button")[0].click();
+nonDateChips()[0].querySelector("button").click();
 check("点小标签的 ✕ → 条件被去掉、标签消失",
-  $$("#active-chips .a-chip").length === 0 && fBadge.hidden && cutOpts[0].classList.contains("active"),
+  nonDateChips().length === 0 && fBadge.hidden && cutOpts[0].classList.contains("active"),
   "角标 hidden=" + fBadge.hidden);
 cutOpts[cutOpts.length - 1].click();          // 再加回来，供下面「重置」那条断言用
 check("再加回来 → 小标签与角标都回来",
-  $$("#active-chips .a-chip").length === 1 && !fBadge.hidden);
+  nonDateChips().length === 1 && !fBadge.hidden);
 doc.getElementById("filter-reset").click();
 const dateOpts = $$('#drawer .chip.opt[data-group="date"]');
 const offDates = dateOpts.filter(function (o) { return o.disabled; });
@@ -308,10 +312,9 @@ check("热门游戏板块：折扣区间仍可选", !optBy("cut", "50").disabled
 // 带着失效条件进板块要自动复位：先在「全部折扣」选「仅新史低」，再进「新史低」
 navTo(4);                                    // 全部折扣（这里它有效）
 optBy("only_new", "new").click();
-// 角标 = 2：①仅新史低 ②进「全部折扣」时日期会被切成「全部」（openSection 的既有行为，
-// 与 FILTER_DEFAULTS.date="近 7 天" 不同所以计入）—— 与本条无关，别顺手"修"它。
-check("全部折扣里能选仅新史低（角标 2：日期切到全部 + 仅新史低）",
-  !fBadge.hidden && fBadge.textContent === "2", fBadge.textContent);
+// 角标 = 1：仅新史低。2026-10-10 起日期默认就是「全部」，切板块不再产生 date 差值。
+check("全部折扣里能选仅新史低（角标 1）",
+  !fBadge.hidden && fBadge.textContent === "1", fBadge.textContent);
 navTo(0);                                    // 进新史低 → 该条件失效，应自动复位
 check("进新史低板块 → 失效的「仅新史低」自动复位",
   fBadge.hidden && optBy("only_new", "all").classList.contains("active"),
@@ -333,6 +336,12 @@ check("首页隐藏「筛选」按钮（属性 + 计算样式）",
   fBtn.hidden && dom.window.getComputedStyle(fBtn).display === "none",
   "hidden=" + fBtn.hidden + " · display=" + dom.window.getComputedStyle(fBtn).display);
 check("首页显示概览摘要", !doc.getElementById("summary").hidden);
+// date chip 只属于列表页（renderActiveChips 对 section=null 早退）——首页板块是
+// 服务端预览、没有列表筛选语义，date 标签不该出现在 DOM 里（chipsBox 整条隐藏
+// 之外的第二道保险，2026-10-10 显式锁住）
+check("首页无 date 标签（板块预览没有筛选语义）",
+  $$("#active-chips .a-chip").length === 0,
+  $$("#active-chips .a-chip").length + " 枚");
 
 // 大卡翻页 —— 2026-10-08 起默认上限 3 页 15 张（最低 5、能凑 15 凑 15、不凑数）：
 // 真实产物（大促满额）走**多页**分支：翻页可用、副标题写页码；
@@ -858,6 +867,103 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
     !d.getElementById("listview").hidden && !!row,
     row ? "定位到 " + gid : "未定位到 " + gid);
 })();
+
+// ---- 定位展开的展开态必须跨重渲染保留（2026-10-10 用户报告的 bug）----
+// 定位/手动展开后，任何一次列表重渲染（加载更多 / 定位加量 / 改筛选）都会
+// fillRows 重建 DOM —— 之前 .open 状态只活在 class 上，一次重建就被抹掉：
+// 用户看到「定位到了，但详情没展开」。修复口径：展开行是状态（openGid），
+// 渲染后按状态恢复，不再依赖 class 本身存活。
+(function () {
+  const win = buildDom().window;
+  const d = win.document;
+  const cards = Array.from(d.querySelectorAll("#picks-track .pick"));
+  const picks = (win.REPORT_DATA || {}).picks || [];
+  const idx = cards.length - 1;
+  const gid = idx >= 0 && picks[idx] ? picks[idx].game_id : null;
+  if (!gid) { check("展开态跨重渲染保留（无大卡数据）", false); return; }
+  cards[idx].click();
+  const openSel = '#rows .row.open[data-gid="' + gid + '"]';
+  const first = d.querySelector(openSel);
+  if (!first) { check("展开态跨重渲染保留", false, "首次定位就没展开"); return; }
+  // 手动「加载更多」= 与滚动自动追加同一条重建路径（jsdom 没有 IntersectionObserver）
+  const more = d.querySelector("#lv-pager .load-more");
+  if (more) more.click();
+  const after = d.querySelector(openSel);
+  check("定位展开后点「加载更多」→ 展开状态保留",
+    !!after, after ? "保留（gid=" + gid.slice(0, 8) + "…）" : "重建后展开丢失");
+  // 手动展开另一行 → 改筛选触发重渲染（板块小可能一次就加载完、没有下一页按钮，
+  // 但「点筛选选项」必然走 applyFilters → refreshList → fillRows 重建 ——
+  // 同一条抹状态的路径；选「全部」只会扩大结果集，不会把展开行本身筛掉）。
+  const rows = Array.from(d.querySelectorAll("#rows .row"));
+  const other = rows.find(function (r) { return r.getAttribute("data-gid") !== gid; });
+  const allDate = d.querySelector('#drawer .chip.opt[data-group="date"][data-value="all"]');
+  if (other && allDate && !allDate.disabled) {
+    const otherGid = other.getAttribute("data-gid");
+    other.querySelector(".row-main").click();
+    allDate.click();
+    check("手动展开另一行 → 改筛选重渲染 → 新展开行保留、旧行收起",
+      !!d.querySelector('#rows .row.open[data-gid="' + otherGid + '"]')
+      && !d.querySelector(openSel));
+  }
+})();
+
+// ---- date 筛选：默认「全部」（性质全量），限制只来自用户手动选择（2026-10-10）----
+// 默认日期已从「近 N 天」改为「全部」（docs/CHANGELOG.md 当日条目）—— 板块页与
+// 「全部折扣」页默认都无 date 标签；用户选了限制才出现标签，✕ 取消限制回默认。
+(function () {
+  const win = buildDom().window;
+  const d = win.document;
+  const chips = () => Array.from(d.querySelectorAll("#active-chips .a-chip"))
+    .map((c) => c.textContent.replace("✕", "").trim());
+  const navItems = Array.from(d.querySelectorAll("#nav .nav-item"));
+  const dateOpts = () => Array.from(d.querySelectorAll('#drawer .chip.opt[data-group="date"]'));
+  // ① 板块页默认「全部」→ 无 date 标签、列表 = 性质全量
+  navItems[0].click();
+  const countAll = parseInt(d.getElementById("lv-count").textContent, 10);
+  check("板块页默认「全部」→ 无 date 标签",
+    !chips().some((t) => /近|全部|今天|昨天|前天/.test(t)),
+    chips().join("|") || "(无标签)");
+  // ② 手动选「近 N 天」→ 标签出现 + 列表真的收窄
+  const nearOpt = dateOpts().find((o) => /^d/.test(o.getAttribute("data-value")) && !o.disabled);
+  nearOpt.click();
+  const countNear = parseInt(d.getElementById("lv-count").textContent, 10);
+  check("手动选「近 N 天」→ 标签出现", chips().some((t) => /近/.test(t)),
+    chips().join("|") || "(无标签)");
+  check("「近 N 天」真的收窄列表（< 全量）", countNear < countAll,
+    countAll + " → " + countNear);
+  // ③ 标签 ✕ = 恢复默认 → **一步清掉**（用户 2026-10-10 定案：不要「先变全部
+  //    再点一次」的两步；默认日期已是「全部」，恢复后标签消失、列表回全量）
+  d.querySelector("#active-chips .a-chip button").click();
+  check("「近 N 天」的 ✕ → 一步恢复默认，标签消失",
+    !chips().some((t) => /近|全部/.test(t)), chips().join("|") || "(无标签)");
+  check("清掉限制后列表回全量",
+    parseInt(d.getElementById("lv-count").textContent, 10) === countAll,
+    d.getElementById("lv-count").textContent);
+  // ④ 「全部折扣」页与板块页同语义：默认无标签（不再是「自动放开」的特殊态）
+  navItems.find((b) => b.getAttribute("data-section") === "__all__").click();
+  check("全部折扣页默认「全部」→ 无 date 标签",
+    !chips().some((t) => /近|全部/.test(t)), chips().join("|") || "(无标签)");
+  // ⑤ 切板块保留用户手动选的限制
+  dateOpts().find((o) => /^d/.test(o.getAttribute("data-value")) && !o.disabled).click();
+  navItems[0].click();
+  check("切板块保留用户手动选的日期限制", chips().some((t) => /近/.test(t)),
+    chips().join("|") || "(无标签)");
+})();
+
+// ---- 浮动按钮的大屏移动边界（2026-10-10 用户：大屏悬在卡片外侧、间距 18px 定值）----
+// jsdom 没有布局引擎，量不了 max() 的实际像素 —— 这里锁 CSS 结构：
+// 边界公式以内容区宽度 + 按钮宽 + 间距变量为基准（.wrap / .btn-float 与公式共用同源）。
+// ⚠️ 公式里 max/calc 嵌套多层括号，别用 `[^)]*` 这类「到下一个右括号」的片段
+//    正则（嵌套一深就静默失配）—— 对整条规则文本做变量包含检查。
+const floatersRule = (css.match(/\.floaters\s*\{[^}]*\}/) || [""])[0];
+check("浮动按钮大屏边界：左缘距卡片 = --floater-gap（--wrap-max/--btn-float-w 同源）",
+  /--wrap-max:\s*1200px/.test(css) && /--btn-float-w:\s*46px/.test(css) &&
+  /--floater-gap:\s*18px/.test(css) &&
+  /right:\s*max\(/.test(floatersRule) && floatersRule.includes("--wrap-max") &&
+  floatersRule.includes("--wrap-pad") && floatersRule.includes("--btn-float-w") &&
+  floatersRule.includes("--floater-gap") &&   // 间距变量参与公式，删掉就假绿
+  /\.wrap\s*\{[^}]*max-width:\s*var\(--wrap-max\)/.test(css) &&
+  /\.btn-float\s*\{[^}]*width:\s*var\(--btn-float-w\)/.test(css));
 
 check("运行期无 JS 报错", errors.length === 0, errors.slice(0, 3).join(" | "));
 

@@ -132,8 +132,8 @@
     emptyBox.hidden = false;
   }
 
-  var state = { section: null, limit: LIST_BATCH, filters: {} };
-  // 默认值由服务端下发（跟着 home_new_low_days 走）。
+  var state = { section: null, limit: LIST_BATCH, filters: {}, openGid: null };
+  // 默认值由服务端下发（日期默认 = "all"，2026-10-10 起不再跟 home_new_low_days 走）。
   // ⚠️ 兜底**不要再写 date: "d7"** —— 那等于在前端又写死一份窗口，与服务端脱钩
   // （review-s9-01 补充审查 #2）。模板恒发这个变量，取不到就当"全部不筛"，
   // 下面的判据都对 undefined 安全。
@@ -378,6 +378,10 @@
       var open = document.querySelectorAll(".row.open");
       for (var i = 0; i < open.length; i++) open[i].classList.remove("open");
       if (!was) row.classList.add("open");
+      // 展开行是**状态**不是 class：列表任何一次重渲染（加载更多 / 改筛选 / 定位
+      // 加量）都会 fillRows 重建 DOM，只写在 class 上一次重建就丢 —— 用户 2026-10-10
+      // 报告「定位到了但详情没展开」就是这条。renderList 按 openGid 恢复。
+      state.openGid = was ? null : (item.game_id || null);
     });
     return row;
   }
@@ -385,6 +389,14 @@
   function fillRows(box, items) {
     box.textContent = "";
     items.forEach(function (item) { box.appendChild(buildRow(item)); });
+  }
+
+  /** 重渲染后按 openGid 恢复展开行（单行展开的唯一事实来源是 state.openGid，
+   *  class 只是投影 —— 见 buildRow 的 click handler 与 renderList 的 pendingPick）。 */
+  function restoreOpenRow() {
+    if (!state.openGid || !rowsBox) return;
+    var hit = rowsBox.querySelector('.row[data-gid="' + CSS.escape(state.openGid) + '"]');
+    if (hit) hit.classList.add("open");
   }
 
   // ------------------------------------------------------------------
@@ -824,6 +836,7 @@
     var meta = listState.meta || {};
     var shown = cards.slice(0, state.limit);
     fillRows(rowsBox, shown);
+    restoreOpenRow();
     pagerBox.textContent = "";
     // 「共 N 条」用预聚合表的精确值；没有这张表就退回已加载条数（不会更好，但不会错）
     var total = (meta.count === null || meta.count === undefined) ? cards.length : meta.count;
@@ -842,6 +855,7 @@
         : null;
       if (hit) {
         hit.classList.add("open");
+        state.openGid = pendingPick.gid;   // 记成状态：后续重建（追加/筛选）不丢展开
         if (hit.scrollIntoView) hit.scrollIntoView({ block: "center" });
         pendingPick = null;
       } else if (cards.length < total && !meta.failed && state.limit < LOCATE_MAX) {
@@ -912,10 +926,9 @@
     moreObserver.observe(button);
   }
 
-  // 用户有没有**手动**改过日期。没有的话，切到「全部折扣」页时日期自动放开成
-  // 「全部」（refs §11.5 Q2：「全部折扣」页**不设限**），切回板块再收成默认窗口。
-  // ⚠️ 这个标记**只由 setFilter 维护**（见下）—— 别在别处赋值（漏更新 =
-  //    「全部折扣页日期意外收紧/放开」的静默回归）。
+  // 用户有没有**手动**改过日期。现在它只剩一个消费者：date 已选标签的显示条件
+  // （renderActiveChips —— 「全部」标签只在手动选过时出现，见那边）。
+  // ⚠️ 这个标记**只由 setFilter 维护**（见下）—— 别在别处赋值。
   var dateTouched = false;
   function touchDate() { dateTouched = true; }
   function clearDateTouched() { dateTouched = false; }
@@ -928,8 +941,8 @@
    *
    *  · `value === undefined` = **恢复该项的默认值**（服务端下发的 FILTER_DEFAULTS）；
    *  · 日期维度的「用户手动改过」标记自动处理：给了具体值 = 用户改过（touch）；
-   *    恢复默认 = 不算改过（clear）。程序自动调整（openSection 的放开/收紧）要显式
-   *    传 `{auto:true}`，否则会被误记成「用户改过」；
+   *    恢复默认 = 不算改过（clear）。程序自动调整（openSection 切板块时把上个
+   *    页面留下的手动限制清回默认）要显式传 `{auto:true}`，否则会被误记成「用户改过」；
    *  · 返回**是否真的变了**，调用方可据此决定要不要重渲染。
    *
    *  ⚠️ 新增筛选维度不需要改这里（遍历 FILTER_DEFAULTS + 模板渲染选项即可）；
@@ -948,12 +961,15 @@
   }
 
   function openSection(key) {
+    // 换板块才丢展开行（applyFilters 复用本入口重取**当前**板块，那不算换 ——
+    // 改筛选后展开行要能恢复，见 buildRow click handler / restoreOpenRow）
+    if (state.section !== key) state.openGid = null;
     state.section = key;
     state.limit = LIST_BATCH;
-    if (!dateTouched) {
-      // 程序自动放开/收紧日期窗口：**不算**用户手动改过（auto:true）
-      setFilter("date", (key === "__all__") ? "all" : undefined, { auto: true });
-    }
+    // 日期这里**什么都不做**：默认已是「全部」（filter_defaults），各页面隐式状态
+    // 一致，无需切换；用户手动选的限制切板块时原样保留（冒烟 ⑤ 钉死）。
+    // （2026-10-10 前这里有一段「板块 d7 ↔ 全部折扣 all」的隐式切换，默认改 all
+    //   后它成了死代码，连同 dateTouched 的读取一起移除。）
     // 进板块先复位「在当前板块里没有意义」的已选条件 ——
     // 不然角标会挂着一个筛不掉任何东西的条件（例：带着「仅新史低」进新史低板块）。
     resetImpliedFilters();
@@ -1010,10 +1026,12 @@
   function openHome() {
     state.section = null;
     state.limit = LIST_BATCH;
+    state.openGid = null;              // 回首页：列表页的展开行语义已失效
     var buttons = document.querySelectorAll("#nav .nav-item");
     for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
     listBox.hidden = true;
     homeBox.hidden = false;
+    if (chipsBox) chipsBox.textContent = "";   // date 标签只属于列表页，别把 DOM 残留到首页
     syncFilterVisibility();          // 首页不显示「筛选」（它不作用于首页板块）
     if ((data.sections || []).length) hideEmpty();
     else setEmpty("none", "今天没有符合条件的折扣。");
@@ -1146,7 +1164,7 @@
   /** 把所有筛选恢复成服务端给的默认值（抽屉的「重置」与标签行的「清空」共用一份）。 */
   function resetFilters() {
     // setFilter(k, undefined) = 恢复默认；对 date 会自动 clearDateTouched
-    // （重置后「全部折扣」页重新自动放开日期）
+    // （默认就是「全部」，重置后日期限制整体消失）
     Object.keys(FILTER_DEFAULTS).forEach(function (k) { setFilter(k, undefined); });
     applyFilters();
   }
@@ -1162,13 +1180,24 @@
 
   /** 已选条件小标签（B3）：PC/平板显示在筛选按钮右边，每个能单独 ✕ 掉，末尾一个「清空」。
    *  ⚠️ 手机档由 CSS（`.active-chips{display:none}`）整条隐藏 —— 用户 2026-10-07：
-   *  「我选 B3，但是手机端还是默认 B1」。所以这里**不判断点**，隐藏只归 CSS 管。 */
+   *  「我选 B3，但是手机端还是默认 B1」。所以这里**不判断点**，隐藏只归 CSS 管。
+   *
+   *  date 维度**不走差值口径**（2026-10-10 用户报告）：它显示**当前生效的日期窗口** ——
+   *  「近 N 天/具体日」在列表页恒显示（是真实存在的限定）；「全部」只在用户手动选过
+   *  （dateTouched）时显示 —— 「全部折扣」页程序自动放开（auto:true）不产生标签。
+   *  标签 ✕ 与其他维度同一语义：恢复默认（默认日期 = 「全部」，一步清掉 —— 用户
+   *  裁决不要「先变全部再点一次」的两步）。 */
   function renderActiveChips() {
     if (!chipsBox) return;
     chipsBox.textContent = "";
     var picked = [];
     Object.keys(FILTER_DEFAULTS).forEach(function (k) {
       if (k === "sort") return;                       // 排序不算筛选（与角标同一口径）
+      if (k === "date") {
+        if (!state.section) return;                   // 首页没有列表筛选语义
+        if (state.filters.date !== "all" || dateTouched) picked.push(k);
+        return;
+      }
       if (state.filters[k] === FILTER_DEFAULTS[k]) return;
       picked.push(k);
     });
@@ -1182,7 +1211,11 @@
           "aria-label": "去掉条件 " + optLabel(k, value),
           onclick: function (e) {
             e.stopPropagation();
-            setFilter(k, undefined);      // 去掉这个条件 = 恢复默认（date 会自动清标记）
+            // 统一 = 恢复默认（2026-10-10 用户定案：一步清掉，不要「先变全部
+            // 再点一次」的两步）。默认日期已是「全部」，清掉后标签消失、
+            // 列表回全量 —— 旧默认 d7 时代的死链（恢复值又被页面隐式改写）
+            // 已随默认改 all 消失，这里不再需要 date 特判。
+            setFilter(k, undefined);
             applyFilters();
           }
         })
@@ -1219,13 +1252,19 @@
     }
   }
 
-  /** 面板贴着浮层按钮的**上沿**展开（全端统一）—— `bottom` 只能等打开那一刻量：
-      浮动按钮的堆叠高度会随「返回顶部」是否出现而变化（±50px），纯 CSS 算不出来。
-      CSS 里只写 64px 兜底（app.js 没跑时的估计值），打开瞬间以这里量的为准。 */
+  /** 面板贴着浮层按钮的**上沿 + 右缘**展开（全端统一）—— bottom/right 都只能等
+      打开那一刻量：
+      · 浮动按钮的堆叠高度会随「返回顶部」是否出现而变化（±50px），纯 CSS 算不出
+        `bottom`；
+      · 2026-10-10 起 `.floaters` 大屏悬在内容卡片外侧的留白带里（边界公式见
+        app.css），面板若还按 CSS 写死的 `right:12px` 贴屏幕边，就会和按钮水平
+        错开一截 —— `right` 同样要按按钮实际位置对齐。CSS 里的 64px/12px 只是
+        JS 没跑时的兜底。 */
   function placeDrawer() {
     if (!drawer || !filterOpenBtn) return;
     var r = filterOpenBtn.getBoundingClientRect();
     drawer.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 8)) + "px";
+    drawer.style.right = Math.max(12, Math.round(window.innerWidth - r.right)) + "px";
   }
 
   /** 顶栏以下那两件「只属于首页 / 只属于列表页」的东西一起切：
