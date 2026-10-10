@@ -757,6 +757,25 @@ class HomeSectionsTest(unittest.TestCase):
         out = _render([], datetime(2026, 10, 6, 5, 14))
         self.assertEqual(_load_payload(out)["pick_page"], report.HOME_PICKS_PAGE)
 
+    def test_picks_shards_counts_deepest_pick_position(self):
+        """payload 下发 `picks_shards` = 大卡在大卡落点板块（第一板块）分片里
+        **落位最深的片数** —— 首页空闲预取据此优先拉齐大卡落位的片，点深位大卡
+        定位时零补片请求（2026-10-10：大卡按 PICKS_WEIGHTS 排序、分片按板块语义
+        排序，两套序不同 ⇒ 大卡可能落在很深的片上）。"""
+        members = [{"game_id": f"g{i}", "title": f"g{i}"} for i in range(25)]
+        picks = [{"game_id": "g3"}, {"game_id": "g12"}]        # 最深落位 = 第 12 位
+        self.assertEqual(report.picks_shard_count(picks, members, 10), 2)   # 12//10+1
+        self.assertEqual(report.picks_shard_count([{"game_id": "g0"}], members, 10), 1)
+        # 大卡不在板块成员里（如平史低补位卡）→ 不抬高片数，按 1 片兜底
+        self.assertEqual(report.picks_shard_count([{"game_id": "x"}], members, 10), 1)
+        # 落位正好压在片界（第 10 位 = 第 2 片开头）
+        self.assertEqual(report.picks_shard_count([{"game_id": "g10"}], members, 10), 2)
+
+    def test_picks_shards_sent_via_payload(self):
+        out = _render([], datetime(2026, 10, 6, 5, 14))
+        payload = _load_payload(out)
+        self.assertGreaterEqual(payload["picks_shards"], 1)
+
     def test_big_cut_sorted_by_discount_desc(self):
         got = self.sections([self.card("低", cut=85), self.card("高", cut=95)])
         self.assertEqual([i["title"] for i in got["big_cut"]["items"]], ["高", "低"])

@@ -1,6 +1,7 @@
 /* S9 首页前端冒烟测（jsdom）—— 无浏览器环境下验证 app.js/app.css 的主力手段。
- * 用法（jsdom 不是本仓库依赖，NODE_PATH 指到装有 jsdom 的 node_modules）：
- *   NODE_PATH=<装有 jsdom 的目录> node tests/jsdom/smoke_s9.js
+ * 用法：`node tests/jsdom/smoke_s9.js`（jsdom 不是本仓库依赖；解析顺序 =
+ *       SDL_NODE_MODULES 显式指路 → NODE_PATH → 全局 npm 目录 → 仓库根 node_modules，
+ *       唯一实现在 _jsdom_loader.js —— 全局装了 jsdom 就**不需要**设 NODE_PATH）。
  * 做法：把 output/ 的 index.html + app.css + data.js + all/*.js + app.js 内联成一个
  *      自包含页面（同 tools/make_preview.py 的思路），再用 jsdom 跑脚本、断言 DOM。
  *      （2026-10-08 起 all.js 拆成 all/<板块>_<片号>.js；全部内联后 loadShard() 每次
@@ -10,7 +11,8 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { JSDOM, VirtualConsole } = require("jsdom");
+const { loadJsdom } = require("./_jsdom_loader.js");
+const { JSDOM, VirtualConsole } = loadJsdom();
 
 const OUT = path.join(__dirname, "..", "..", "output");
 const read = (p) => fs.readFileSync(path.join(OUT, p), "utf8");
@@ -30,11 +32,13 @@ if (!shardFiles.length) {
 }
 const allShards = shardFiles.map((f) => fs.readFileSync(path.join(allDir, f), "utf8")).join("\n");
 
-// 内联静态资源（分片放在 app.js 之前，等价于单文件预览）
+// 内联静态资源（分片放在 app.js 之前，等价于单文件预览）。
+// ⚠️ 先开 TEST_HOOK（app.js 末尾的 seam 只有它开着才挂 __SDL_TEST_API__）
 let html = index
   .replace(/<link[^>]*app\.css[^>]*>/i, `<style>${css}</style>`)
   .replace(/<script[^>]*data\.js[^>]*><\/script>/i, `<script>${dataJs}</script>`)
-  .replace(/<script[^>]*app\.js[^>]*><\/script>/i, `<script>${allShards}</script><script>${appJs}</script>`);
+  .replace(/<script[^>]*app\.js[^>]*><\/script>/i,
+    `<script>window.__SDL_TEST_HOOK__ = true;</script><script>${allShards}</script><script>${appJs}</script>`);
 
 const errors = [];
 const vc = new VirtualConsole();
@@ -587,7 +591,8 @@ function buildDom(mutate, patchHtml, opts) {
     .replace(/<link[^>]*app\.css[^>]*>/i, `<style>${css}</style>`)
     .replace(/<script[^>]*data\.js[^>]*><\/script>/i, `<script>${patchedData}</script>`)
     .replace(/<script[^>]*app\.js[^>]*><\/script>/i,
-      (opts.withShards === false ? "" : `<script>${allShards}</script>`) + `<script>${appJs}</script>`);
+      (opts.withShards === false ? "" : `<script>${allShards}</script>`)
+      + `<script>window.__SDL_TEST_HOOK__ = true;</script><script>${appJs}</script>`);
   if (patchHtml) h = patchHtml(h);
   const vc2 = new VirtualConsole();
   vc2.on("jsdomError", (e) => {
@@ -868,6 +873,42 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
     row ? "定位到 " + gid : "未定位到 " + gid);
 })();
 
+// ---- 深位大卡也必须定位在**新史低板块**内（2026-10-10 用户报告）----
+// 「咒语与秘密」「Teenage Blob」都在新史低分片里（第 46/57 位，> 一批 30 行），
+// 点大卡却被送到了「全部折扣」——定位重试条件 `cards.length < total` 只覆盖
+// 「分片没拉完」；方案 A 去窗口后第 0 片（200 容量）一次装下整个板块
+//（180 ≤ 200），`cards.length >= total` 恒成立 → 不加量渲染 → 直接退板块。
+// 修复口径：找不到行时「还有未渲染的行」（shown < cards.length）同样加量重试，
+// 整个板块找遍了才退「全部折扣」（那才是「卡真不在板块里」的兜底，如平史低补位）。
+(function () {
+  const win = buildDom().window;
+  const d = win.document;
+  // 从新史低分片里找一张**排位深于一批（30 行）**的卡，塞进大卡位来复现
+  const shards = win.ALL_S || {};
+  const flat = Object.keys(shards).filter((k) => /^new_low_\d+$/.test(k))
+    .sort((a, b) => Number(a.split("_")[1]) - Number(b.split("_")[1]))
+    .flatMap((k) => shards[k].items || []);
+  const BATCH = ((win.REPORT_DATA || {}).list || {}).batch || 30;
+  const deep = flat.find((it, i) => i >= BATCH && it.game_id);
+  if (!deep) { check("深位大卡定位在新史低板块（分片里没有深位卡，夹具退化）", false); return; }
+  const win2 = buildDom((o) => { o.picks = [deep]; }).window;
+  const d2 = win2.document;
+  const card = d2.querySelector("#picks-track .pick");
+  if (!card) { check("深位大卡定位在新史低板块（大卡没渲染）", false); return; }
+  card.click();
+  const row = d2.querySelector('#rows .row.open[data-gid="' + deep.game_id + '"]');
+  const title = d2.getElementById("lv-title").textContent;
+  check("深位大卡 → 定位在**新史低板块**内（不再退「全部折扣」）",
+    !!row && title === "新史低",
+    row ? "定位到第 " + (flat.indexOf(deep) + 1) + " 位" : "退到了「" + title + "」");
+  // 真不在板块里的卡（gid 不存在）→ 整个板块找遍后仍退「全部折扣」兜底
+  const win3 = buildDom((o) => { if (o.picks[0]) o.picks[0].game_id = "nonexistent-gid"; }).window;
+  const d3 = win3.document;
+  d3.querySelector("#picks-track .pick").click();
+  check("板块内确实不存在的卡 → 仍退「全部折扣」兜底",
+    d3.getElementById("lv-title").textContent === "全部折扣");
+})();
+
 // ---- 定位展开的展开态必须跨重渲染保留（2026-10-10 用户报告的 bug）----
 // 定位/手动展开后，任何一次列表重渲染（加载更多 / 定位加量 / 改筛选）都会
 // fillRows 重建 DOM —— 之前 .open 状态只活在 class 上，一次重建就被抹掉：
@@ -966,6 +1007,48 @@ check("浮动按钮大屏边界：左缘距卡片 = --floater-gap（--wrap-max/-
   /\.btn-float\s*\{[^}]*width:\s*var\(--btn-float-w\)/.test(css));
 
 check("运行期无 JS 报错", errors.length === 0, errors.slice(0, 3).join(" | "));
+
+// ---- 首页空闲预取计划：大卡落位片优先（2026-10-10）----
+// 大卡按 PICKS_WEIGHTS 排序、分片按板块语义排序，两套序不同 ⇒ 深位大卡（如第 46
+// 位的「咒语与秘密」）定位要现补片。payload 下发 picks_shards（大卡落位最深片数），
+// 预取计划先拉齐大卡落点板块（第一板块）的 0..picks_shards-1 片，再其余板块第 0 片。
+(function () {
+  const api = dom.window.__SDL_TEST_API__;
+  const picksShards = (dom.window.REPORT_DATA || {}).picks_shards;
+  const shardCount = (k) => (shards[k + "_0"] || {}).shards || 0;
+  const nlShards = shardCount("new_low");
+  check("payload 下发 picks_shards（1 ≤ n ≤ 大卡落点板块分片数）",
+    Number.isInteger(picksShards) && picksShards >= 1 &&
+    (!nlShards || picksShards <= nlShards), "picks_shards = " + picksShards);
+  if (!api || typeof api.prefetchPlan !== "function") {
+    check("预取计划：大卡落位片优先（无 TEST_API）", false); return;
+  }
+  const plan = api.prefetchPlan();
+  const firstKey = ((dom.window.REPORT_DATA || {}).sections || [])[0]?.key;
+  const head = plan.filter((j) => j.key === firstKey).map((j) => j.n);
+  check("预取计划先拉齐大卡落点板块的 0..picks_shards-1 片",
+    !!firstKey && plan[0].key === firstKey && plan[0].n === 0 &&
+    head.length === picksShards &&
+    head.every((n, i) => n === i),
+    "plan = " + plan.map((j) => j.key + ":" + j.n).join(", "));
+  check("其余板块仍各预取第 0 片、全部折扣殿后",
+    plan[plan.length - 1].key === "__all__" && plan[plan.length - 1].n === 0 &&
+    plan.filter((j) => j.key !== firstKey && j.key !== "__all__")
+      .every((j) => j.n === 0));
+  // 深位场景（受控数据 picks_shards=3，本地池单片走不到）：head = 0,1,2；
+  // 脏值（字符串/NaN/0）归一为 ≥1 的整数，且不越过定位上限能覆盖的片数。
+  const deepWin = buildDom((o) => { o.picks_shards = 3; }).window;
+  const deepPlan = deepWin.__SDL_TEST_API__.prefetchPlan();
+  const deepHead = deepPlan.filter((j) => j.key === firstKey).map((j) => j.n);
+  check("picks_shards=3 → 预取 0..2 片（大卡落位片优先）",
+    JSON.stringify(deepHead) === "[0,1,2]",
+    "head = " + JSON.stringify(deepHead));
+  const dirtyWin = buildDom((o) => { o.picks_shards = "oops"; }).window;
+  const dirtyPlan = dirtyWin.__SDL_TEST_API__.prefetchPlan();
+  const dirtyHead = dirtyPlan.filter((j) => j.key === firstKey).map((j) => j.n);
+  check("picks_shards 脏值 → 归一为 1 片（不静默清空计划）",
+    JSON.stringify(dirtyHead) === "[0]", "head = " + JSON.stringify(dirtyHead));
+})();
 
 const failed = results.filter((r) => !r.ok);
 results.forEach((r) => console.log(`${r.ok ? "  OK  " : "  !!  "}${r.name}${r.extra ? "  → " + r.extra : ""}`));

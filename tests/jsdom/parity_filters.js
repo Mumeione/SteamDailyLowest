@@ -18,7 +18,8 @@
  *   }
  * 结果：与 jobs 同序的计数数组，**只以 JSON 打到 stdout**；任何日志走 stderr。
  *
- * jsdom 不在仓库依赖里：优先 SDL_NODE_MODULES / NODE_PATH，否则回退仓库根 node_modules。
+ * jsdom 不在仓库依赖里：解析顺序 = SDL_NODE_MODULES / NODE_PATH / 全局 npm 目录 /
+ * 仓库根 node_modules（唯一实现在 _jsdom_loader.js）——全局装了就无需任何环境变量。
  */
 "use strict";
 
@@ -26,28 +27,7 @@ const fs = require("fs");
 const path = require("path");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
-
-// ---- 解析 jsdom（优先显式指路的 node_modules，再回退仓库根）----
-function loadJsdom() {
-  const candidates = [];
-  if (process.env.SDL_NODE_MODULES) candidates.push(process.env.SDL_NODE_MODULES);
-  if (process.env.NODE_PATH) {
-    process.env.NODE_PATH.split(path.delimiter).forEach((p) => { if (p) candidates.push(p); });
-  }
-  candidates.push(path.join(REPO_ROOT, "node_modules"));
-  try {
-    const resolved = require.resolve("jsdom", { paths: candidates });
-    return require(resolved);
-  } catch (err) {
-    console.error("[parity_filters] 找不到 jsdom（node 无法 require）。二选一：");
-    console.error("  ① 在仓库根跑 `npm install --no-save jsdom`；");
-    console.error("  ② 指向已有的 node_modules：");
-    console.error("     set SDL_NODE_MODULES=<含 jsdom 的 node_modules 目录>   (Windows)");
-    console.error("     export SDL_NODE_MODULES=<...>/node_modules            (bash)");
-    console.error("[parity_filters] 尝试过的路径：" + candidates.join(" ; "));
-    process.exit(2);
-  }
-}
+const { loadJsdom } = require("./_jsdom_loader.js");
 
 const fixturePath = process.argv[2];
 if (!fixturePath) {

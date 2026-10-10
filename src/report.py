@@ -1115,6 +1115,24 @@ def recommend_sort_key(card: dict, cfg: dict | None = None,
     )
 
 
+def picks_shard_count(picks: list[dict], members: list[dict], shard_size: int) -> int:
+    """大卡在大卡落点板块（第一板块）分片里**落位最深的片数**（≥1）。
+
+    大卡按 :data:`PICKS_WEIGHTS`（折扣优先）选、分片按板块语义排序——两套序不同，
+    大卡的落位可能很深（实测「咒语与秘密」在第 46 位）。首页空闲预取据此把
+    **大卡落位的片优先拉齐**，点深位大卡定位时零补片请求。
+
+    不在 ``members`` 里的卡（如平史低补位大卡，板块口径本就不含平史低）不抬高
+    片数——它们点击后走「整板块找遍 → 退全部折扣」的既有兜底。
+    """
+    if not picks or shard_size <= 0:
+        return 1
+    idx = {c.get("game_id"): i for i, c in enumerate(members) if c.get("game_id")}
+    deepest = max((idx[p["game_id"]] for p in picks
+                   if p.get("game_id") in idx), default=-1)
+    return 1 if deepest < 0 else deepest // shard_size + 1
+
+
 def pick_top(cards: list[dict], cfg: dict) -> list[dict]:
     """首页顶部「今日最值」大卡横排的候选（前端每页 5 张、可左右翻页）。
 
@@ -1357,6 +1375,15 @@ def _build_payload(cfg: dict, items: list[dict], stats: dict, now: datetime,
     home_pool = all_cards if all_cards is not None else items
     sections = build_sections(home_pool, cfg)
     picks = pick_top(home_pool, cfg)
+    #: 大卡在大卡落点板块（第一板块）分片里**落位最深的片数** —— payload 下发，
+    #: 前端空闲预取据此优先拉齐大卡落位的片（2026-10-10：大卡按 PICKS_WEIGHTS 排序、
+    #: 分片按板块语义排序，两套序不同 ⇒ 大卡可能落在很深的片上，点击定位要现补片）。
+    first_spec = SECTIONS[0] if SECTIONS else None
+    first_members: list[dict] = []
+    if first_spec is not None and home_pool:
+        first_members = sorted(_section_members(first_spec["key"], home_pool, cfg),
+                               key=_section_sort(first_spec["key"], cfg))
+    picks_shards = picks_shard_count(picks, first_members, ALL_SHARD_SIZE)
 
     payload = {
         "generated_at": now.isoformat(timespec="seconds"),
@@ -1383,6 +1410,8 @@ def _build_payload(cfg: dict, items: list[dict], stats: dict, now: datetime,
         #: S9 顶部「今日最值」大卡横排候选（每页张数 = pick_page，前端不再自抄一份）
         "picks": picks,
         "pick_page": HOME_PICKS_PAGE,
+        #: 大卡落位最深的片数（见 picks_shard_count）——首页空闲预取优先拉齐
+        "picks_shards": picks_shards,
         "fx": fx_display(cfg, fx),
         "steam": steam or {},
         #: 底部抽屉筛选的分组/选项与默认值（refs.md §6.7）；前端 state.filters 用
@@ -1400,6 +1429,9 @@ def _build_payload(cfg: dict, items: list[dict], stats: dict, now: datetime,
             #: S9-卡片：三档布局的第二个边界（≤ 它是平板档，> 它是 PC 档）。
             #: 与 breakpoint 一样必须与 app.css 的 @media 一致；工具脚本也从这里读。
             "tablet_breakpoint": int(cfg.get("tablet_breakpoint_px", 1100)),
+            #: 每片条数（ALL_SHARD_SIZE）—— 前端预取计划用它把「大卡落位片数」
+            #: 对齐定位上限（LOCATE_MAX），公式见 app.js prefetchPlan。
+            "shard_size": ALL_SHARD_SIZE,
         },
         # ⚠️ 原 `notice`（「本周 / 折扣中 / 全部」那句灰字说明）已随 S9 删除：
         # 页面上唯一的消费者 `<p class="notice">` 没了，而文案讲的又是已经不存在的
@@ -1425,6 +1457,8 @@ def _write_data_js(output_dir: Path, payload: dict) -> None:
         "sections": payload["sections"],
         "picks": payload["picks"],
         "pick_page": payload["pick_page"],
+        #: 大卡落位最深的片数 —— 首页空闲预取据此优先拉齐大卡落位的片（app.js prefetchPlan）
+        "picks_shards": payload["picks_shards"],
         "list": payload["list"],
     }
     data_js = "window.REPORT_DATA = " + json.dumps(data_payload, ensure_ascii=False) + ";\n"

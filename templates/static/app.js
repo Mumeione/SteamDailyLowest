@@ -858,7 +858,12 @@
         state.openGid = pendingPick.gid;   // 记成状态：后续重建（追加/筛选）不丢展开
         if (hit.scrollIntoView) hit.scrollIntoView({ block: "center" });
         pendingPick = null;
-      } else if (cards.length < total && !meta.failed && state.limit < LOCATE_MAX) {
+      } else if ((shown.length < cards.length || cards.length < total)
+                 && !meta.failed && state.limit < LOCATE_MAX) {
+        // 还能找就继续找：① 分片没拉完（cards < total）；② **分片拉完了但行还没
+        // 渲染够**（shown < cards —— 去窗口后第 0 片 200 容量常一次装下整个板块，
+        // 卡排在首批 30 行之外时旧条件恒假 → 直接退「全部折扣」，2026-10-10 用户
+        // 报告「咒语与秘密」「Teenage Blob」定位错板块的根因）。加量重渲染。
         state.limit = Math.min(total, state.limit + LOCATE_STEP);
         refreshList();
         return;
@@ -1354,22 +1359,40 @@
   // 「点卡片能点开」不做一次性气泡提示了（2026-10-07 用户裁定：悬停有呼吸/上浮
   // 效果已经能表达可点，气泡多此一举）—— refs.md §6.7 B11 的招 3 整条作废。
 
-  // ---- 首页空闲时偷跑各板块的第 0 片（2026-10-08）----
-  // 用户看首页的几秒足够下完 5×20KB，点进分类时就只剩「读缓存」，近乎瞬开。
+  // ---- 首页空闲时偷跑分片（2026-10-08 起；2026-10-10 改「大卡落位片优先」）----
+  // 大卡按 PICKS_WEIGHTS（折扣优先）选、分片按板块语义排序——两套序不同，大卡
+  // 可能落在很深的片上（实测「咒语与秘密」在第 46 位）。预取计划因此**先拉齐
+  // 大卡落点板块（第一板块）的大卡落位片**（payload `picks_shards` 服务端下发），
+  // 点深位大卡定位零补片请求；再串行偷跑其余板块的第 0 片。
   // ⚠️ 一片一片串行、每片都排在下一个空闲时段里，不跟首屏渲染抢主线程；
   //    用户已经进了某个板块（说明预取没必要了）就立刻停手。
-  // ⚠️ 代价是只看首页不点分类的用户也会多下 ~100KB —— 用「近乎瞬开」换的，
-  //    觉得不划算就把下面这段删掉，分类页仍然只比现在快 33 倍。
+  function prefetchPlan() {
+    var plan = [];
+    var first = (data.sections || [])[0];
+    // 防脏值：picks_shards 归一为 ≥1 的整数；上限 = 定位上限（LOCATE_MAX）能覆盖的
+    // 片数 —— 超过它的片定位永远读不到，预取白拉（2026-10-10 review）。
+    var shardSize = ((data.list || {}).shard_size) || 200;   // 兜底 = 服务端 ALL_SHARD_SIZE
+    var cap = Math.max(1, Math.ceil(LOCATE_MAX / shardSize));
+    var raw = Number(data.picks_shards);
+    var deep = Math.max(1, Math.min(Number.isFinite(raw) ? Math.floor(raw) : 1, cap));
+    if (first) {
+      for (var n = 0; n < deep; n++) plan.push({ key: first.key, n: n });
+    }
+    (data.sections || []).forEach(function (s) {
+      if (!first || s.key !== first.key) plan.push({ key: s.key, n: 0 });
+    });
+    plan.push({ key: "__all__", n: 0 });
+    return plan;
+  }
+  // ⚠️ 代价是只看首页不点分类的用户也会多下一些 —— 用「近乎瞬开」换的。
   (function prefetchShards() {
-    // 板块清单由 payload 的 sections 派生（code-audit-2026-10-09 #5）——
-    // 从前这里硬编码了整张板块 key 表，加板块要记得改前端。
-    var keys = (data.sections || []).map(function (s) { return s.key; }).concat("__all__");
+    var plan = prefetchPlan();
     var i = 0;
     function step() {
       if (state.section) return;                 // 已经进板块了，不用预取
-      if (i >= keys.length) return;
-      var key = keys[i++];
-      loadShard(slotOf(key, 0), function () {
+      if (i >= plan.length) return;
+      var job = plan[i++];
+      loadShard(slotOf(job.key, job.n), function () {
         if (typeof window.requestIdleCallback === "function") {
           window.requestIdleCallback(step, { timeout: 2000 });
         } else {
@@ -1452,7 +1475,8 @@
   if (typeof window !== "undefined" && window.__SDL_TEST_HOOK__) {
     window.__SDL_TEST_API__ = {
       cardPredicate: cardPredicate,
-      setFilters: function (f) { state.filters = f; }
+      setFilters: function (f) { state.filters = f; },
+      prefetchPlan: prefetchPlan          // 首页空闲预取的片清单（顺序即优先级）
     };
   }
 })();
