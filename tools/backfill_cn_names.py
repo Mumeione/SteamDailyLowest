@@ -42,8 +42,15 @@ from src import classify  # noqa: E402
 from src.config import load_config  # noqa: E402
 from src.heybox import HeyboxBlocked, HeyboxClient, has_cjk, is_cn_name  # noqa: E402
 from src.httpclient import Blocked, HttpError  # noqa: E402
+from src.pipeline import log  # noqa: E402  统一输出出口（stdout + flush）
 from src.ratelimit import RateLimiter  # noqa: E402
 from src.state import State  # noqa: E402
+from tools.backfill_common import (  # noqa: E402
+    event_kinds,
+    fmt_mmss,
+    summarize_events,
+    write_step_summary,
+)
 
 #: 每轮默认限量（用户 2026-10-09 定案「限时限量、不图快不图量」）：
 #: 2s/req × 1500 ≈ 50min，稳在墙钟预算与 Actions 90min 上限之内。
@@ -60,6 +67,9 @@ CONSECUTIVE_FAIL_LIMIT = 3
 #: 零命中守卫：先查的都是评价数最多的热门游戏，小黑盒几乎必有中文名；
 #: 查了这么多还一个没中 → 响应形态漂移 / 静默风控，中止。
 ZERO_HIT_GUARD = 10
+#: 进度心跳间隔（请求数）：2s/req 正式跑约 50 分钟，此前只有 dry-run 才逐条打印、
+#: 正式跑静默（backfill 日志审查 P1）。每 50 次请求报一次进度。
+HEARTBEAT_EVERY = 50
 
 #: 中止原因 → 统计键（Blocked / 连续失败 / 零命中 / 时间到）。前三个按风控处理。
 ABORT_BLOCKED = "blocked"
@@ -118,7 +128,8 @@ def select_targets(state: State, cfg: dict, now: datetime,
 
 def backfill(state: State, fetch_name, targets: list[tuple[int, list[str]]],
              now: datetime, limit: int = 0, time_budget: float = 0.0,
-             clock=time.monotonic, dry_run: bool = False) -> dict:
+             clock=time.monotonic, dry_run: bool = False, *,
+             heartbeat_every: int = HEARTBEAT_EVERY, progress=None) -> dict:
     """逐个查小黑盒、过质量闸、写 ``game_meta[gid].title_zh``（受控写口）。
 
     ``fetch_name(appid) -> str | None`` 由调用方注入（真跑是
@@ -130,6 +141,10 @@ def backfill(state: State, fetch_name, targets: list[tuple[int, list[str]]],
 
     命中/落空都**同写该 appid 名下的所有 gid**（uuid 多对一：一次请求喂饱全组）。
     ``dry_run``：照常发请求、照常统计，但**不写任何状态**（探针用）。
+
+    **进度心跳**：每 ``heartbeat_every`` 次成功请求调一次
+    ``progress(stats, elapsed_seconds)``（不传则静默）—— 正式跑约 50 分钟，
+    没有心跳就无法区分「在跑 / 被风控 / 卡死」；统计末尾附带 ``elapsed``。
     """
     stats = {"targets": len(targets), "requested": 0, "filled": 0, "missed": 0,
              "errors": 0,
@@ -151,7 +166,8 @@ def backfill(state: State, fetch_name, targets: list[tuple[int, list[str]]],
         except HttpError as exc:
             stats["errors"] += 1
             consecutive_failures += 1
-            print(f"[warn] appid={appid} 小黑盒请求失败：{exc}", file=sys.stderr)
+            print(f"[warn] appid={appid} 小黑盒请求失败：{exc}",
+                  file=sys.stderr, flush=True)
             if consecutive_failures >= CONSECUTIVE_FAIL_LIMIT:
                 stats["aborted"] = ABORT_CONSECUTIVE
                 break
@@ -165,18 +181,21 @@ def backfill(state: State, fetch_name, targets: list[tuple[int, list[str]]],
                     state.set_title_zh(gid, name.strip(), now)
             stats["filled"] += len(gids)
             if dry_run:
-                print(f"[dry-run] appid={appid}（{len(gids)} 个 gid）→ {name}")
+                log(f"[dry-run] appid={appid}（{len(gids)} 个 gid）→ {name}")
         else:
             if not dry_run:
                 for gid in gids:
                     state.heybox_miss(gid, now)     # 落空负缓存：TTL 内不重查
             stats["missed"] += len(gids)
             if dry_run and name:
-                print(f"[dry-run] appid={appid} 非中文名，不入库：{name!r}")
+                log(f"[dry-run] appid={appid} 非中文名，不入库：{name!r}")
 
         if stats["requested"] >= ZERO_HIT_GUARD and stats["filled"] == 0:
             stats["aborted"] = ABORT_ZERO_HIT       # 热门游戏全落空 = 形态漂移/静默风控
             break
+        if heartbeat_every and progress and stats["requested"] % heartbeat_every == 0:
+            progress(stats, clock() - start)
+    stats["elapsed"] = clock() - start
     return stats
 
 
@@ -199,7 +218,7 @@ def main() -> int:
 
     state_path = Path(args.state)
     if not state_path.is_file():
-        print(f"state 文件不存在：{state_path}", file=sys.stderr)
+        print(f"state 文件不存在：{state_path}", file=sys.stderr, flush=True)
         return 2
 
     cfg = load_config(args.config)
@@ -215,38 +234,82 @@ def main() -> int:
     # select 只跑一次，结果同时用于打印与回填（--miss-ttl-days 因此真正生效）
     targets = select_targets(state, cfg, now, args.miss_ttl_days)
     gid_total = sum(len(gids) for _, gids in targets)
-    print(f"回填目标（能进列表、缺中文名、负缓存外）：{len(targets)} 个 appid"
-          f"（覆盖 {gid_total} 个 gid）｜间隔 ≥{args.min_interval}s"
-          f"｜limit={args.limit or '不限'}｜预算 {args.time_budget}s"
-          + ("｜DRY-RUN" if args.dry_run else ""))
+    # 心跳分母 = 本轮实际会查的上限（limit 大于目标数时不能虚高）
+    total_label = min(args.limit, len(targets)) if args.limit else len(targets)
+    log(f"回填目标（能进列表、缺中文名、负缓存外）：{len(targets)} 个 appid"
+        f"（覆盖 {gid_total} 个 gid）｜间隔 ≥{args.min_interval}s"
+        f"｜limit={args.limit or '不限'}｜预算 {args.time_budget}s"
+        + ("｜DRY-RUN" if args.dry_run else ""))
+
+    def progress(stats: dict, elapsed: float) -> None:
+        rate = stats["requested"] / (elapsed / 60) if elapsed > 0 else 0.0
+        log(f"进度 {stats['requested']}/{total_label} · "
+            f"已填 {stats['filled']} · 落空 {stats['missed']} · "
+            f"失败 {stats['errors']} · 速率 {rate:.0f}/min · 已用 {fmt_mmss(elapsed)}")
 
     stats = backfill(state, client.fetch_name, targets, now,
                      limit=args.limit, time_budget=float(args.time_budget),
-                     dry_run=args.dry_run)
+                     dry_run=args.dry_run, progress=progress)
 
-    print(f"请求 {stats['requested']}｜命中 {stats['filled']}｜落空 {stats['missed']}"
-          f"｜单条失败 {stats['errors']}")
+    elapsed = stats["elapsed"]
+    rate = stats["requested"] / (elapsed / 60) if elapsed > 0 else 0.0
+    aborted_reason = {
+        ABORT_BLOCKED: "小黑盒风控封禁（403/429）",
+        ABORT_CONSECUTIVE: f"连续 ≥{CONSECUTIVE_FAIL_LIMIT} 次请求失败",
+        ABORT_ZERO_HIT: f"前 {ZERO_HIT_GUARD} 条零命中（响应形态漂移或静默风控）",
+        ABORT_TIME_UP: "墙钟预算用尽（正常收尾）",
+    }.get(stats["aborted"])
+    log(f"请求 {stats['requested']}｜命中 {stats['filled']}｜落空 {stats['missed']}"
+        f"｜单条失败 {stats['errors']}")
+    log(f"小黑盒请求 {client.calls} 次（限流事件 {client.rate_limit_events}）· "
+        f"异常事件：{summarize_events(client.events)}")
+    log(f"总耗时 {fmt_mmss(elapsed)}"
+        + (f"（速率 {rate:.0f}/min）" if stats["requested"] else ""))
+    # 统计直接进运行 Summary（backfill.yml 只补脚本/参数/退出码，这里补统计/耗时）
+    write_step_summary("backfill_cn_names", [
+        ("结果", ("dry-run（不写盘）" if args.dry_run else
+                  f"已填 {stats['filled']} / 落空 {stats['missed']}")
+                + (f"；中止：{aborted_reason}" if aborted_reason else "")),
+        ("请求数", f"{stats['requested']}/{total_label}（单条失败 {stats['errors']}）"),
+        ("小黑盒请求", f"{client.calls} 次（限流事件 {client.rate_limit_events}）"),
+        ("异常事件", summarize_events(client.events)),
+        ("总耗时", fmt_mmss(elapsed) + (f"（{rate:.0f}/min）" if stats["requested"] else "")),
+    ])
     if stats["aborted"]:
-        reason = {
-            ABORT_BLOCKED: "小黑盒风控封禁（403/429）",
-            ABORT_CONSECUTIVE: f"连续 ≥{CONSECUTIVE_FAIL_LIMIT} 次请求失败",
-            ABORT_ZERO_HIT: f"前 {ZERO_HIT_GUARD} 条零命中（响应形态漂移或静默风控）",
-            ABORT_TIME_UP: "墙钟预算用尽（正常收尾）",
-        }[stats["aborted"]]
-        print(f"[中止] {reason}；已填部分照常落盘。", file=sys.stderr)
+        print(f"[中止] {aborted_reason}；已填部分照常落盘。",
+              file=sys.stderr, flush=True)
 
     if args.dry_run:
-        print("dry-run：不写盘。")
+        log("dry-run：不写盘。")
         return 0
     if stats["filled"] or stats["missed"]:
         # 落空负缓存也值得落盘（下次触发少烧一批请求）
+        # 回填留痕：data 分支的 run_log 里能查到「哪天回填了什么」
+        # （mode=backfill 与 daily/prefetch 记录并存；about 页按缺省键渲染，互不干扰）
+        state.add_run_log(
+            {
+                "run_at": now.isoformat(timespec="seconds"),
+                "mode": "backfill",
+                "script": "backfill_cn_names",
+                "itad_requests": 0,
+                "steam_requests": 0,
+                "requested": stats["requested"],
+                "filled": stats["filled"],
+                "missed": stats["missed"],
+                "aborted": stats["aborted"],
+                "fetch_errors": stats["errors"],
+                "event_kinds": event_kinds(client.events),
+            },
+            keep=int(cfg.get("run_log_keep", 30)),
+        )
         state.save(datetime.now(timezone.utc))
-        print(f"已写入：{state_path}")
+        log(f"已写入：{state_path}")
     else:
-        print("无需写入（没有新增）。")
+        log("无需写入（没有新增）。")
 
     if stats["aborted"] in (ABORT_BLOCKED, ABORT_CONSECUTIVE, ABORT_ZERO_HIT):
-        print("      封禁/异常期间不再请求；请先排查（不要轮换 IP）。", file=sys.stderr)
+        print("      封禁/异常期间不再请求；请先排查（不要轮换 IP）。",
+              file=sys.stderr, flush=True)
         return 3
     return 0
 

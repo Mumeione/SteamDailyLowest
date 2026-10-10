@@ -2,10 +2,14 @@
 #
 # 定位：**以后所有「一次性 / 偶发」的状态回填都走这里** —— 只加 / 改
 # `tools/backfill_*.py` 脚本，**不动本文件**。真正的回填逻辑一律放脚本里；
-# 本工作流只负责「取状态 → 跑脚本 → 回写 data 分支」这套固定样板
-# （checkout / state-restore / 生成 config / writeback / 并发组），
-# 免得每加一个回填就把这段抄一遍（抄漏一处就是数据事故）。
-#
+# 本工作流只负责固定样板（checkout / state-restore / 生成 config / writeback /
+# 并发组），以及 **2026-10-10 补齐的可观测性样板**（backfill 日志审查 P2/P3，
+# 对齐 daily.yml / probe.yml）：
+#   · 捕获脚本退出码 → job output（0 成功 · 1 未预期 · 2 配置 · 3 封禁/风控）
+#   · 退出码 2/3 打 ::error:: 注解
+#   · $GITHUB_STEP_SUMMARY 写运行摘要（脚本 / 参数 / 退出码 / 日志尾部）
+#   · PYTHONUNBUFFERED + tee 落日志文件 + upload-artifact 存 30 天
+#   · 失败自动开 Issue（alert job，同日同因去重，daily.yml 同款）
 # 用法：Actions 页面手动触发（workflow_dispatch）
 #   · script：要跑的脚本名（必须在 tools/ 下、以 backfill_ 开头）——默认史低期回填
 #   · args  ：原样追加到脚本后面的参数 —— 默认 `--state data/state.json`
@@ -44,6 +48,8 @@ jobs:
     timeout-minutes: 90     # 逐条查 history/v2（限流 800/300s），~7.7k 目标 ≈ 50 min
     permissions:
       contents: write      # 状态回写 data 分支
+    outputs:
+      exit_code: ${{ steps.run_script.outputs.code }}
     env:
       ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
     steps:
@@ -83,10 +89,106 @@ jobs:
           test -f "tools/$name" || { echo "::error::找不到 tools/$name"; exit 2; }
 
       - name: 运行回填脚本（tools/${{ inputs.script }}）
-        run: python "tools/${{ inputs.script }}" ${{ inputs.args }}
+        id: run_script
+        env:
+          # 脚本里 50 分钟量级的心跳/进度全靠 stdout，不缓冲才能在 UI 实时看到
+          PYTHONUNBUFFERED: "1"
+        # 捕获退出码再原样上抛（daily.yml 同款）：0 成功 · 1 未预期 ·
+        # 2 配置错误 · 3 滥用封禁/风控中止。2/3 顺手打 ::error:: 注解，
+        # 在 UI 上一眼可辨（审查 #2/#4）。
+        run: |
+          set +e
+          python "tools/${{ inputs.script }}" ${{ inputs.args }} 2>&1 | tee backfill_output.log
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            2) echo "::error::回填脚本配置错误（退出码 2）：state/config 缺失或参数不对。" ;;
+            3) echo "::error::回填脚本因滥用封禁/风控中止（退出码 3）：不要轮换 IP，先排查再重跑（脚本幂等）。" ;;
+          esac
+          exit "$code"
 
       - name: 状态回写 data 分支
         if: always() && hashFiles('data/state.json') != ''
         uses: ./.github/actions/data-writeback
         with:
           message: "state (backfill) $(date -u +%F)"
+
+      # 运行摘要进 Summary（审查 #1/#6，probe.yml:99-111 同款语义）：
+      # 脚本 / 参数 / 退出码留痕，附日志尾部——不用翻 step log 就知道这轮干了什么
+      - name: 写进本次运行的 Summary
+        if: always()
+        env:
+          SCRIPT: ${{ inputs.script }}
+          ARGS: ${{ inputs.args }}
+          CODE: ${{ steps.run_script.outputs.code }}
+        run: |
+          {
+            echo "## backfill 运行摘要"
+            echo
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 脚本 | \`$SCRIPT\` |"
+            echo "| 参数 | \`$ARGS\` |"
+            echo "| 退出码 | ${CODE:-}（空 = 被 取消/超时 连带，没跑到捕获步） |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f backfill_output.log ]; then
+            {
+              echo
+              echo '<details><summary>日志尾部（最近 40 行）</summary>'
+              echo
+              echo '```'
+              tail -n 40 backfill_output.log
+              echo '```'
+              echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ 没有生成 backfill_output.log（可能在脚本名校验步就失败了）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # 日志留存（审查 #7，probe.yml:133-139 同款）：默认只存 90 天内的 Actions 日志，
+      # artifact 留 30 天足够回溯一轮回填做了什么
+      - name: 日志备份成 Artifact
+        if: always() && hashFiles('backfill_output.log') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: backfill-log
+          path: backfill_output.log
+          retention-days: 30
+
+  # 失败告警（审查 #3，daily.yml alert 同款）：手动任务也可能连跑几小时，
+  # 失败没人盯就白烧了配额。同日同因去重；cancelled（手动取消/超时连带）不告警。
+  alert:
+    needs: [backfill]
+    if: always() && needs.backfill.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: 开 Issue（当天同标题已开则跳过）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODE: ${{ needs.backfill.outputs.exit_code }}
+          SCRIPT: ${{ inputs.script }}
+          ARGS: ${{ inputs.args }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="backfill 运行失败 $(date -u +%F)"
+          if [ -n "$(gh issue list --search "in:title \"$TITLE\"" --state open --json number --jq 'length')" ]; then
+            echo "今天已有同因失败 Issue（$TITLE），跳过重复创建"
+            exit 0
+          fi
+          {
+            echo "自动告警：backfill 工作流运行失败。"
+            echo
+            echo "- 运行：$RUN_URL"
+            echo "- 脚本：\`$SCRIPT\`（参数 \`$ARGS\`）"
+            echo "- 退出码：\`${CODE:-未知}\`"
+            echo
+            echo "退出码口径：0 成功 · 1 未预期 · 2 配置错误 · 3 滥用封禁/风控中止。"
+            echo
+            echo "退出码 3（封禁）时**不要轮换 IP**：先排查请求形态（间隔/参数/端点），"
+            echo "等风控解除后重跑即可 —— 回填脚本幂等，已填部分不会重复请求。"
+          } > body.md
+          gh issue create --title "$TITLE" --body-file body.md
