@@ -171,11 +171,13 @@
   function steamUrl(item) { return item.appid ? "https://store.steampowered.com/app/" + item.appid + "/" : null; }
   function xhhUrl(item) { return item.appid ? "https://www.xiaoheihe.cn/games/detail/" + item.appid : null; }
 
-  // 封面 URL（2026-10-08，问题1）：all.js 不再下发 banner，改下发紧凑的 `art` 扩展名码
-  // （见 src/report.py 的 boxart_code）—— 由 game_id（= ITAD 资产 uuid）现拼。
-  //   · data.js 卡片仍带 item.banner（现成 URL）→ 直接用；
-  //   · all.js 卡片：art 为 "jpg"/"png" → 拼 assets.isthereanydeal.com/<game_id>/boxart.<ext>；
-  //     art 为 null（无封面，约 9%）→ null，渲染灰块占位（buildRow / pickCard）。
+  // 封面 URL：**ITAD boxart 优先，Steam 小封面补缺**（2026-10-10）。
+  //   · item.banner = 现成 URL → 直接用。两个来源都走这里：
+  //       - data.js 卡片一律带现成 URL；
+  //       - all.js 里 **ITAD 无 boxart**（约 9.5%）的条目带 Steam URL（不可现拼，故原样下发）。
+  //   · all.js 的其余卡片不下发 banner，改下发紧凑的 `art` 扩展名码
+  //     （见 src/report.py 的 boxart_code）→ 由 game_id（= ITAD 资产 uuid）现拼。
+  //   · art 为 null（无封面）→ null，渲染灰块占位（buildRow / pickCard）。
   function bannerUrl(item) {
     if (item.banner) return item.banner;
     if (item.art === undefined) return null;      // 既无 banner 也无 art = 真的没有封面

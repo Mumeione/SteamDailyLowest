@@ -528,7 +528,8 @@ class State:
     def set_meta(self, game_id: str, appid, reviews, now: datetime,
                  publishers: list[dict] | None = None,
                  developers: list[dict] | None = None,
-                 stats: dict | None = None) -> None:
+                 stats: dict | None = None,
+                 cover: str | None = None) -> None:
         """写入详情缓存（S6 起按层分写）。
 
         2026-09-30 起多收 ``publishers`` / ``developers`` / ``stats``（快照 v3 需要）。
@@ -555,26 +556,29 @@ class State:
             dyn["stats"] = stats
         # 新字段的写入规则与回填完全一致 —— 复用 set_meta_extras，别再抄一份
         # if-is-not-None（两处逻辑漂移过一次：code-review 2026-09-30）
-        self.set_meta_extras(game_id, publishers=publishers, developers=developers)
+        self.set_meta_extras(game_id, publishers=publishers, developers=developers,
+                             cover=cover)
 
     def set_meta_extras(self, game_id: str, *, publishers=None, developers=None,
-                        stats=None) -> None:
+                        stats=None, cover=None) -> None:
         """只补附加字段，**不碰 reviews 与 fetched_at**。
 
         原供 2026-10 的一次性回填用（``publishers`` / ``developers`` / ``stats``
         历史上没存，脚本已随仓库整理退场，git 历史可找回）—— 回填时并不重新拿
         好评率，若走 :meth:`set_meta` 会把 ``fetched_at`` 刷成今天、白白推迟
         reviews 的刷新。传 ``None`` 的键一律跳过（保留旧值）。
-        分层落点：publishers/developers → 不变层；stats → 动态层（决策 15）。
+        分层落点：publishers/developers/cover → 不变层；stats → 动态层（决策 15）。
         """
-        if publishers is None and developers is None and stats is None:
+        if publishers is None and developers is None and stats is None and cover is None:
             return
-        if publishers is not None or developers is not None:
+        if publishers is not None or developers is not None or cover is not None:
             entry = self.game_meta.get(game_id) or {}
             if publishers is not None:
                 entry["publishers"] = publishers
             if developers is not None:
                 entry["developers"] = developers
+            if cover is not None:
+                entry["cover"] = cover
             self.data["game_meta"][game_id] = entry
         if stats is not None:
             self.dynamic.ensure_entry(game_id)["stats"] = stats

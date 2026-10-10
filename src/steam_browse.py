@@ -42,6 +42,22 @@ BASE = "https://api.steampowered.com"
 #: GetItems 端点路径（相对 :data:`BASE`）
 PATH = "/IStoreBrowseService/GetItems/v1"
 
+#: Steam 资产 CDN 基址 —— ``assets.asset_url_format`` 是相对它的模板
+#: （如 ``steam/apps/1299510/${FILENAME}?t=...``）。封面 URL = 基址 + 相对路径。
+ASSET_BASE = "https://shared.akamai.steamstatic.com/store_item_assets/"
+#: GetItems 的 ``country_code``：**只影响可售性 / 资产可见性**，不影响我们要的
+#: name（由 language 定）/ reviews（全球口径）/ release。取 **US**（覆盖面最广），
+#: 而不是线上下单用的 ``country``（CN）—— 否则**国区不可售的游戏整条返回
+#: success=15、连 assets 都没有**（2026-10-10 实测：瘟疫公司 246620、
+#: 奥日1终极版 387290 在 CN 下 success=15，US 下 success=1 + 资产齐全）。
+ITEMS_COUNTRY = "US"
+#: 封面取 ``assets`` 里的哪个键 = **小封面**。选 ``library_capsule``（实测 300×450 竖版，
+#: 与退役的 ITAD boxart 同尺寸，卡片 3:4 容器正好吻合，单图 57~100KB）。
+#: ⚠️ 别换成 ``library_capsule_2x``（600×900，约 3 倍体积）或横版的 ``header`` /
+#: ``main_capsule`` / ``small_capsule`` —— 后者塞进 3:4 竖版容器会被 ``object-fit: cover``
+#: 裁掉大半宽度（实测 header 460×215 → 只剩约 28% 宽度）。
+COVER_ASSET_KEY = "library_capsule"
+
 #: 实测单批条数上限的**历史落点**（250 完整通过，300 → HTTP 400）
 MAX_BATCH_SIZE = 250
 DEFAULT_BATCH_SIZE = MAX_BATCH_SIZE
@@ -73,7 +89,10 @@ DATA_REQUEST = {
     "include_tag_count": 0,                  # → tags（报表不展示标签）
     "include_ratings": False,                # → ratings（GameMeta 里压根没这个字段）
     # ---- 一直关着的（体积大 / 有替代来源）----
-    "include_assets": False,             # 封面用 ITAD 的 boxart（见 report.boxart_code）
+    # ⚠️ 2026-10-10 起开着：封面改走 Steam（``assets.library_capsule`` 小封面）。
+    # 实测 ``include_assets=False`` 时响应里**连 header_image 都没有**（不是 None 是缺键），
+    # 任何封面都得开它。代价 = 每条约 +600B 的 assets 对象；日跑几十批可接受。
+    "include_assets": True,              # → assets.library_capsule（见 COVER_ASSET_KEY）
     "include_screenshots": False,        # 体积大
     "include_trailers": False,           # 体积大
     "include_full_description": False,
@@ -109,6 +128,11 @@ class GameMeta:
     developers: list
     #: Steam 发行时间戳（秒）
     release_date: int | None
+    #: 封面**相对路径**（Steam ``assets.library_capsule`` 小封面，相对 :data:`ASSET_BASE`，
+    #: 如 ``steam/apps/570/library_600x900.jpg``）；服务端没给该资产 → None。
+    #: 只存相对路径不存整条 URL：**只为「ITAD 无 boxart」的少数条目用**（约 9.5%），
+    #: 前端/渲染层拼 :data:`ASSET_BASE` 即得。
+    cover: str | None = None
     # 注：原 ``price`` / ``platforms`` / ``tags`` 三个字段已删（2026-10-09 卡片 08）——
     # 生产零消费方（价格一律用 ITAD 的现价、报表不展示平台与标签），
     # 对应的 ``data_request`` 开关也已关掉，留着只会是「永远是 None/[]」的死数据。
@@ -137,7 +161,36 @@ def parse_store_item(item) -> GameMeta | None:
         publishers=_party_list(basic.get("publishers")),
         developers=_party_list(basic.get("developers")),
         release_date=_release_date(item.get("release")),
+        cover=_cover_tail(item.get("assets")),
     )
+
+
+def _cover_tail(assets) -> str | None:
+    """从 ``assets`` 取**小封面**的相对路径（相对 :data:`ASSET_BASE`）。
+
+    ``asset_url_format`` 是相对 :data:`ASSET_BASE` 的模板，把 ``${FILENAME}``
+    换成该资产的文件名即得（如 ``steam/apps/570/library_600x900.jpg``）。
+    ⚠️ 文件名/子目录**不固定**（2026-10-10 抽 500 条实测：``library_600x900.jpg`` 219 ·
+    ``library_600x900_schinese.jpg`` 50 · ``portrait.png`` 13 · 带哈希子目录的
+    ``<hash>/library_capsule.jpg`` 约 218，各唯一）—— **必须用服务端给的真实值，
+    不能按 appid 现拼**（猜错即 404 破图）。``?t=`` 缓存参数去掉：实测带不带完全一致。
+    """
+    if not isinstance(assets, dict):
+        return None
+    fmt = assets.get("asset_url_format")
+    filename = assets.get(COVER_ASSET_KEY)
+    if not isinstance(fmt, str) or not filename or "${FILENAME}" not in fmt:
+        return None
+    return fmt.split("?", 1)[0].replace("${FILENAME}", str(filename))
+
+
+def cover_url(tail: str | None) -> str | None:
+    """封面相对路径 → 完整 URL（渲染层唯一入口）。
+
+    相对路径由 :func:`_cover_tail` 产出、存 ``game_meta.cover``；渲染层只认这一个
+    拼装点 —— 别在别处再写一遍 :data:`ASSET_BASE`（改了基址就漏）。
+    """
+    return ASSET_BASE + tail if tail else None
 
 
 def _reviews(raw) -> dict | None:
@@ -229,13 +282,15 @@ class SteamBrowseClient(BaseHttpClient):
     # ------------------------------------------------------------------
     # 业务端点
     # ------------------------------------------------------------------
-    def fetch(self, appids, *, country_code: str = "CN",
+    def fetch(self, appids, *, country_code: str = ITEMS_COUNTRY,
               language: str = "schinese") -> dict[int, GameMeta]:
         """批量取元数据，返回 ``{appid: GameMeta}``。
 
         * 自动按 :attr:`batch_size`（≤250）切片，逐批请求后合并；
-        * appid 去重（保序）；无效 appid（``success != 1``）**静默跳过**
-          —— 结果字典里没有 = 没拿到，由调用方决定回落（ITAD ``info/v2``）；
+        * appid 去重（保序）；``success != 1`` **静默跳过** —— 既含无效 appid，
+          也含**请求区不可售**（实测 ``country_code=CN`` 下返回 ``success=15`` +
+          ``visible=False`` + 无 assets）；故默认走 :data:`ITEMS_COUNTRY` 取覆盖面。
+          结果字典里没有 = 没拿到，由调用方决定回落（ITAD ``info/v2``）；
         * 单批超限被 Steam 拒（HTTP 400）时 :class:`HttpError` **原样上抛**
           —— 参数错不允许被当成「没数据」。
         """
@@ -296,8 +351,12 @@ class SteamBrowseClient(BaseHttpClient):
 
 
 __all__ = [
+    "ASSET_BASE",
     "BASE",
+    "COVER_ASSET_KEY",
     "DATA_REQUEST",
+    "ITEMS_COUNTRY",
+    "cover_url",
     "DEFAULT_BATCH_SIZE",
     "GameMeta",
     "MAX_BATCH_SIZE",

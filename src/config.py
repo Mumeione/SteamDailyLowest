@@ -45,11 +45,12 @@ DEFAULTS: dict = {
     "output_dir": "output",
     "request_pause_seconds": 0.3,
     "request_timeout_seconds": 25,
-    # 一轮运行的**总墙钟预算**（秒；0 = 不限）。正常一轮约 8 分钟，这里留出很大余量，
-    # 只在异常拖长（重试风暴 / 大 Retry-After 累积）时兜底：到点由客户端主动中止，
-    # 走正常失败路径（退出码 5 + 首版报表兜底 + 下一轮自愈），而不是被 job 的
+    # 一轮运行的**总墙钟预算**（秒；0 = 不限）。取「job timeout − 5 分钟」：到点主动
+    # 中止，走正常失败路径（退出码 5 + 首版报表兜底 + 下一轮自愈），而不是被 job 的
     # timeout-minutes 硬杀（那会漏发布报表、漏回写状态，且走 cancelled 不告警）。
-    "http_budget_seconds": 2700,
+    # 5100 = 85 分钟，卡在 daily 的 90 分钟前；大促末尾实测峰值约 19 分钟（限流主导，
+    # 见 run_log 的 steam_wait），余量充足。
+    "http_budget_seconds": 5100,
     "steam_timeout_seconds": 15,
     "notable_review_count": 10000,
     "absolute_min_positive_ratio": None,

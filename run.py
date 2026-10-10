@@ -418,7 +418,8 @@ def build_steam_browse_client(cfg: dict) -> SteamBrowseClient:
     )
 
 
-def _write_browse_meta(state: State, game_id: str, meta, now: datetime) -> None:
+def _write_browse_meta(state: State, game_id: str, meta, now: datetime, *,
+                       need_cover: bool) -> None:
     """把一条 GetItems 的 :class:`~src.steam_browse.GameMeta` 写进 game_meta。
 
     ⚠️ 厂商字段**只填空白条目、id 置 None（name-only）**：GetItems 的
@@ -426,6 +427,10 @@ def _write_browse_meta(state: State, game_id: str, meta, now: datetime) -> None:
     （2026-10-04 对照探针），进不得倒排索引；已有 ITAD 口径厂商的存量一律不覆盖
     （``stats`` 传 None 同理 —— GetItems 没有 rank/waitlisted，保留旧值）。
     中文名是同源的 Steam 本地化标题，直接刷新（永久缓存）。
+
+    ⚠️ ``need_cover``：封面是 **ITAD boxart 优先、Steam 补缺** —— 只有 ITAD 无 boxart
+    的条目（约 9.5%）才落 ``cover``。否则 3.3 万条全量落库要多背 ~2.4MB
+    （2026-10-10，见 .scratch/steam-cover/steam-cover.md §2.2）。
     """
     existing = state.meta(game_id) or {}
     publishers = developers = None
@@ -434,7 +439,8 @@ def _write_browse_meta(state: State, game_id: str, meta, now: datetime) -> None:
     if not existing.get("developers") and meta.developers:
         developers = [{"id": None, "name": d.get("name")} for d in meta.developers]
     state.set_meta(game_id, meta.appid, meta.reviews, now,
-                   publishers=publishers, developers=developers, stats=None)
+                   publishers=publishers, developers=developers, stats=None,
+                   cover=meta.cover if need_cover else None)
     state.set_release_date(game_id, meta.release_date)
     if meta.name:
         state.set_title_zh(game_id, meta.name.strip(), now)
@@ -520,7 +526,9 @@ def fetch_details(client: ItadClient, state: State, targets: list[dict], cfg: di
             if meta is None:
                 getitems_broken.append(entry)   # 无效 appid / 响应缺条
                 continue
-            _write_browse_meta(state, entry["game_id"], meta, now)
+            # 封面只给「ITAD 无 boxart」的条目（见 _write_browse_meta 的 need_cover）
+            _write_browse_meta(state, entry["game_id"], meta, now,
+                               need_cover=not entry.get("boxart"))
             stats["fetched"] += 1
         state.save(now)   # 断点续传：每批落盘
 

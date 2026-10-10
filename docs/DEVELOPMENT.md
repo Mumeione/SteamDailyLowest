@@ -468,7 +468,8 @@ IN ₹149 = 14900 paise → 14900 / 14.303287 ≈ 1042 分 = ¥10.42
 
 | 职责                     | 首选                                  | 备选                            | 说明                                                 |
 | ---------------------- | ----------------------------------- | ----------------------------- | -------------------------------------------------- |
-| 判史低（`flag`）/ 折扣起止 / 封面 | ITAD `deals/v2`                     | —                             | ITAD 唯一不可替代的能力                                     |
+| 判史低（`flag`）/ 折扣起止 | ITAD `deals/v2`                     | —                             | ITAD 唯一不可替代的能力                                     |
+| 封面                     | **ITAD** `info/v2` `assets.boxart`  | Steam GetItems `library_capsule`（**补缺**） | 2026-10-10：ITAD 无 boxart 的条目（进列表里实测约 9.5%）才用 Steam 小封面补（300×450 竖版，卡片 3:4 容器吻合）；ITAD 侧 URL 可由 `game_id` 现拼、故仍为主源 |
 | 上一次史低时间                | ITAD `storelow/v2`（**批量**）          | —                             | 只有 ITAD 有这个数据，见 §3.6                               |
 | appid                  | ITAD `info/v2`                      | `itad.link` 短链（**零 ITAD 配额**） | 逐游戏，无法批量                                           |
 | 好评率                    | **ITAD** **`info/v2`**              | Steam `appreviews`            | ITAD 160/分钟 vs Steam store 30/分钟，且顺带给 appid，见 §2.2 |
@@ -1324,7 +1325,7 @@ about.html：抓取概览 / 史低构成 / 筛选口径 / 数据来源 / 汇率 
 | `output_dir`                  | `"output"`             | 生成物目录                                                                                                                                    |
 | `request_pause_seconds`       | `0.3`                  | 请求间隔                                                                                                                                     |
 | `request_timeout_seconds`     | `25`                   | ITAD 请求超时                                                                                                                                |
-| `http_budget_seconds`         | `2700`                 | 一轮运行的**总墙钟预算**（秒；`0` = 不限）。同一轮所有传输客户端共享它：到点主动中止（走退出码 5 + 首版报表兜底 + 下一轮自愈），避免被 job 的 `timeout-minutes` 硬杀 |
+| `http_budget_seconds`         | `5100`                 | 一轮运行的**总墙钟预算**（秒；`0` = 不限）。同一轮所有传输客户端共享它：到点主动中止（走退出码 5 + 首版报表兜底 + 下一轮自愈），避免被 job 的 `timeout-minutes` 硬杀。取「job timeout − 5 分钟」（daily 90 → 85 分钟） |
 | `probe_timeout_seconds`       | `6`                    | 探测类请求的**单独短超时**                                                                                                                          |
 | `notable_review_count`        | `10000`                | 「高热度 · 口碑不一」档的评价数门槛（§3.5）                                                                                                                |
 | `absolute_min_positive_ratio` | `null`                 | 绝对好评率下限；`null` = 不启用                                                                                                                     |

@@ -19,6 +19,7 @@ from jinja2 import Environment, FileSystemLoader
 from . import announcements, classify
 from .config import DEFAULTS
 from .state import atomic_write_text
+from .steam_browse import cover_url   # 封面相对路径 → URL 的唯一拼装点
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = ROOT / "templates"
@@ -329,8 +330,10 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
         "title_zh": clean_title_zh((entry.get("title_zh") or "").strip() or None,
                                    entry.get("title")),
         "appid": appid,
-        # R8：卡片缩略图只有几十像素宽，用小图 boxart 即可；banner600/400 不再使用
-        "banner": entry.get("boxart") or entry.get("banner"),
+        # 封面（2026-10-10）：**ITAD boxart 优先**，缺失时用 Steam 小封面补（约 9.5%）——
+        # Steam 侧只存相对路径（``game_meta.cover``），这里经 steam_browse.cover_url 拼。
+        # ITAD 仍是主源（URL 可由 game_id 现拼，all.js 只下发 3 字节扩展名码，不占体积）。
+        "banner": entry.get("boxart") or cover_url(entry.get("cover")),
         "price_text": format_amount(entry.get("price_int"), currency),
         # R1：前端排序用数值，不用 price_text 字符串
         "price_int": entry.get("price_int"),
@@ -438,25 +441,26 @@ def pool_items(cards: list[dict], cfg: dict) -> list[dict]:
 #: data.js 的 sections/picks 只有 ~42KB，保持原样（`check_payload` 旧口径与单测照旧读它）：
 #:   · ``tier_label`` / ``low_label`` / ``last_low_days``：app.js 从不读
 #:     （tier_label / low_label 只被 ``tools/check_payload.py`` 当诊断用，见那边的派生改法）；
-#:   · ``banner`` → ``art``（见 :func:`boxart_code`）。
+#:   · ``banner`` → ``art``（**只对 ITAD 封面**；见 :func:`boxart_code` 与 slim 里的例外）。
 #: （``steam_url`` / ``xiaoheihe_url`` 不在这里 —— 已在 :func:`build_card` 源头删除，
 #:  前端一律由 ``appid`` 现拼，data.js 里也不该留死数据。）
-#: ⚠️ ``game_id`` **必须保留** —— 它是 ``art`` 现拼封面的依据（boxart 资产 uuid == game_id）。
 _ALL_JS_DROP = ("tier_label", "low_label", "last_low_days", "banner")
 
 
 def boxart_code(url: str | None) -> str | None:
-    """封面 URL → 紧凑「扩展名」码（all.js 专用，2026-10-08）。
+    """ITAD 封面 URL → 紧凑「扩展名」码（all.js 专用，2026-10-08）。
 
     ITAD 的封面 URL 里只有**扩展名**不可由 `game_id` 现拼 —— 前缀固定
     ``https://assets.isthereanydeal.com/<game_id>/boxart``，``?t=<epoch>`` 缓存参数
     实测去掉后响应完全一致（200 / 同 content-length）。所以下发扩展名即可：
-      · ``None`` —— 该条没有封面（ITAD 无资产，实测约 9%）→ 前端显示灰块占位；
+      · ``None`` —— 不是 ITAD 封面 → 前端走灰块占位 / Steam 补的 ``banner``；
       · ``"jpg"`` / ``"png"`` —— 前端拼 ``.../boxart.<ext>``。
     ⚠️ 两种扩展名都真实存在（实测 6573 jpg / 123 png），**不能一律 jpg** ——
     `.png` 资产在 `.jpg` 上是 403（2026-10-08 实测）。
+    ⚠️ 只认 ITAD 形态（2026-10-10）：Steam 封面 URL **不可现拼**，由 slim 原样保留，
+      这里必须回落 None —— 否则会被误当扩展名、拼出死链。
     """
-    if not url:
+    if not url or not url.startswith("https://assets.isthereanydeal.com/"):
         return None
     path = url.split("?", 1)[0]
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else None
@@ -467,15 +471,24 @@ def boxart_code(url: str | None) -> str | None:
 
 
 def slim_for_all_js(cards: list[dict]) -> list[dict]:
-    """给列表页卡片瘦身：剔除 :data:`_ALL_JS_DROP`，并把 ``banner`` 换成紧凑的 ``art``。"""
+    """给列表页卡片瘦身：剔除 :data:`_ALL_JS_DROP`，并把 **ITAD** ``banner`` 换成 ``art``。
+
+    ⚠️ Steam 补的封面（:func:`~src.steam_browse.cover_url` 拼出）**不可由 game_id 现拼**
+    → :func:`boxart_code` 回落 None 时**原样保留 ``banner``**（只影响约 9.5% 的条目；
+    前端 ``bannerUrl`` 第一分支就直接用它）。
+    """
     out = []
     for card in cards:
         slim = {k: v for k, v in card.items() if k not in _ALL_JS_DROP}
         # ⚠️ 幂等：卡片可能**已经被瘦身过**（没有 banner、只有 art）—— 这时别拿
-        # 不存在的 banner 去算、把 art 抹成 None（分片路径会连着瘦两次：
-        # `all_section_orders` 的池子先瘦一次建组，`write_all_shards` 再瘦一次）。
+        # 不存在的 banner 去算、把 art 抹成 None（历史上分片路径连瘦两次踩过这个坑：
+        # 第二次拿不到 banner ⇒ art 全变 None，7100 → 0；见 docs/CHANGELOG.md）。
         if "banner" in card:
-            slim["art"] = boxart_code(card.get("banner"))
+            code = boxart_code(card.get("banner"))
+            if code is not None:
+                slim["art"] = code
+            elif card.get("banner"):
+                slim["banner"] = card["banner"]     # Steam 补的封面：原样带全 URL
         elif "art" in card:
             slim["art"] = card["art"]
         out.append(slim)

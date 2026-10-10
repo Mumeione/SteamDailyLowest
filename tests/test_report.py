@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import classify, report  # noqa: E402
+from src.steam_browse import ASSET_BASE  # noqa: E402
 
 CFG = {
     "min_positive_ratio": 0.7,
@@ -287,14 +288,19 @@ class CardTest(unittest.TestCase):
         self.assertNotIn("itad_url", card)
         self.assertEqual(card["price_int"], 14900)
 
-    def test_card_banner_prefers_boxart(self):
-        """R8：缩略图只有几十像素宽，payload 封面优先用小图 boxart。"""
+    def test_card_banner_itad_first_steam_fallback(self):
+        """封面：**ITAD boxart 优先**（URL 可由 game_id 现拼）；无 boxart 时用 Steam
+        小封面补（``game_meta.cover`` 是相对 ``ASSET_BASE`` 的路径）。"""
         entry = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
-                 "boxart": "https://x/boxart.jpg", "banner": "https://x/banner600.jpg",
+                 "boxart": "https://x/boxart.jpg",
+                 "cover": "steam/apps/570/library_600x900.jpg",
                  "tier": classify.TIER_QUALITY}
-        card = report.build_card(entry, self.now)
-        self.assertEqual(card["banner"], "https://x/boxart.jpg")
-        # boxart 缺失时保持回落（前端另有无图模式兜底）
+        self.assertEqual(report.build_card(entry, self.now)["banner"],
+                         "https://x/boxart.jpg")
+        steam_only = {k: v for k, v in entry.items() if k != "boxart"}
+        self.assertEqual(report.build_card(steam_only, self.now)["banner"],
+                         ASSET_BASE + "steam/apps/570/library_600x900.jpg")
+        # 两者都没有 → None（前端渲染灰块占位）
         bare = {"game_id": "u", "title": "X", "price_int": 100, "currency": "CNY",
                 "tier": classify.TIER_QUALITY}
         self.assertIsNone(report.build_card(bare, self.now)["banner"])
@@ -452,7 +458,7 @@ class LazyViewsTest(unittest.TestCase):
     def test_all_json_cards_are_slimmed(self):
         """分片卡片瘦身（2026-10-08 问题1，分类页 6.3MB）：剔除前端不读
         （tier_label/low_label/last_low_days）或能现拼（steam_url/xiaoheihe_url/banner）
-        的字段；`banner` 换成紧凑 `art` 扩展名码；`game_id` 必须保留（art 现拼的依据）。"""
+        的字段；ITAD `banner` 换成紧凑 `art` 扩展名码；`game_id` 必须保留（art 现拼的依据）。"""
         import tempfile
         out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
         entry = self._entry("g-art", 1, "2026-09-28T10:00:00+08:00")
@@ -467,14 +473,33 @@ class LazyViewsTest(unittest.TestCase):
         self.assertEqual(item["art"], "png")
         self.assertIn("game_id", item)          # art 现拼的依据，不能删
 
+    def test_steam_cover_kept_as_banner_in_all_json(self):
+        """ITAD 无 boxart、由 Steam 补的封面**不可现拼** → all.js 里原样保留 `banner`
+        （这是 slim 唯一的例外分支，只影响约 9.5% 的条目）。"""
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="sdl-test-"))
+        entry = self._entry("g-steam", 1, "2026-09-28T10:00:00+08:00")
+        entry.pop("boxart", None)
+        entry["cover"] = "steam/apps/570/portrait.png"
+        card = report.build_card(entry, self.now)
+        report.render(dict(CFG, output_dir=str(out)), [], _STATS, self.now,
+                      all_cards=[card])
+        item = _load_shards(out)["__all__"][0]
+        self.assertEqual(item["banner"], ASSET_BASE + "steam/apps/570/portrait.png")
+        self.assertNotIn("art", item)
+
     def test_boxart_code(self):
-        """封面 URL → 紧凑扩展名码：只下发不可现拼的扩展名（.png 不能一律当 .jpg，实测 403）。
-        未知后缀回落 None（code-review 2026-10-08）：真出现 webp 说明资产形态变了，
-        猜 jpg 会 403 出破图，不如灰块占位。"""
+        """ITAD 封面 URL → 紧凑扩展名码（.png 不能一律当 .jpg，实测 403）。
+        未知后缀回落 None（真出现 webp 说明资产形态变了，猜 jpg 会 403 出破图）；
+        非 ITAD 形态（Steam URL）也回落 None —— Steam 封面走 banner 原样下发。"""
         self.assertIsNone(report.boxart_code(None))
-        self.assertEqual(report.boxart_code("https://x/a/boxart.jpg?t=1"), "jpg")
-        self.assertEqual(report.boxart_code("https://x/a/boxart.png?t=1"), "png")
-        self.assertIsNone(report.boxart_code("https://x/a/weird.webp"))
+        self.assertEqual(report.boxart_code(
+            "https://assets.isthereanydeal.com/g/boxart.jpg?t=1"), "jpg")
+        self.assertEqual(report.boxart_code(
+            "https://assets.isthereanydeal.com/g/boxart.png?t=1"), "png")
+        self.assertIsNone(report.boxart_code(
+            "https://assets.isthereanydeal.com/g/weird.webp"))
+        self.assertIsNone(report.boxart_code(ASSET_BASE + "steam/apps/570/portrait.png"))
 
     # featured 开关与旧的 groups 分组已随 2026-10-08 payload 瘦身删除 ——
     # data.js 不再带 groups/view_groups（S9 前端不读分组键）。

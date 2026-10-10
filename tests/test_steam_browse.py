@@ -33,6 +33,7 @@ from src.httpclient import HttpError  # noqa: E402
 from src.ratelimit import RateLimiter  # noqa: E402
 from src.steam_browse import (  # noqa: E402
     DATA_REQUEST,
+    ITEMS_COUNTRY,
     MAX_BATCH_SIZE,
     SteamBrowseClient,
     parse_store_item,
@@ -102,6 +103,14 @@ FULL_ITEM = {
     "release": {"steam_release_date": 1716480182},
     "tags": [{"tagid": 29482, "weight": 1079}],
     "platforms": {"windows": True, "steam_deck_compat_category": 3},
+    # include_assets=True 的响应（2026-10-10 封面单源 = library_capsule）
+    "assets": {
+        "asset_url_format": "steam/apps/1658920/${FILENAME}?t=1716480182",
+        "library_capsule": "library_600x900.jpg",
+        "library_capsule_2x": "library_600x900_2x.jpg",
+        "header": "header.jpg",
+        "main_capsule": "capsule_616x353.jpg",
+    },
 }
 
 INVALID_ITEM = {"appid": 9999999, "success": 15}
@@ -122,6 +131,8 @@ class ParseItemTest(unittest.TestCase):
         self.assertEqual(meta.publishers, [{"id": 33118426, "name": "Nacon"}])
         self.assertEqual(meta.developers, [{"id": None, "name": "Artefacts Studio"}])
         self.assertEqual(meta.release_date, 1716480182)
+        # 封面：小封面 library_capsule（**不是** _2x / header）→ 相对 ASSET_BASE 的路径，?t= 丢掉
+        self.assertEqual(meta.cover, "steam/apps/1658920/library_600x900.jpg")
         # 夹具里带着 purchase_options / platforms / tags（模拟老请求或服务端补全）——
         # 解析层一律无视，GameMeta 里也没有对应字段（卡片 08 已裁掉）
         self.assertFalse(hasattr(meta, "price"))
@@ -140,6 +151,42 @@ class ParseItemTest(unittest.TestCase):
         self.assertIsNone(parse_store_item(None))
         self.assertIsNone(parse_store_item([1, 2, 3]))
         self.assertIsNone(parse_store_item("x"))
+
+    # ---- 封面（2026-10-10）：小封面 library_capsule → 相对 ASSET_BASE 的路径 ----
+
+    def _cover(self, assets):
+        return parse_store_item({**FULL_ITEM, "assets": assets}).cover
+
+    def test_cover_filenames_are_used_verbatim(self):
+        """文件名**不固定**（实测本地化 / png / 带哈希子目录）→ 一律用服务端给的真实值，
+        绝不按 appid 现拼（猜错即 404 破图）。"""
+        for fn in ("library_600x900_schinese.jpg", "portrait.png",
+                   "d3a027c7ea89f8b59f4b060480bdc5ad6e432f12/library_capsule.jpg"):
+            cover = self._cover({"asset_url_format": "steam/apps/1658920/${FILENAME}?t=1",
+                                 "library_capsule": fn})
+            self.assertEqual(cover, "steam/apps/1658920/" + fn)
+            self.assertNotIn("?t=", cover)          # 缓存参数去掉
+
+    def test_cover_none_when_assets_incomplete(self):
+        self.assertIsNone(self._cover(None))
+        self.assertIsNone(self._cover({}))
+        self.assertIsNone(self._cover({"library_capsule": "x.jpg"}))              # 缺模板
+        self.assertIsNone(
+            self._cover({"asset_url_format": "steam/apps/1/${FILENAME}"}))        # 缺文件名
+        # 模板里没有 ${FILENAME} 占位 → 不敢猜，回落 None（走灰块占位）
+        self.assertIsNone(self._cover({"asset_url_format": "steam/apps/1/fixed.jpg",
+                                       "library_capsule": "x.jpg"}))
+
+    def test_cover_ignores_bigger_assets(self):
+        """只认小封面：_2x（600×900）与横版 header 存在也不被采用。"""
+        cover = self._cover({
+            "asset_url_format": "steam/apps/1658920/${FILENAME}",
+            "library_capsule": "library_600x900.jpg",
+            "library_capsule_2x": "library_600x900_2x.jpg",
+            "header": "header.jpg",
+        })
+        self.assertEqual(cover, "steam/apps/1658920/library_600x900.jpg")
+        self.assertNotIn("_2x", cover)
 
     def test_reviews_reads_only_summary_filtered(self):
         """⚠️ 另两套 summary 实测恒为 None → 只读 summary_filtered，不回退
@@ -196,14 +243,16 @@ class DataRequestCropTest(unittest.TestCase):
         "include_all_purchase_options": False,
         "include_platforms": False,
         "include_ratings": False,
-        "include_assets": False,
         "include_screenshots": False,
         "include_trailers": False,
         "include_full_description": False,
     }
+    #: 开着的开关（含 2026-10-10 起为封面开的 ``include_assets``）。
+    ON_SWITCHES = ("include_basic_info", "include_reviews", "include_release",
+                   "include_assets")
 
     def test_consumed_switches_are_on(self):
-        for key in ("include_basic_info", "include_reviews", "include_release"):
+        for key in self.ON_SWITCHES:
             self.assertIs(DATA_REQUEST.get(key), True, key)
 
     def test_zero_consumer_switches_are_explicitly_off(self):
@@ -214,8 +263,7 @@ class DataRequestCropTest(unittest.TestCase):
 
     def test_no_unknown_switches(self):
         """键名写错 = 静默无效（服务端不认识的键一律忽略），所以锁全集。"""
-        self.assertEqual(set(DATA_REQUEST), set(self.OFF_SWITCHES) | {
-            "include_basic_info", "include_reviews", "include_release",
+        self.assertEqual(set(DATA_REQUEST), set(self.OFF_SWITCHES) | set(self.ON_SWITCHES) | {
             "include_tag_count"})
 
 
@@ -236,8 +284,10 @@ class FetchTest(unittest.TestCase):
         self.assertTrue(call["url"].endswith("/IStoreBrowseService/GetItems/v1"))
         body = body_of(call)
         self.assertEqual(body["ids"], [{"appid": 570}])
+        # ⚠️ country_code 取 ITEMS_COUNTRY（US）而不是线上 country（CN）——
+        # 否则国区不可售的游戏整条 success=15、连资产都拿不到（见常量注释）
         self.assertEqual(body["context"], {
-            "language": "schinese", "country_code": "CN", "steam_realm": 1})
+            "language": "schinese", "country_code": ITEMS_COUNTRY, "steam_realm": 1})
         self.assertEqual(body["data_request"], DATA_REQUEST)
 
     def test_batches_capped_at_250(self):

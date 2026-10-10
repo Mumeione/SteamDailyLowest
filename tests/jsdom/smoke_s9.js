@@ -520,7 +520,9 @@ const expectBatch = Math.min(listCfg.batch, lvTotal || listCfg.batch);
 check("列表页首批 = payload 的 batch（不超过总条数）",
   firstBatch === expectBatch, firstBatch + " 行 / 期望 " + expectBatch);
 // 2026-10-08 问题1：all.js 卡片瘦身后，列表页（数据来自 all.js）的卡片**没有** steam_url/
-// xiaoheihe_url/banner，链接与封面必须由 appid/game_id+art 现拼成功 —— 不然瘦身=毁页面。
+// xiaoheihe_url/banner，链接与封面必须由 appid/art 现拼成功 —— 不然瘦身=毁页面。
+// 2026-10-10：封面 **ITAD 优先、Steam 补缺**（无 boxart 的条目带现成 `banner`，
+// 由 app.js 第一分支直接用），故这里只锁 ITAD 现拼那批。
 // 无 appid 的条目（unlisted/详情待补）本就没有链接，故断言「至少一行有链接」+「凡出现必合规」。
 (function () {
   const rows = $$("#rows .row");
@@ -531,8 +533,8 @@ check("列表页首批 = payload 的 batch（不超过总条数）",
   const ok = steamA.length > 0 && xhhA.length > 0
     && steamA.every((a) => /^https:\/\/store\.steampowered\.com\/app\/\d+\/$/.test(a.href))
     && xhhA.every((a) => /^https:\/\/www\.xiaoheihe\.cn\/games\/detail\/\d+$/.test(a.href))
-    && imgs.every((t) => /^https:\/\/assets\.isthereanydeal\.com\/[0-9a-f-]+\/boxart\.(jpg|png)$/.test(t.src));
-  check("列表页链接/封面由 appid/game_id 现拼（瘦身后）", ok,
+    && imgs.every((t) => /^https:\/\/(assets\.isthereanydeal\.com\/[0-9a-f-]+\/boxart\.(jpg|png)|shared\.akamai\.steamstatic\.com\/store_item_assets\/steam\/apps\/\d+\/[\w./-]+\.(jpg|png))$/.test(t.src));
+  check("列表页链接/封面由现拼或现成 URL 得到（瘦身后）", ok,
     "steam " + steamA.length + " · xhh " + xhhA.length + " · img " + imgs.length
       + " · 样例 " + (steamA[0] ? steamA[0].href : "(无)"));
 })();
@@ -812,8 +814,8 @@ check("板块列表页顺序 = 分片物理顺序（不再依赖服务端 sectio
 // 留一条断言防止它被「顺手加回来」：
 check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelector(".hint-bubble"));
 
-// 无封面占位（约 9.3% 无 boxart）：无 banner 时渲染同尺寸灰块节点（div.row-thumb /
-// .pick-art 空底），CSS 浅灰底兜住 —— 不崩图、不塌高度。
+// 无封面占位（Steam 封面覆盖率实测 100%，但未回填/取不到仍旧存在）：无 banner 时
+// 渲染同尺寸灰块节点（div.row-thumb / .pick-art 空底），CSS 浅灰底兜住 —— 不崩图、不塌高度。
 // ⚠️ 不能依赖「当天数据碰巧有无封面卡片」——那会让断言被静默跳过（review 抓过）。
 // 做法：用 buildDom 把**所有**条目的 banner 抹成 null 再渲染一遍，占位节点数必须
 // 精确等于行数/大卡数，永远可判定。

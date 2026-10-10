@@ -77,6 +77,9 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         item["publishers"] = (meta or {}).get("publishers") or []
         item["developers"] = (meta or {}).get("developers") or []
         item["stats"] = (meta or {}).get("stats")
+        # 封面（2026-10-10）：Steam GetItems 的小封面（library_capsule），存在 game_meta。
+        # 与 title_zh 同理必须在这里合并 —— 首版渲染不跑 enrich，漏了它首版就无封面。
+        item["cover"] = (meta or {}).get("cover")
         merged.append(item)
     return merged
 
