@@ -8,6 +8,47 @@
 
 ---
 
+## 2026-10-10 · 文档体系整理（拆分 + 单一事实来源）
+
+- **`docs/DEVELOPMENT.md`（1560 行一体文档）按主题拆分**为 7 份：`data-sources.md` /
+  `pipeline.md` / `domain-rules.md` / `data-model.md` / `report-design.md` /
+  `operations.md` / `config-reference.md`；`DEVELOPMENT.md` 本身改为**索引页**，
+  新增「文档维护规则」节（单一事实来源 / 注释与文档分工 / 禁止行号引用 /
+  修订不堆叠 / 入库面最小）。
+- **对照代码修订过期内容**：§5 数据模型按现状重写（三层存储 + `dynamic.json` 正文 +
+  `game_meta`/`run_log`/`cache.json` 示例更新）；§6 模块树补齐（src 16 个模块、
+  composite actions、4 个 workflow）；§9 配置表补 `page_size_mobile` /
+  `page_size_desktop`；§2.5 遗留的旧「reviews TTL 7 天」与四档 TTL 矛盾消除；
+  「backfill.yml 已删除」等与现实矛盾的表述订正。
+- **消除多处成文**：缓存策略两处（§2.5 / §3.3）合并为一处；五响应错误表两处合并；
+  好评阈值等可配置数值在文档中改为「出厂默认，可配置」表述——改默认值不再需要同步文档。
+- **历史章节退场**：原 §11 验收标准（结构不变量提炼进 `pipeline.md`）、
+  §12 实施顺序、§13 已解决条目删除（里程碑在 CHANGELOG）；§13 现役的
+  待观察清单迁入 `operations.md`。
+- **README / AGENTS 修订**：README 筛选表删除「手写文本需同步更新」自白
+  （改指向 `docs/config-reference.md`）并补「未达标过滤」一行；AGENTS 的
+  重构 spec 过期指针与不存在的 `docs/adr/` 引用修正。
+- **`config.example.json` 补 3 键**：`expiring_snapshot_path` / `page_size_mobile` /
+  `page_size_desktop`（此前模板与 `config.py` DEFAULTS 不齐）。
+- **代码注释适度收敛**：模块头演进史与长实测清单压缩，指向对应文档（详见该次提交）。
+- **拆分后 review 修正**：「.gitignore 的坑」改为现状口径（main 写 `data/` +
+  data 分支，`data/* + !data/state.json` 降级为「状态留 main」旧方案的历史坑）；
+  旗标表报表标签对齐 CONTEXT.md（平史低 = 灰、H 与 S 同归平史低、「店史低」已退役）；
+  大卡「每页张数」拆成前端翻页（一页一排，随断点）与后端取数（固定 5 张）两层语义，
+  公式唯一成文于 report-design.md、config-reference.md 改指针；
+  `state.py` 不变层清单补 `title_zh_at`；`classify.py`「五个视图」订正；
+  探针轮次总数改为就近标注（原「共 23 轮」与第 24/27~28 轮矛盾）；
+  storelow 段补回实测比例（H 71/72、N 27/28）；「CST」改「北京时间」；
+  模块树补 `__init__.py`；比价估算精度抽测（15/20 一致、5/20 差 1~2 个百分点）
+  收编进 data-sources.md。
+- **悬空 § 引用清理**：src 与 run.py 里指向旧 `DEVELOPMENT.md` 节号体系的
+  约 50 处注释引用全部改指新文档对应锚点（domain-rules / pipeline / data-model /
+  report-design / operations / data-sources / config-reference，锚点均经核实存在）；
+  run.py 的 argparse 帮助文本同步去掉节号引用、过时的「第一版」描述对齐模块头；
+  指向 `.scratch/` spec/refs 的引用保留（本地工作文档，不入库，另行处理）。
+
+---
+
 ## 2026-10-09 · 换档日两则修复 + 大卡/板块权重拆分
 
 - **「距上次史低」换档日整行消失（热门 10/10、大额折扣 9/10 的 tie 卡）**：

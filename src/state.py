@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-"""状态库（对应 docs/DEVELOPMENT.md §5；重构 spec §3.4）。
+"""状态库（三层结构与示例见 docs/data-model.md）。
 
-**重构 S4 起切两份**（2026-10-04）：
+三份滚动 JSON，随同一次保存落盘（state 先、dynamic 次、cache 后）：
 
-- ``state.json`` —— 不可重建：``seen_deal`` + ``game_meta`` + ``run_log``
-- ``cache.json`` —— 可重建（丢了重拉）：``compare_cache`` + ``low_time_cache``
-
-**重构 S6 起切三份**（2026-10-05，spec 决策 12/15）：
-
+- ``state.json`` —— 不可重建：``seen_deal`` + ``game_meta``（不变层：``appid`` /
+  ``title_zh`` / ``title_zh_at`` / ``publishers`` / ``developers`` / ``release_date`` /
+  ``unlisted`` / ``low_period`` / ``cover``）+ ``run_log``
 - ``dynamic.json`` —— 动态重要数据：``reviews`` / ``stats`` / ``fetched_at`` /
   ``detail_failed_at`` / ``detail_attempts``（按 game_id 键控）
-- ``game_meta``（state.json 内）只留**不变层**：``appid`` / ``title_zh`` /
-  ``title_zh_at`` / ``publishers`` / ``developers`` / ``release_date`` / ``unlisted``
+- ``cache.json`` —— 可重建（丢了重拉）：``compare_cache`` + ``low_time_cache`` +
+  ``heybox_miss``
 
 分层依据：「不变」= 不随时间变化或变化可忽略（appid/中文标题/厂商/发行日）；
 「动态重要」= 会变且有消费方（好评率、ITAD stats）；动态条目跟随 seen_deal
@@ -19,7 +17,7 @@
 ``Dynamic`` 的容错策略与 ``Cache`` 一致（文件缺失/损坏按空起步，可重抓自愈）；
 ``State.meta()`` 返回不变层 + 动态层的**合并视图**，读方无感；
 旧版 game_meta 里混存的动态键在 :meth:`State.load` 时自动收编（代码自迁移）。
-本模块负责状态库落盘（§6 职责边界；快照导出见 ``snapshot.py``，同为原子写）。
+本模块负责状态库落盘（快照导出见 ``snapshot.py``，同为原子写）。
 """
 
 from __future__ import annotations
@@ -301,11 +299,11 @@ class State:
         2. **用紧凑 JSON**（不缩进、无多余空格）：实测 5.09 MB → 4.15 MB（省 19%）。
            状态文件是给程序读的，格式化缩进没有收益，只增加 Actions 的 IO 与传输量。
 
-        重构 S4 起 cache.json、S6 起 dynamic.json 随同一次保存落盘
+        cache.json 与 dynamic.json 随同一次保存落盘
         （state 先、dynamic 次、cache 后）。三次独立的原子替换**做不到跨文件原子**：
         中途崩溃可能留下新旧组合。三侧都可安全收敛，不会丢数据：
         cache 缺键下一轮自然重拉；dynamic 缺条按折扣活跃度重新派生重抓；
-        state 侧 seen_deal 有幂等键，重跑重记即可。
+        state 侧 seen_deal 有幂等键，重跑重记即可（处置 runbook 见 docs/data-model.md）。
         """
         if now is not None:
             self.data["updated_at"] = now.isoformat(timespec="seconds")
@@ -340,8 +338,8 @@ class State:
     def record_seen(self, deal: dict, now: datetime) -> tuple[str, bool]:
         """写入一条折扣；返回 ``(幂等键, 是否首次见到)``。
 
-        落库前按 :data:`classify.SEEN_KEEP` 裁剪字段（§5），避免把常量字段
-        与重复的封面 URL 每天提交回仓库。
+        落库前按 :data:`classify.SEEN_KEEP` 裁剪字段（docs/data-model.md「精简落库」），
+        避免把常量字段与重复的封面 URL 每天提交回仓库。
         """
         key = classify.deal_key(deal.get("game_id"), deal.get("price_int"), deal.get("expiry"))
         entry = self.seen_deal.get(key)
@@ -356,7 +354,7 @@ class State:
         return key, False
 
     def cleanup_expired(self, now: datetime, retention_days: int) -> int:
-        """删除 expiry 已超过保留期的条目（§5 留存清理）。
+        """删除 expiry 已超过保留期的条目（docs/data-model.md「留存清理」）。
 
         「折扣期暂存」的缓存（上次史低时间，键含 expiry）随 seen_deal 同一
         保留期一起清理，不单独设 TTL。**S7 起比价缓存不参与清理**：它已换
@@ -607,7 +605,8 @@ class State:
         self.data["game_meta"][game_id] = entry
 
     # ------------------------------------------------------------------
-    # 上次史低时间（§3.6）：**折扣期暂存**（2026-09-27 起不再放 game_meta）。
+    # 上次史低时间（折扣期暂存；见 docs/pipeline.md「上一次史低时间」，
+    # 2026-09-27 起不再放 game_meta）。
     # 键 ``<game_id>|<expiry>`` —— 与比价缓存同一套「折扣期暂存」模式：
     # 每轮日常运行对「当日新增 + 即将过期」整批重取覆盖，条目过期后随
     # :meth:`cleanup_expired` 一起清掉，不永久积累。
@@ -672,7 +671,8 @@ class State:
         self._low_time_idx = None
 
     # ------------------------------------------------------------------
-    # 史低期记忆（§3.6 扩展，2026-10-09）：每个游戏一对时间戳（game_meta 永久层）
+    # 史低期记忆（2026-10-09 扩展；见 docs/pipeline.md「上一次史低时间」）：
+    # 每个游戏一对时间戳（game_meta 永久层）
     # —— ``low_period = {cur: 本次史低期开始, prev: 上一次史低期开始}``。
     # 动机：**新史低**的「距上次史低」没有数据源 —— storelow/v2 对新史低返回空
     # （这个价从没出现过），只能自己攒：新史低期首次入账时滚动更新

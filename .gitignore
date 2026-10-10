@@ -7,7 +7,7 @@ venv/
 # data/ 整体不入库（probe 产物、logs、临时状态、本地 state.json）。
 # 状态库由独立的 data 分支持有（见 .scratch/deploy/spec.md）——
 # main 不留 state.json 历史；旧写法 `data/* + !data/state.json` 只在
-# 「状态留 main」的方案里才需要（DEVELOPMENT.md §8 坑 4）。
+# 「状态留 main」的方案里才需要（docs/operations.md「.gitignore 的坑」）。
 data/
 
 output/

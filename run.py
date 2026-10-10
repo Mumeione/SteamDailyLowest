@@ -1,20 +1,18 @@
 # -*- coding: utf-8 -*-
-"""CLI 入口（对应 docs/DEVELOPMENT.md §12）。
+"""CLI 入口（运行模式与流水线见 docs/pipeline.md）。
 
-    python run.py              # 日常：抓列表 → 筛 → 出首版报表 → 取当日新增详情 → 覆盖报表
+    python run.py              # 日常：抓列表 → 筛 → 出首版报表 → 取详情 → 覆盖报表
     python run.py --baseline   # 只把当前全部折扣写入状态，不取详情、不出报表
     python run.py --audit      # 体检：无 filter 全量抓取，统计完整分布，不取详情、不出报表
-    python run.py --prefetch   # 预抓：只补详情缓存（独立预算），不出报表（.scratch/prefetch/spec.md）
-    python run.py --probe      # 抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步）
+    python run.py --prefetch   # 预抓：只补详情缓存（独立预算），不出报表
+    python run.py --probe      # 抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照
 
-两个必须遵守的结构性约定（§3.3）：
+两个必须遵守的结构性约定（完整清单见 docs/pipeline.md「设计不变量」）：
 
 1. **报表永远不等详情。** 先在缓存上渲染一版页面（缺的标「详情待补」），
    再去抓详情，抓完覆盖同一份文件。任何时刻页面都在，被打断也留下一版可看的报表。
 2. **状态先落盘。** 写完 `seen_deal` 立刻 `save()`，再进详情阶段 ——
    否则详情全部失败时那一轮的攒库会一起丢。
-
-第一版只上线「当日新增」一个视图（§1.1）：其余视图的数据照常写进状态库先攒着。
 """
 
 from __future__ import annotations
@@ -159,10 +157,10 @@ def arm_budget(client: object, deadline: float | None) -> None:
 
 def build_steam_client(cfg: dict, *,
                        timeout_key: str = "steam_timeout_seconds") -> SteamClient:
-    """Steam store 全站按**同一个预算**合并计数（§2.2 / §3.3）。
+    """Steam store 全站按**同一个预算**合并计数（预算口径见 docs/pipeline.md「请求预算」）。
 
     ``timeout_key``：超时取自哪个配置键 —— 日常用 ``steam_timeout_seconds``(15)，
-    探针用 ``probe_timeout_seconds``(6，§9 的独立短超时)。**不再各写一份构造器**
+    探针用 ``probe_timeout_seconds``（6，独立短超时，键语义见 docs/config-reference.md）。**不再各写一份构造器**
     （code-audit-2026-10-09 #17：从前两处限流器五参数逐字重复，改一处漏一处），
     默认值也统一取 ``DEFAULTS``，不在此处写第三遍字面量。
     """
@@ -198,7 +196,7 @@ def detail_targets(candidates: list[dict], state: State,
              ∪ {unlisted ∧ e.start ≠ 标记.start}       # 下次折扣重判翻案
 
     - **不建队列文件**：目标每轮从状态库现算派生；折扣结束 7 天后
-      `seen_deal` 条目被留存清理，动态条目随之删除，集合自动收缩（§5）。
+      `seen_deal` 条目被留存清理，动态条目随之删除，集合自动收缩（docs/data-model.md「留存清理」）。
     - **unlisted 冻结**（决策 17）：未入列表条目同一折扣期内不重抓、不建动态条目；
       ``start`` 变了（下次折扣）才重抓一次重判。
     - 近期失败的条目按 ``detail_retry_cooldown_days`` 冷却排除
@@ -310,7 +308,7 @@ def resolve_sweep(cfg: dict, audit: bool) -> str:
 
 
 def funnel(entries: list[dict], cfg: dict) -> dict:
-    """筛选链（§3.2）：只留本体游戏 → 排除免费 → 判史低。
+    """筛选链（docs/pipeline.md「筛选链与各步规模」）：只留本体游戏 → 排除免费 → 判史低。
 
     ⚠️ 当 `sweep_mode=low_only` 时，`type` 与 `flag` 已经由服务端过滤过了，
     所以 `type_not_game` / `not_historical_low` / `flag_price_mismatch`
@@ -354,7 +352,7 @@ def funnel(entries: list[dict], cfg: dict) -> dict:
             counts["above_max_price"] += 1
             continue
 
-        kind = classify.low_kind(entry)  # 直接用 deal.flag（§4.1）
+        kind = classify.low_kind(entry)  # 直接用 deal.flag（ITAD 全商店口径）
         if kind == "unknown":
             counts["store_low_missing"] += 1
             continue
@@ -379,7 +377,7 @@ def flag_distribution(entries: list[dict]) -> dict:
 
 
 def pick_new_today(hist_low: list[dict], tz, today, has_seen) -> tuple[list[dict], dict]:
-    """当日新增（§4.2）：主口径 timestamp，仅在缺失时才用「首次见到」兜底。"""
+    """当日新增（docs/domain-rules.md「当日新增」）：主口径 timestamp，仅在缺失时才用「首次见到」兜底。"""
     picked: list[dict] = []
     by_reason = {"timestamp": 0, "first_seen": 0, "not_new": 0}
     for entry in hist_low:
@@ -573,7 +571,7 @@ def fetch_details(client: ItadClient, state: State, targets: list[dict], cfg: di
 
 def fetch_last_low_times(client: ItadClient, state: State, candidates: list[dict],
                          cfg: dict, now: datetime) -> int:
-    """批量补「上次史低时间」（§3.6，``storelow/v2``）：当日新增 + 即将过期。
+    """批量补「上次史低时间」（``storelow/v2``，见 docs/pipeline.md「上一次史低时间」）：当日新增 + 即将过期。
 
     ⚠️ 每轮**整批重取**、不做缓存命中跳过 —— 这个字段必须反映
     ITAD 当前记录的店内史低时间：游戏今天以新史低入榜（timestamp≈今天），
@@ -760,7 +758,8 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"[4/{total_steps}] 当日新增候选：{len(candidates)} 条"
         f"（timestamp 命中 {by_reason['timestamp']}，首次见到兜底 {by_reason['first_seen']}）")
 
-    # 「即将过期」视图候选：还在折扣期内、48h 内到期的史低（§4.6）。
+    # 「即将过期」视图候选：还在折扣期内、48h 内到期的史低
+    # （口径见 docs/domain-rules.md「视图窗口」）。
     # 折扣没结束就必然还在本轮 deals 列表里，所以直接从 hist_low 筛，不必翻 seen_deal。
     upcoming_entries = [
         e for e in hist_low if classify.in_view("upcoming", e, now, cfg)
@@ -768,8 +767,9 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
     log(f"      即将过期候选（{cfg.get('upcoming_expiry_hours', DEFAULTS['upcoming_expiry_hours'])}h"
         f" 内到期）：{len(upcoming_entries)} 条")
 
-    # 状态库按完整结构写：所有史低都攒库（其余视图以后再开，§1.1）
-    # 首次见到的史低同时滚动更新「史低期记忆」—— 新史低的「距上次史低」数据源（§3.6）
+    # 状态库按完整结构写：所有史低都攒库（视图口径见 docs/domain-rules.md「视图窗口」）
+    # 首次见到的史低同时滚动更新「史低期记忆」
+    # —— 新史低的「距上次史低」数据源（docs/pipeline.md「上一次史低时间」）
     for entry in hist_low:
         _, first_time = state.record_seen(entry, now)
         if first_time:
@@ -798,7 +798,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             )
         return build
 
-    # ---- 首版报表：不等详情（§3.3）----
+    # ---- 首版报表：不等详情（docs/pipeline.md「设计不变量」）----
     first = render_pass(state, candidates, cfg, now, stats_of(0, count_backlog(hist_low, state, cfg, now)),
                         announce_merges=False, fx=fx_rates, upcoming=upcoming_entries,
                         all_entries=hist_low)
@@ -826,7 +826,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
             f"目录还差 {backlog} 条")
         clock.mark("详情")
 
-        # ---- 上次史低时间（§3.6）：批量接口，当日新增 + 即将过期每轮重取 ----
+        # ---- 上次史低时间：批量接口，当日新增 + 即将过期每轮重取（docs/pipeline.md「上一次史低时间」）----
         low_time_fetched = fetch_last_low_times(client, state, candidates + upcoming_entries, cfg, now)
         if low_time_fetched:
             state.save(now)
@@ -869,7 +869,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         clock.mark("完整渲染")
 
         # ---- 即将过期快照：给外部数据管道消费，落 data 分支 ----
-        # 放在 state.save 之后：快照是可重建的衍生品，其 IO 失败不能连累本轮攒库落盘（§12.1）
+        # 放在 state.save 之后：快照是可重建的衍生品，其 IO 失败不能连累本轮攒库落盘
         snapshot_path = resolve_path(cfg, "expiring_snapshot_path")
         snapshot_count = snapshot.write_snapshot(
             snapshot_path, final["upcoming_shown_items"], now, cfg, fx=fx_rates,
@@ -908,7 +908,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
 
 
 def run_baseline(cfg: dict) -> int:
-    """只写状态：不发详情请求、不产出报表（§4.2）。"""
+    """只写状态：不发详情请求、不产出报表（docs/pipeline.md「运行模式」）。"""
     tz = classify.zone(cfg["timezone"])
     now = datetime.now(tz)
     sweep = resolve_sweep(cfg, audit=False)
@@ -1041,7 +1041,7 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
     log("=" * 70)
 
     dropped = state.cleanup_expired(now, int(cfg["expired_retention_days"]))
-    state.save(now)  # 先落盘：详情阶段的失败不带走清理结果（§3.3 同款思路）
+    state.save(now)  # 先落盘：详情阶段的失败不带走清理结果（docs/pipeline.md「设计不变量」同款思路）
     log(f"留存清理：删除过期超过 {cfg['expired_retention_days']} 天的条目 {dropped} 条")
 
     pool = latest_entries(state)   # seen_deal 在本函数内不再变化，取一次复用（review-s8 P2）
@@ -1136,7 +1136,7 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
 def run_probe(cfg: dict, *, state: State | None = None,
               steam: SteamClient | None = None,
               log: Callable[[str], None] = log) -> int:
-    """§12 第 8 步：人工抽查 3 个游戏的「价格 / 中文名」。
+    """人工抽查 3 个游戏的「价格 / 中文名」（运行模式见 docs/pipeline.md）。
 
     从状态库选 3 个**最近出现**且已有缓存详情的游戏，实时重拉 Steam 侧
     （`appdetails` 单 appid 给 name + 国区价），与 `game_meta` / `seen_deal`
@@ -1191,7 +1191,8 @@ def run_probe(cfg: dict, *, state: State | None = None,
             mismatches += 1
             continue
 
-        # 1) 中文名（Steam 没有中文标题时会回落英文名，缓存为 None 属正常，§2.5）
+        # 1) 中文名（Steam 没有中文标题时会回落英文名，缓存为 None 属正常，
+        #    docs/data-sources.md「语言回退」）
         live_name = (info or {}).get("name")
         if not cached_title:
             name_ok = True
@@ -1236,17 +1237,17 @@ def run_probe(cfg: dict, *, state: State | None = None,
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    parser = argparse.ArgumentParser(description="Steam 史低日报（第一版：只上线「当日新增」）")
+    parser = argparse.ArgumentParser(description="Steam 史低日报（CLI 入口；运行模式见 docs/pipeline.md）")
     parser.add_argument("--baseline", action="store_true",
                         help="只把当前全部折扣写入状态，不取详情、不出报表")
     parser.add_argument("--audit", action="store_true",
-                        help="体检：无 filter 全量抓取（162 页），统计完整分布与 §4.1 交叉校验，"
+                        help="体检：无 filter 全量抓取（162 页），统计完整分布与交叉校验，"
                              "不取详情、不出报表")
     parser.add_argument("--prefetch", action="store_true",
                         help="预抓：纯 state 派生欠账（S8 起不扫描折扣列表），按 prefetch_daily_budget"
                              " 补详情缓存（只写 state、不出报表）")
     parser.add_argument("--probe", action="store_true",
-                        help="抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照（§12 第 8 步），"
+                        help="抽查：重拉 3 个游戏的 Steam 实时数据与缓存对照，"
                              "报告写 output/probe_report.txt，只读状态库")
     parser.add_argument("--config", default=None, help="配置文件路径（默认 config.json）")
     args = parser.parse_args(argv)

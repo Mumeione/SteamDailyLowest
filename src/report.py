@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""报表渲染（对应 docs/DEVELOPMENT.md §7）。
+"""报表渲染（页面形态见 docs/report-design.md）。
 
-产出 ``index.html`` + ``data.js`` + ``latest.json`` + ``static/``（§6）。
-第一版只有「当日新增」一个视图，其余视图位置预留但不可点（§1.1）。
+产出 ``index.html`` + ``about.html`` + ``data.js`` + ``latest.json``
++ ``all/<板块>_<片号>.js`` + ``static/``（模块布局见 docs/data-model.md）。
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ STATIC_DIR = TEMPLATES_DIR / "static"
 
 
 def group_specs(cfg: dict) -> list[dict]:
-    """档位顺序与标签（§3.5）—— 「高热度」在前、然后「好评达标」、「详情待补」。
+    """档位顺序与标签（docs/domain-rules.md「好评分档」）—— 「高热度」在前、然后「好评达标」、「详情待补」。
 
     标签刻意用**中性描述**而不是「优质」—— 70% 好评率是 Steam 的「多半好评」档，
     叫「优质」会让人误判。
@@ -56,7 +56,7 @@ def group_specs(cfg: dict) -> list[dict]:
 
 
 def fx_display(cfg: dict, fx: dict | None) -> dict | None:
-    """页脚要展示的汇率信息（§7.4：必须标注汇率数值与取数日期）。"""
+    """页脚要展示的汇率信息（docs/report-design.md：必须标注汇率数值与取数日期）。"""
     if not fx:
         return None
     currencies = ["USD"] + [c for c in (cfg.get("compare_countries") or [])]
@@ -172,7 +172,7 @@ def format_amount(amount_int: int | None, currency: str | None) -> str:
 
 
 def compare_rows(entry: dict) -> list[dict]:
-    """把 `entry["compare"]` 的原始数值格式化成卡片要显示的行（§7.2）。
+    """把 `entry["compare"]` 的原始数值格式化成卡片要显示的行（docs/report-design.md「行列表」）。
 
     原始数据由 `src.enrich.enrich_steam` 填：`final` 是**原币种最小单位**，
     `cny_minor` 是换算成人民币分，`diff_pct` 是相对国区的差价百分比
@@ -291,7 +291,7 @@ def build_card(entry: dict, now: datetime, labels: dict | None = None,
     days_left = None
     if expiry_dt is not None:
         days_left = classify.days_until(expiry_dt, now)
-    # §3.6 史低天数（「距上次史低」那一行）：
+    # 史低天数（「距上次史低」那一行；见 docs/pipeline.md「上一次史低时间」）：
     #   tie = 上一次 Steam 达到该价的时间（storelow/v2 批量取，存 low_time_cache）；
     #   new = 上一次史低期的开始（自有史低期记忆 game_meta.low_period.prev，
     #   2026-10-09 起）—— storelow/v2 对新史低返回空（这个价从没出现过），
@@ -401,7 +401,7 @@ FEATURED_LAYERS = {
 
 
 def featured_sort_key(card: dict) -> tuple:
-    """分层字典序排序键：新史低 → 折扣力度 → 评价数（验收 §6：单测锁定）。
+    """分层字典序排序键：新史低 → 折扣力度 → 评价数（单测锁定）。
 
     ⚠️ 2026-10-08：名字里的「featured」是历史遗留 —— 原「当日新增 · 精选」扁平组
     （``build_featured_group``）已随 data.js 首屏瘦身删除。本键保留，现服务两处：
@@ -956,7 +956,7 @@ HOME_PICKS_PAGE = 5
 #: （refs §6.2 实测 09-26→10-05：24/16/13/28/29/47/**1943**/4/2/4），上限天天填满；
 #: 平时一天只有个位数，回落到一页 5 张才是常态。
 HOME_PICKS_DEFAULT = DEFAULTS["home_picks"]
-#: 前置门槛（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
+#: 前置门槛（refs.md §10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
 RECOMMEND_MIN_RATE = DEFAULTS["recommend_min_rate"]
 RECOMMEND_MIN_COUNT = DEFAULTS["recommend_min_count"]
 #: 名气 / 间隔 的封顶值（达到即满分）
@@ -1055,7 +1055,7 @@ def recommend_score(card: dict, cfg: dict | None = None) -> float | None:
     打分项归一（refs.md §10.2 轮播版；**默认不含「间隔」** —— 见 RECOMMEND_WEIGHTS 的注释）：
 
     - 名气 ``log10(评价数+1) / log10(20 万+1)`` —— 用对数压，否则 156 万评价
-      的游戏会把其余项压成噪声（§7.1 实测：彩虹六号 35% 折扣霸榜就是这么来的）
+      的游戏会把其余项压成噪声（实测：彩虹六号 35% 折扣霸榜就是这么来的）
     - 折扣 ``折扣% / 95``
     - 口碑 ``(好评率 − 50) / 40``
     - 间隔 ``log10(距上次史低天数 + 1) / log10(367)`` —— 平史低取上次同价、

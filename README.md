@@ -28,11 +28,13 @@
 | 好评达标分组 | 好评率 ≥ **70%** 且 评价数 ≥ **100**（`min_positive_ratio` / `min_review_count`） |
 | 高热度分组 | 评价数 ≥ **10,000**（`notable_review_count`），**不看好评率**，单独折叠、默认收起 |
 | 冷门过滤 | 评价数 < **100** 的游戏不展示（拿不到详情的进「详情待补」，不丢） |
+| 未达标过滤 | 好评率 < 70% 且评价数 100~10,000 的不展示 |
 | 绝对下限 | 可选 `absolute_min_positive_ratio`，设了就按它再砍一道；不设则不加此限制 |
 | 多版本 | 同一 appid 出现多条时**只留价格最低的那条** |
 
-阈值改动后，页面上的分组标题（`好评达标` 旁的门槛文字）会自动跟着变，改 `config.json` 即可；
-**本表是手写文本，改阈值时需同步更新**。
+表中数值为**出厂默认值（可配置）**，运行值以 `config.json` 为准；各键语义见
+[docs/config-reference.md](docs/config-reference.md)，判定规则全文见
+[docs/domain-rules.md](docs/domain-rules.md)。
 
 ## 运行方式
 

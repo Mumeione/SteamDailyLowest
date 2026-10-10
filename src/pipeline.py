@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""渲染层：把状态库缓存合并成卡片 → 出报表（对应 docs/DEVELOPMENT.md §7）。
+"""渲染层：把状态库缓存合并成卡片 → 出报表（页面形态见 docs/report-design.md）。
 
 **为什么单独一层**（2026-10-09 架构检查卡片 05）：这一层原先长在 ``run.py``
 （CLI 入口）里，于是 ``tools/render_report.py``（零网络的本地预览工具）为了拿
@@ -46,7 +46,7 @@ def count_backlog(entries: list[dict], state: State, cfg: dict, now: datetime) -
 
 
 def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
-    """把详情缓存合并进条目并分档（§3.5 / §7.2）。
+    """把详情缓存合并进条目并分档（docs/domain-rules.md「好评分档」）。
 
     「详情待补」只用于**这一轮没抓到详情**的条目（抓取失败、被中断）；
     抓到但 ITAD 没有 Steam 好评率数据 → 归入「冷门 / 无数据」，不展示。
@@ -55,7 +55,8 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
     **不能只在 enrich 阶段才读**：首版渲染不跑 enrich（那时大多还没有 appid），
     漏掉这一步就会让已经有中文名的游戏在首版退化成英文名。
     「上次史低时间」同样在这里合并，但它走的是折扣期暂存
-    ``low_time_cache``（§3.6，键 ``game_id|expiry``），不属于 game_meta。
+    ``low_time_cache``（键 ``game_id|expiry``，见 docs/data-model.md「三层存储」），
+    不属于 game_meta。
     """
     merged: list[dict] = []
     for entry in entries:
@@ -68,7 +69,7 @@ def merge_details(state: State, entries: list[dict], cfg: dict) -> list[dict]:
         item["tier"], item["appid"], item["reviews"] = classify.merge_tier(meta, cfg)
         item["title_zh"] = meta.get("title_zh") if meta else None
         item["last_low_at"] = state.last_low_at(entry.get("game_id"), entry.get("expiry"))
-        # 史低期记忆（§3.6 扩展，2026-10-09）：新史低的「距上次史低」来自
+        # 史低期记忆（2026-10-09 扩展；见 docs/pipeline.md「上一次史低时间」）：新史低的「距上次史低」来自
         # game_meta.low_period.prev（上一段史低期的开始）—— storelow/v2 对
         # 新史低返回空，只有自己攒。平史低不用它（走 last_low_at，更精确）。
         item["prev_low_at"] = state.prev_low_start(entry.get("game_id"))
@@ -204,7 +205,7 @@ def render_pass(state: State, candidates: list[dict], cfg: dict, now: datetime,
 def build_stats(*, sweep: str, deals_fetched: int, hist_low_total: int, candidates: int,
                 info: dict, detail_fetched: int, detail_targets_n: int,
                 detail_backlog: int, now: datetime) -> dict:
-    """页面「概览」与 `latest.json` 的口径（§7.1）。
+    """页面「概览」与 `latest.json` 的口径（页面形态见 docs/report-design.md）。
 
     ⚠️ `new_today_raw` 才是**真实当日新增量**；`new_today_shown` 是过了好评分档
     之后实际进列表的条数。两者可能差很多（实测 105 vs 20），页面必须显示前者。

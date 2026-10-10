@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""给「进列表」的条目补展示数据：中文名 + 跨区比价（对应 §2.5 / §7.2 / §7.4）。
+"""给「进列表」的条目补展示数据：中文名 + 跨区比价（口径见 docs/data-sources.md「职责划分」）。
 
 放在独立模块是因为它同时要用到 `steam`（网络）、`fx`（汇率）、`state`（缓存）——
 让 `run.py` 只负责编排，不掺业务细节。
@@ -24,7 +24,7 @@ from .config import resolve_path
 from .httpclient import Blocked, HttpError
 from .steam import SteamClient
 
-#: 比价地区的显示名（§7.2）。区域已收敛为 ua+in（config `compare_countries`）；
+#: 比价地区的显示名（docs/report-design.md「行列表」）。区域已收敛为 ua+in（config `compare_countries`）；
 #: 未列出的 cc 回落显示地区码 —— 新增比价区时在这里补显示名
 COMPARE_LABELS = {"UA": "乌克兰区", "IN": "印度区"}
 
@@ -77,7 +77,7 @@ def enrich_steam(
     if not appids:
         return facts
 
-    # ---- 1. 中文名：逐游戏，命中缓存就不发请求（§2.5）----
+    # ---- 1. 中文名：逐游戏，命中缓存就不发请求（docs/data-sources.md「Steam 官方 API」）----
     for entry in all_entries:
         appid = entry.get("appid")
         if not appid:
@@ -101,7 +101,7 @@ def enrich_steam(
         state.set_title_zh(entry.get("game_id"), name, now)
         entry["title_zh"] = name
         facts["title_fetched"] += 1
-        # 顺带用 Steam 国区价与 ITAD 的价对一次（§11 的验收项，不额外发请求）
+        # 顺带用 Steam 国区价与 ITAD 的价对一次（交叉校验，不额外发请求）
         steam_final, itad_price = info.get("final"), entry.get("price_int")
         if steam_final is not None and itad_price:
             if abs(int(steam_final) - int(itad_price)) > 1:
@@ -222,14 +222,11 @@ def estimate_compare(state, entry: dict, countries: list[str], fx: dict | None,
                      appid: int | None = None) -> list[dict]:
     """用**区域原价永久缓存** × 国区折扣比例，估算该条目的跨区比价行。
 
-    口径（2026-10-08 用户定案，此前只在本地预览里有、生产漏了）：
-    **原价永久缓存就是拿来估算现价的**。每轮现查只覆盖「当日新增 + 即将到期」
-    两个板块 —— 每日抓取的意义是防打折**中途降价**，这两板块的比价必须真实；
-    其余板块（热门/大额折扣等历史条目）的比价行用估算：
+    口径见仓库根 CONTEXT.md「现查与估算的分工」：现查只覆盖「当日新增 + 即将到期」
+    两个板块（防打折中途降价），其余历史条目用估算——
 
         外区现价 = 外区原价缓存 × (国区现价 / 国区原价)
 
-    refs 实测：15/20 与真查完全一致、5/20 差 1~2 个百分点（各区四舍五入反算）。
     差价百分比与 ¥ 换算按当天汇率现算（:func:`assemble_rows`），不进缓存。
 
     条目缺 appid / 国区现价 / 国区原价，或该游戏没有任何区域的原价缓存时
@@ -237,7 +234,7 @@ def estimate_compare(state, entry: dict, countries: list[str], fx: dict | None,
     （调用方先查真查结果，命中就别调本函数）。
 
     ``appid``：`seen_deal` 批次的条目没有 appid（它在 game_meta 里），由调用方
-    用 ``state.meta(...)`` 解析后传入（同 graft_compare_from_cache 的教训）。
+    用 ``state.meta(...)`` 解析后传入。
     """
     appid = appid or entry.get("appid")
     base, regular = entry.get("price_int"), entry.get("regular_int")

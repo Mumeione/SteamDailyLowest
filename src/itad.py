@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ITAD 客户端（对应 docs/DEVELOPMENT.md §2.1 / §2.2 / §10）。
+"""ITAD 客户端（端点行为见 docs/data-sources.md；错误处理见 docs/operations.md）。
 
 只负责网络与解析，不做判定。**限流与「五种响应分开处理」的策略在
 :mod:`src.httpclient` 里**（与 Steam 侧共用同一份实现，避免两处漂移）。
@@ -222,7 +222,8 @@ class ItadClient(BaseHttpClient):
     def fetch_info(self, game_id: str) -> dict | None:
         """``GET /games/info/v2`` —— 一游戏一请求，返回 appid + Steam 好评率 + 厂商 / stats。
 
-        好评率**只取 ``source == "Steam"`` 那条**，并带上 ``count``（§2.1）。
+        好评率**只取 ``source == "Steam"`` 那条**，并带上 ``count``
+        （docs/data-sources.md「`GET /games/info/v2` 细节」）。
         请求失败/数据不可用时返回 None，由调用方标记「详情待补」。
 
         **2026-09-30 起顺带取 ``publishers`` / ``developers`` / ``stats``**（快照 v3 需要）：
@@ -263,7 +264,8 @@ class ItadClient(BaseHttpClient):
 
     def fetch_storelow(self, country: str, game_ids: list[str],
                        shops: int = STEAM_SHOP_ID, batch_size: int = 200) -> dict[str, str]:
-        """``POST /games/storelow/v2`` —— 批量取 Steam 店内史低的记录时间（§3.6）。
+        """``POST /games/storelow/v2`` —— 批量取 Steam 店内史低的记录时间
+        （docs/pipeline.md「上一次史低时间」）。
 
         body 为 uuid 数组（实测 200 个/次），返回 ``{game_id: timestamp}``。
         响应结构（2026-09-23 实测）：``[{"id", "lows": [{"shop", "price", "cut",

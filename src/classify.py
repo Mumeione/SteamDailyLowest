@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""判定规则（对应 docs/DEVELOPMENT.md §4 / §3.2 / §3.5 / §4.6）。
+"""判定规则（口径与规则细节见 docs/domain-rules.md）。
 
-本模块是**纯函数**、无 IO，便于对判定规则写单元测试（§6 职责边界）。
+本模块是**纯函数**、无 IO，便于对判定规则写单元测试（模块布局见 docs/data-model.md）。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ try:  # Windows 上若无 IANA 时区库则回落到固定 +08:00（Asia/Shangha
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
-#: `deal.flag` 取值 → 报表标签（§4.1）
+#: `deal.flag` 取值 → 报表标签（docs/domain-rules.md「史低分类」）
 FLAG_LABELS = {"N": "新史低", "H": "平史低", "S": "店史低"}
 FLAG_ORDER = ("N", "H", "S")
 
@@ -32,11 +32,12 @@ FLAG_ORDER = ("N", "H", "S")
 #: ITAD `flag` 是两套东西，别混用：
 #: - `new` = Steam 首次到达该价
 #: - `tie` = Steam 以前到过该价（**含 ITAD 的 H 与 S**）
-#: - `unknown` = storeLow 缺失，与 §4.1 的 `low_kind` 同义，如实标记
+#: - `unknown` = storeLow 缺失，与 `low_kind` 同义，如实标记
 #:
 #: 为什么要多这一层：`deal.flag` 是**全商店口径**，存在「Steam 首次到某价、
 #: 别家更早更便宜过」的条目被 ITAD 标成 H/S，而对只看 Steam 的买家那是新史低。
-#: 判定依据来自 `storelow/v2` 的「Steam 店内史低被记录的时间」（§3.6）——
+#: 判定依据来自 `storelow/v2` 的「Steam 店内史低被记录的时间」
+#: （docs/pipeline.md「上一次史低时间」）——
 #: 若它与本次折扣开始时刻重合，说明这个 Steam 史低就是这次创下的。
 #: 该接口批量且每天已在跑，**不新增任何请求**。
 STEAM_LOW_NEW = "new"
@@ -45,7 +46,8 @@ STEAM_LOW_UNKNOWN = "unknown"
 
 #: 判定窗口（小时）。24 小时是给 ITAD 的记录延迟留余量 —— 实测 51 条里
 #: `last_low_at` 与 `start` 的间隔**非 0 即 ≥37 天**，取 1h~72h 结果完全一致，
-#: 这里不存在调参问题（2026-09-24 一次性离线探针实测，结论沉淀于 DEVELOPMENT §4.1）。
+#: 这里不存在调参问题（2026-09-24 一次性离线探针实测，结论沉淀于
+#: docs/domain-rules.md「史低分类」）。
 #: 批 F5：定为**常量**、不再暴露 `window_hours` 参数 —— 24h 容错已经很宽，
 #: 再放大会把「其实不是本次创下」的旧纪录误判成新史低。
 STEAM_LOW_WINDOW_HOURS = 24
@@ -56,7 +58,7 @@ STEAM_LOW_LABELS = {
     STEAM_LOW_UNKNOWN: "史低待确认",
 }
 
-#: 好评分档（§3.5）
+#: 好评分档（docs/domain-rules.md「好评分档」）
 TIER_QUALITY = "quality"        # 优质：好评率 ≥70% 且评价数 ≥100
 TIER_NOTABLE = "notable"        # 热门·褒贬不一：评价数 ≥10000
 TIER_COLD = "cold"              # 冷门 / 无数据：评价数 <100 或压根没有好评率，不展示
@@ -136,7 +138,7 @@ def to_int(amount_int, amount) -> int | None:
 
 
 def normalize_item(item: dict) -> dict:
-    """把 ``/deals/v2`` 的一条 item 归一化成状态库里用的扁平结构（§5）。"""
+    """把 ``/deals/v2`` 的一条 item 归一化成状态库里用的扁平结构（docs/data-model.md）。"""
     deal = item.get("deal") or {}
     price = deal.get("price") or {}
     regular = deal.get("regular") or {}
@@ -171,11 +173,11 @@ def normalize_item(item: dict) -> dict:
 
 
 def deal_key(game_id: str, price_int: int | None, expiry: str | None) -> str:
-    """幂等键：``<itad_uuid>|<price_int>|<expiry>``（§5）。"""
+    """幂等键：``<itad_uuid>|<price_int>|<expiry>``（docs/data-model.md）。"""
     return f"{game_id}|{price_int}|{expiry}"
 
 
-#: 写进状态库时保留的字段（§5 的「精简落库」）。
+#: 写进状态库时保留的字段（docs/data-model.md「精简落库」）。
 #:
 #: 实测原始 22 个字段共 5.09 MB，其中 `banner`(483KB) / `boxart`(467KB) /
 #: `slug`(111KB) 最占地方，而
@@ -184,7 +186,7 @@ def deal_key(game_id: str, price_int: int | None, expiry: str | None) -> str:
 #: 这几个都是「存了也不会变」的常量，落库没有意义。
 #: `itad_url` 一并砍掉（report-ui spec R2，用户实测 302 直跳 Steam，信息冗余；
 #: 旧 state.json 里已落的该字段留存不迁移，下次该条目更新时自然消失）。
-#: 保留的字段覆盖：幂等键 / 报表卡片 / §4.6 全部五个视图窗口 / 留存清理。
+#: 保留的字段覆盖：幂等键 / 报表卡片 / 全部视图窗口 / 留存清理。
 SEEN_KEEP = (
     "game_id",
     "title",
@@ -206,7 +208,7 @@ SEEN_KEEP = (
 
 
 def slim_deal(deal: dict) -> dict:
-    """按 :data:`SEEN_KEEP` 裁剪一条折扣，用于落库（§5）。
+    """按 :data:`SEEN_KEEP` 裁剪一条折扣，用于落库（docs/data-model.md）。
 
     只影响**写盘**的内容；报表渲染用的是当前这一轮的完整条目，不受影响。
     """
@@ -214,10 +216,11 @@ def slim_deal(deal: dict) -> dict:
 
 
 def low_kind(deal: dict) -> str | None:
-    """史低分类，直接套用 ``deal.flag``（§4.1）。
+    """史低分类，直接套用 ``deal.flag``（docs/domain-rules.md「史低分类」）。
 
     返回 ``"N"`` / ``"H"`` / ``"S"``；不是史低返回 None；
-    ``storeLow`` 缺失时返回 ``"unknown"``（如实记录，不静默当成非史低，§10）。
+    ``storeLow`` 缺失时返回 ``"unknown"``（如实记录，不静默当成非史低；
+    见 docs/operations.md「错误处理」）。
     """
     if deal.get("store_low_int") is None:
         return STEAM_LOW_UNKNOWN
@@ -259,7 +262,7 @@ def steam_low_label(cls: str | None) -> str:
 
 
 def flag_price_mismatch(deal: dict) -> bool:
-    """交叉校验（§4.1）：``flag is None`` 却 ``price <= storeLow`` → 异常。"""
+    """交叉校验（docs/domain-rules.md「史低分类」）：``flag is None`` 却 ``price <= storeLow`` → 异常。"""
     if deal.get("flag") is not None:
         return False
     price, low = deal.get("price_int"), deal.get("store_low_int")
@@ -267,13 +270,14 @@ def flag_price_mismatch(deal: dict) -> bool:
 
 
 def timestamp_is_today(deal: dict, today, tz: tzinfo) -> bool:
-    """主口径（§4.2）：``deal.timestamp`` 的日期 == 运行当天（Asia/Shanghai）。"""
+    """主口径（docs/domain-rules.md「当日新增」）：``deal.timestamp`` 的日期 == 运行当天（Asia/Shanghai）。"""
     start = parse_time(deal.get("start"), tz)
     return start is not None and start.astimezone(tz).date() == today
 
 
 def timestamp_missing(deal: dict, tz: tzinfo) -> bool:
-    """timestamp 缺失/不可解析 —— 只有这种情况才允许走「首次见到」兜底（§4.2）。"""
+    """timestamp 缺失/不可解析 —— 只有这种情况才允许走「首次见到」兜底
+    （docs/domain-rules.md「当日新增」）。"""
     return parse_time(deal.get("start"), tz) is None
 
 
@@ -285,10 +289,10 @@ def cheaper(price_a: int | None, price_b: int | None) -> bool:
 
 
 def dedupe_by_appid(entries: list[dict]) -> tuple[list[dict], list[dict]]:
-    """同一 appid 只保留价格最低的那条（§4.4）。
+    """同一 appid 只保留价格最低的那条（docs/domain-rules.md「多版本去重」）。
 
     返回 ``(保留的条目, 被合并的记录)``；被合并的记录按 appid 汇总，
-    便于事后核对是否误合并（§4.4）。没有 appid 的条目无法合并，原样保留。
+    便于事后核对是否误合并。没有 appid 的条目无法合并，原样保留。
     """
     kept: list[dict] = []
     index_by_appid: dict[int, int] = {}
@@ -329,9 +333,9 @@ def dedupe_by_appid(entries: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def tier_of(reviews: dict | None, cfg: dict) -> str:
-    """好评分档（§3.5）。``reviews`` = ``{"score": 0-100, "count": n}`` 或 None。
+    """好评分档（docs/domain-rules.md「好评分档」）。``reviews`` = ``{"score": 0-100, "count": n}`` 或 None。
 
-    注意：``reviews is None`` 是「无数据」（§3.5 归入冷门，不展示），
+    注意：``reviews is None`` 是「无数据」（归入冷门不展示，见同文档），
     与「详情待补」（这一轮没抓到详情）是两件不同的事 ——
     后者由调用方根据抓取状态标记为 :data:`TIER_PENDING`。
     """
@@ -357,12 +361,13 @@ def tier_of(reviews: dict | None, cfg: dict) -> str:
 
 
 def is_shown(tier: str) -> bool:
-    """第一版只展示「优质」「热门·褒贬不一」两档，外加「详情待补」（§3.5 / §7.2）。"""
+    """第一版只展示「优质」「热门·褒贬不一」两档，外加「详情待补」
+    （docs/domain-rules.md「好评分档」/ docs/report-design.md）。"""
     return tier in (TIER_QUALITY, TIER_NOTABLE, TIER_PENDING)
 
 
 def is_new_today(entry: dict, now: datetime) -> bool:
-    """条目级「当日新增」判定（双口径的原子版，§4.2）。
+    """条目级「当日新增」判定（双口径的原子版，docs/domain-rules.md「当日新增」）。
 
     折扣开始日是今天，或**首次见到**是今天 —— 与 :func:`timestamp_is_today` +
     ``first_seen_at`` 兜底那两条主口径一致，供拿不到本轮 candidates 的调用方
@@ -402,7 +407,7 @@ def merge_tier(meta: dict | None, cfg: dict) -> tuple[str, int | None, dict | No
 
 
 def is_shown_meta(meta: dict | None, cfg: dict) -> bool:
-    """``game_meta`` 条目**按已知评价数据**是否够格进列表（§3.5）。
+    """``game_meta`` 条目**按已知评价数据**是否够格进列表（docs/domain-rules.md「好评分档」）。
 
     与 :func:`merge_tier` 的区别是**不看抓取状态**：这里只回答「按已抓到的评价数
     它够不够格」，:data:`TIER_PENDING`（这一轮没抓到）不是档位而是抓取状态，
@@ -416,14 +421,14 @@ def is_shown_meta(meta: dict | None, cfg: dict) -> bool:
 
 
 # ----------------------------------------------------------------------
-# 视图窗口（§4.6）—— 第一版只上线「当日新增」，其余已按定义实现备用
+# 视图窗口（口径见 docs/domain-rules.md「视图窗口」）——
 # ----------------------------------------------------------------------
 def week_window(now: datetime, days: int = DEFAULTS["week_window_days"]) -> tuple[datetime, datetime]:
-    """「本周」窗口：**本周一 00:00:00 ~ 下周日 23:59:59**（§4.6）。
+    """「本周」窗口：**本周一 00:00:00 ~ 下周日 23:59:59**（docs/domain-rules.md「视图窗口」）。
 
     ⚠️ 这里**必须按自然周对齐**，不能写成「now 往前推 14 天」的滚动窗口 ——
-    滚动窗口在周中运行时会给出与定义不同的结果，§11 那条
-    「视图筛选结果与 §4.6 的定义逐条对得上」就会不过。
+    滚动窗口在周中运行时会给出与「本周」定义不同的结果，
+    视图数据就对不上口径文档了。
     """
     local = now.astimezone(now.tzinfo)
     monday = (local - timedelta(days=local.weekday())).replace(
@@ -433,7 +438,7 @@ def week_window(now: datetime, days: int = DEFAULTS["week_window_days"]) -> tupl
 
 
 def in_week(start: str | None, now: datetime, days: int = DEFAULTS["week_window_days"]) -> bool:
-    """折扣**开始时间**是否落在「本周(14天)」窗口内（§4.6）。"""
+    """折扣**开始时间**是否落在「本周(14天)」窗口内（docs/domain-rules.md「视图窗口」）。"""
     dt = parse_time(start, now.tzinfo)
     if dt is None:
         return False
@@ -557,7 +562,7 @@ def entry_needs_detail(entry: dict, state, cfg: dict, now: datetime,
 
 
 # ----------------------------------------------------------------------
-# 史低期记忆（§3.6 扩展，2026-10-09）——
+# 史低期记忆（2026-10-09 扩展；见 docs/pipeline.md「上一次史低时间」）——
 # **「时刻 t 是否开启一段史低期」的判定唯一出处**（架构检查卡片 02）。
 #
 # 两条时间线各自喂进来，但判定与合并规则只有这一份：
@@ -638,10 +643,10 @@ def low_period_pair(starts: list[str], cur: str | None = None,
 
 
 def in_view(view: str, deal: dict, now: datetime, cfg: dict) -> bool:
-    """判断一条史低是否落在某个视图里（§4.6 的唯一入口）。
+    """判断一条史低是否落在某个视图里（视图判定的唯一入口，口径见 docs/domain-rules.md「视图窗口」）。
 
     **所有视图都先过「史低」这道门** —— 非史低一律不进任何视图。
-    阈值一律从 `cfg` 取，不再在函数签名里写死默认值（那会让 §4.6 与代码再次漂移）。
+    阈值一律从 `cfg` 取，不再在函数签名里写死默认值（那会让口径文档与代码再次漂移）。
     """
     if deal.get("flag") is None and deal.get("low_kind") is None:
         return False

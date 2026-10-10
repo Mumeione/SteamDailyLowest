@@ -7,6 +7,7 @@ AGENTS.md
 - 结果要求使用**中文**输出，操作执行过程的输出也需要使用**中文**说明正在干什么
 - 所有时间一律用北京时间（UTC+8）表述，不要直接用 UTC；引用 Actions 日志等系统的 UTC 原始时间时，先换算成北京时间再输出（必要时可括注原始 UTC）
 - 工作流 cron 字段必须是 UTC（GitHub 不认 timezone 字段），但注释里同步标注北京时间
+- 不要私自提交或推送，等确认无误后再提交
 
 ## 项目
 
@@ -21,7 +22,9 @@ AGENTS.md
   （中文名、好评率、评价数、厂商、价格，单批 ≤250）；ITAD `info/v2` 仅作降级。
 
 领域口径（状态定义、好感分档、判定与展示规则）见仓库根 `CONTEXT.md`；  
-当前重构方案与实施进度见 `.scratch/refactor-2026q4/spec.md`。
+设计文档按主题拆分在 `docs/`（入口 `docs/DEVELOPMENT.md`，含**文档维护规则**——
+数值默认值唯一出处是 `config.py`/`config.example.json`，API 实测唯一出处是
+`docs/data-sources.md`，禁止行号引用）；里程碑见 `docs/CHANGELOG.md`。
 
 ## 环境约定
 
@@ -43,5 +46,6 @@ Spec 与 issue 以 markdown 文件存放在 `.scratch/<feature-slug>/` 下。
 
 ### Domain docs
 
-单 context 布局：仓库根目录 `CONTEXT.md` + `docs/adr/`。  
+领域词汇唯一出处：仓库根 `CONTEXT.md`（本仓库未启用 `docs/adr/` 目录，
+决策沿革记录在 `docs/CHANGELOG.md`）。  
 见 `docs/agents/domain.md`。

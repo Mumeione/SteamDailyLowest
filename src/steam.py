@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Steam 官方客户端（对应 docs/DEVELOPMENT.md §2.2 / §2.5）。
+"""Steam 官方客户端（``appdetails`` 各区价格；端点行为见 docs/data-sources.md）。
 
 职责：**跨区价格**（`ua`/`in`）。不消耗 ITAD 配额。limit 与「五种响应」策略在
 :mod:`src.httpclient`（`store.steampowered.com` 全站按同一个预算合并计数）。
@@ -29,11 +29,11 @@
 请求的 appid 原样返回、且与请求同序。而 `name` 只有 `basic` 能给 → **重定向不可回避**，
 所以 :meth:`SteamClient.info` 取「响应里的唯一值」而不是按 key 查。
 `basic` 响应里的 `data.steam_appid` 等于请求的 appid（`price_overview` 下不带该字段），
-可用来确认「仍是同一个游戏」。详见 `docs/DEVELOPMENT.md` §2.2 与
+可用来确认「仍是同一个游戏」。详见 `docs/data-sources.md` 的「appid 重定向」与
 `.scratch/appid-redirect/fix-round1.md`。
 
 `name` 是否中文只取决于 `l=schinese` 与「Steam 上这个游戏**有没有**中文标题」——
-没有中文标题的游戏返回英文名，属正常，不能当失败（§11「Steam 没中文名的回落英文名」）。
+没有中文标题的游戏返回英文名，属正常，不能当失败（docs/data-sources.md「语言回退」）。
 """
 
 from __future__ import annotations
@@ -114,7 +114,8 @@ class SteamClient(BaseHttpClient):
         for key, entry in data.items():
             if not isinstance(entry, dict):
                 continue
-            # `success: false` → appid 不存在 / 该区不售（**不是限流**，§10）
+            # `success: false` → appid 不存在 / 该区不售（**不是限流**；
+            # 响应分类口径见 docs/operations.md「错误处理」）
             if entry.get("success") is not True:
                 continue
             payload = entry.get("data")

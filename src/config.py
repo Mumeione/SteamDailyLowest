@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""配置读取（对应 docs/DEVELOPMENT.md §9）。
+"""配置读取（键语义见 docs/config-reference.md）。
 
 key 优先取环境变量 ``ITAD_API_KEY``（GitHub Actions 用），否则取 ``config.json``。
 """
@@ -106,7 +106,7 @@ DEFAULTS: dict = {
     "list_batch": 30,
     "list_auto_max": 300,
     "bad_positive_ratio": 0.4,
-    # 精选/大卡打分的「前置门槛」（§10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
+    # 精选/大卡打分的「前置门槛」（refs.md §10.2）：有评价数 · 好评率 ≥ min_rate · 评价数 ≥ min_count
     "recommend_min_rate": 70,
     "recommend_min_count": 100,
     # 两张权重表**不在配置里定义默认值**：默认档是 report.py 的 PICKS_WEIGHTS /

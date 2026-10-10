@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""汇率（对应 docs/DEVELOPMENT.md §2.3）。
+"""汇率（源选型见 docs/data-sources.md「汇率源」）。
 
 UA→UAH、IN→INR、CN→CNY 三个币种不统一，算「相对国区的差价百分比」必须先换汇。
-**每天只取一次并缓存**；页面上必须标注汇率数值与取数日期（§7.4）。
+**每天只取一次并缓存**；页面上必须标注汇率数值与取数日期（docs/report-design.md）。
 
 汇率源用 `open.er-api.com`（免费、无需 key）。实测两个候选：
 
@@ -13,7 +13,7 @@ open.er-api   ✅ 有       返回 `time_last_update_utc`，可直接当取数�
 frankfurter   ❌ 没有     基于 ECB 的币种表，**不含 UAH**，本项目不能用
 ============  ==========  ==========================================
 
-只负责网络与解析，不做判定（§6 职责边界）。
+只负责网络与解析，不做判定（模块布局见 docs/data-model.md）。
 """
 
 from __future__ import annotations

@@ -93,8 +93,8 @@ def build_snapshot(entries: list[dict], now: datetime, cfg: dict,
     for entry in entries:
         item = {key: entry.get(key) for key in KEEP}
         # 契约三值域（new/tie/unknown）：classify 返回 None 的只有「storeLow 在而
-        # flag 缺失/非法」的异常形态 —— 按既定口径（§10 如实标记）收敛为 unknown，
-        # 快照里不出现 null（code-review 2026-09-30 抓到的取值域漏洞）。
+        # flag 缺失/非法」的异常形态 —— 按既定口径（如实标记，见 docs/operations.md
+        # 「错误处理」）收敛为 unknown，快照里不出现 null（code-review 2026-09-30 抓到的取值域漏洞）。
         item["low_class"] = classify.steam_low_class(entry, tz) or "unknown"
         # 两个厂商列表统一成 []（缺键 / null 都收敛），消费方不用判 null；
         # ``stats`` 保持原样（null = 还没回填到，是真信息，不能假装成 {}）
