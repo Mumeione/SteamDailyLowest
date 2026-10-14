@@ -201,9 +201,10 @@ check("筛选面板挂在 .filterbar 里（E1 定位锚点）",
   doc.querySelector(".filterbar > #drawer") === drawer,
   drawer.parentNode.className);
 // 2026-10-10 起 date chip 恒显示当前生效窗口（见 renderActiveChips），不再是
-// 「差值才出现」——「已选」断言只针对**其他维度**（date 的标签是页面隐式状态）
+// 「差值才出现」——「已选」断言只针对**其他维度**（date 的标签是页面隐式状态）。
+// 2026-10-14：日期档「全部」改名「不限」并挪到最左 ⇒ 过滤词的 date 标签用「不限」。
 const nonDateChips = () => $$("#active-chips .a-chip")
-  .filter((c) => !/近|全部|今天|昨天|前天/.test(c.textContent));
+  .filter((c) => !/近|不限|今天|昨天|前天/.test(c.textContent));
 check("未选条件时：按钮不带 is-on、没有非 date 的已选标签",
   !doc.getElementById("filter-open").classList.contains("is-on") &&
   nonDateChips().length === 0);
@@ -246,7 +247,7 @@ check("再加回来 → 小标签与角标都回来",
 doc.getElementById("filter-reset").click();
 const dateOpts = $$('#drawer .chip.opt[data-group="date"]');
 const offDates = dateOpts.filter(function (o) { return o.disabled; });
-// 档位数量同样不写死：与 payload 的 agg 维度对拍（今天/昨天/前天/近 N 天/全部）
+// 档位数量同样不写死：与 payload 的 agg 维度对拍（不限/今天/昨天/前天/近 N 天）
 check("日期档位 == payload 的 agg 维度",
   !!aggDim.date && drawerVals("date").join(",") === aggDim.date.join(","),
   drawerVals("date").join("/") + " · agg=" + (aggDim.date || []).join("/"));
@@ -261,7 +262,7 @@ Object.keys(shards).forEach(function (k) {
   });
 });
 const expectDead = function (v) {
-  if (v === "all") return false;              // 「全部」永不留空，恒可选（filter_specs 口径）
+  if (v === "all") return false;              // 「不限」永不留空，恒可选（filter_specs 口径）
   if (v.indexOf("d") === 0) {
     const n = Number(v.slice(1));
     return !Array.from(poolAgos).some(function (a) { return a <= n; });
@@ -316,7 +317,7 @@ check("热门游戏板块：折扣区间仍可选", !optBy("cut", "50").disabled
 // 带着失效条件进板块要自动复位：先在「全部折扣」选「仅新史低」，再进「新史低」
 navTo(4);                                    // 全部折扣（这里它有效）
 optBy("only_new", "new").click();
-// 角标 = 1：仅新史低。2026-10-10 起日期默认就是「全部」，切板块不再产生 date 差值。
+// 角标 = 1：仅新史低。2026-10-10 起日期默认就是「不限」，切板块不再产生 date 差值。
 check("全部折扣里能选仅新史低（角标 1）",
   !fBadge.hidden && fBadge.textContent === "1", fBadge.textContent);
 navTo(0);                                    // 进新史低 → 该条件失效，应自动复位
@@ -934,7 +935,7 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
     !!after, after ? "保留（gid=" + gid.slice(0, 8) + "…）" : "重建后展开丢失");
   // 手动展开另一行 → 改筛选触发重渲染（板块小可能一次就加载完、没有下一页按钮，
   // 但「点筛选选项」必然走 applyFilters → refreshList → fillRows 重建 ——
-  // 同一条抹状态的路径；选「全部」只会扩大结果集，不会把展开行本身筛掉）。
+  // 同一条抹状态的路径；选「不限」只会扩大结果集，不会把展开行本身筛掉）。
   const rows = Array.from(d.querySelectorAll("#rows .row"));
   const other = rows.find(function (r) { return r.getAttribute("data-gid") !== gid; });
   const allDate = d.querySelector('#drawer .chip.opt[data-group="date"][data-value="all"]');
@@ -948,8 +949,8 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
   }
 })();
 
-// ---- date 筛选：默认「全部」（性质全量），限制只来自用户手动选择（2026-10-10）----
-// 默认日期已从「近 N 天」改为「全部」（docs/CHANGELOG.md 当日条目）—— 板块页与
+// ---- date 筛选：默认「不限」（性质全量），限制只来自用户手动选择（2026-10-10）----
+// 默认日期已从「近 N 天」改为「不限」（docs/CHANGELOG.md 当日条目）—— 板块页与
 // 「全部折扣」页默认都无 date 标签；用户选了限制才出现标签，✕ 取消限制回默认。
 (function () {
   const win = buildDom().window;
@@ -958,11 +959,11 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
     .map((c) => c.textContent.replace("✕", "").trim());
   const navItems = Array.from(d.querySelectorAll("#nav .nav-item"));
   const dateOpts = () => Array.from(d.querySelectorAll('#drawer .chip.opt[data-group="date"]'));
-  // ① 板块页默认「全部」→ 无 date 标签、列表 = 性质全量
+  // ① 板块页默认「不限」→ 无 date 标签、列表 = 性质全量
   navItems[0].click();
   const countAll = parseInt(d.getElementById("lv-count").textContent, 10);
-  check("板块页默认「全部」→ 无 date 标签",
-    !chips().some((t) => /近|全部|今天|昨天|前天/.test(t)),
+  check("板块页默认「不限」→ 无 date 标签",
+    !chips().some((t) => /近|不限|今天|昨天|前天/.test(t)),
     chips().join("|") || "(无标签)");
   // ② 手动选「近 N 天」→ 标签出现 + 列表真的收窄
   const nearOpt = dateOpts().find((o) => /^d/.test(o.getAttribute("data-value")) && !o.disabled);
@@ -972,18 +973,18 @@ check("一次性气泡已删除（不再渲染 .hint-bubble）", !doc.querySelec
     chips().join("|") || "(无标签)");
   check("「近 N 天」真的收窄列表（< 全量）", countNear < countAll,
     countAll + " → " + countNear);
-  // ③ 标签 ✕ = 恢复默认 → **一步清掉**（用户 2026-10-10 定案：不要「先变全部
-  //    再点一次」的两步；默认日期已是「全部」，恢复后标签消失、列表回全量）
+  // ③ 标签 ✕ = 恢复默认 → **一步清掉**（用户 2026-10-10 定案：不要「先变不限
+  //    再点一次」的两步；默认日期已是「不限」，恢复后标签消失、列表回全量）
   d.querySelector("#active-chips .a-chip button").click();
   check("「近 N 天」的 ✕ → 一步恢复默认，标签消失",
-    !chips().some((t) => /近|全部/.test(t)), chips().join("|") || "(无标签)");
+    !chips().some((t) => /近|不限/.test(t)), chips().join("|") || "(无标签)");
   check("清掉限制后列表回全量",
     parseInt(d.getElementById("lv-count").textContent, 10) === countAll,
     d.getElementById("lv-count").textContent);
   // ④ 「全部折扣」页与板块页同语义：默认无标签（不再是「自动放开」的特殊态）
   navItems.find((b) => b.getAttribute("data-section") === "__all__").click();
-  check("全部折扣页默认「全部」→ 无 date 标签",
-    !chips().some((t) => /近|全部/.test(t)), chips().join("|") || "(无标签)");
+  check("全部折扣页默认「不限」→ 无 date 标签",
+    !chips().some((t) => /近|不限/.test(t)), chips().join("|") || "(无标签)");
   // ⑤ 切板块保留用户手动选的限制
   dateOpts().find((o) => /^d/.test(o.getAttribute("data-value")) && !o.disabled).click();
   navItems[0].click();

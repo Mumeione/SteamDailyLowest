@@ -1,0 +1,16 @@
+{#- 站点统计脚本的**唯一来源**（51.la 网站统计 V6，**异步安装**）—— index / about
+    两页各 import 一份；改统计 ID 只改这个文件（同 _brand.j2 的 SSOT 写法）。
+
+    选 51.la 的理由、以及「只统计、不挂可视化徽章、界面零改动」的口径见
+    docs/report-design.md「页面结构」与 docs/CHANGELOG.md（2026-10-14 条目）。
+    这里只留实现要点：
+    ⚠️ 内层 `sdk.51.la` 以 `async` 动态插入 ⇒ **不阻塞渲染**；放 `<head>` 越早记录越准。
+    ⚠️ 离线双击（file://）时该脚本静默失败、不影响页面其余部分（它不参与首屏必需资源）。
+    ⚠️ id / ck 是 51.la 下发给本站的**公开标识**（本就出现在 HTML 里，不是密钥），可入库
+       （API key「不得写入入库文件」那条约束只针对 ITAD 密钥）。 #}
+
+{% macro analytics_51la() -%}
+<script>
+!function(p){"use strict";!function(t){var s=window,e=document,i=p,c="".concat("https:"===e.location.protocol?"https://":"http://","sdk.51.la/js-sdk-pro.min.js"),n=e.createElement("script"),r=e.getElementsByTagName("script")[0];n.type="text/javascript",n.setAttribute("charset","UTF-8"),n.async=!0,n.src=c,n.id="LA_COLLECT",i.d=n;var o=function(){s.LA.ids.push(i)};s.LA?s.LA.ids&&o():(s.LA=p,s.LA.ids=[],o()),r.parentNode.insertBefore(n,r)}()}({id:"3RVXYkpDrncwpkpu",ck:"3RVXYkpDrncwpkpu"});
+</script>
+{%- endmacro %}

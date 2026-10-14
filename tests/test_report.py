@@ -653,7 +653,7 @@ class AllShardsTest(unittest.TestCase):
                       "新史低板块分片丢了出窗口的卡（窗口被烘焙进分片）")
         self.assertIn(9, [c["appid"] for c in orders["big_cut"]],
                       "大额折扣板块分片丢了出窗口的卡")
-        # agg 表随之覆盖全量：「全部」档 = 性质全量 members 数；「近 N 天」档
+        # agg 表随之覆盖全量：「不限」档 = 性质全量 members 数；「近 N 天」档
         # 只数窗口内（start 未知 ∉ 任何具体日期档），两者必须拉开
         members = orders["new_low"]
         agg = report.section_agg(members, CFG, "new_low")["counts"]
@@ -661,7 +661,7 @@ class AllShardsTest(unittest.TestCase):
                      if c.get("start_days_ago") is not None
                      and c["start_days_ago"] <= days]
         self.assertEqual(agg["all|all|all|all"], len(members),
-                         "agg「全部」档应等于性质全量 members 数")
+                         "agg「不限」档应等于性质全量 members 数")
         self.assertEqual(agg[f"d{days}|all|all|all"], len(in_window),
                          "agg「近 N 天」档应只含窗口内成员")
         self.assertGreater(agg["all|all|all|all"], agg[f"d{days}|all|all|all"])
@@ -1124,7 +1124,7 @@ class CleanTitleZhTest(unittest.TestCase):
 
 class SectionKeysTest(unittest.TestCase):
     """S9：单卡板块归属（写进 all.js 的 sections 字段，前端按它筛完整列表）。
-    注意它**不判日期窗口** —— 窗口交给调用方，这样前端「全部」胶囊能看全量。"""
+    注意它**不判日期窗口** —— 窗口交给调用方，这样前端「不限」胶囊能看全量。"""
 
     CFG = HomeSectionsTest.CFG
 
@@ -1178,11 +1178,18 @@ class FilterSpecsTest(unittest.TestCase):
         self.assertNotIn("70", values)
 
     def test_date_default_is_all(self):
-        """日期默认 = **「全部」**（2026-10-10 用户定案）：板块不再默认收窄到
+        """日期默认 = **「不限」**（值 `all`，2026-10-10 用户定案）：板块不再默认收窄到
         「近 N 天」，用户自己选了限制（或清空条件）才切。「近 N 天」仍是可选档
         （选项值跟 home_new_low_days 走，见 test_filter_dim_values_matches_filter_specs），
         只是不再当默认。"""
         self.assertEqual(report.filter_defaults(self.CFG)["date"], "all")
+
+    def test_date_options_unlimited_first(self):
+        """日期选项首项 = **「不限」**（用户 2026-10-14：挪到最左，与其余四维的
+        「不限」对齐）—— 顺序即契约：agg 日期位图按选项下标取位。"""
+        opts = {g["key"]: g for g in report.filter_specs(self.CFG)}["date"]["options"]
+        self.assertEqual(opts[0], {"value": "all", "label": "不限", "disabled": False})
+        self.assertEqual([o["value"] for o in opts], ["all", "0", "1", "2", "d7"])
 
     def test_rendered_html_has_drawer(self):
         html = (_render([], datetime(2026, 10, 6, 5, 14)) / "index.html").read_text(
@@ -1199,7 +1206,7 @@ class FilterSpecsTest(unittest.TestCase):
         """refs §11.5 Q2：没有数据的天数**置灰不可选**。
 
         池子里只有"今天"（ago=0）与"5 天前"两种开始时间 →
-        「昨天」「前天」必须被置灰，而「今天」「近 7 天」「全部」不能置灰。
+        「昨天」「前天」必须被置灰，而「今天」「近 7 天」「不限」不能置灰。
         """
         cards = [{"start_days_ago": 0}, {"start_days_ago": 5}]
         groups = {g["key"]: g for g in report.filter_specs(self.CFG, cards)}

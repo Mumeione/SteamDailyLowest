@@ -17,7 +17,7 @@ key 放 repository secret `ITAD_API_KEY`，用环境变量注入。
 | `daily.yml` 孤儿清理 | `14 7 2` / 每月 2 日 14:14 | data 分支孤立分支清理 |
 | `backfill.yml` | 手动 | 通用回填入口：`script` / `args` 两个入参选定 `tools/backfill_*.py`（史低期 / Steam 封面 / 小黑盒中文名），统一注入 config + `ITAD_API_KEY` |
 | `probe.yml` | 手动 | 探针（有闸、零常驻成本） |
-| `checks.yml` | 手动/PR | 提交前校验 |
+| `checks.yml` | 手动 / push(main) | 提交前校验（推送 main 自动跑；一次 push 只触发一次、只校验推送尖端 = 最后一次提交） |
 
 > GitHub 调度器偶发延迟（实测最大 8h46m）甚至直接丢弃定时触发（无 run 记录）。
 > 补跑被 guard 的 12h 窗口跳过**不是缺陷是设计**：主跑成功了，补跑自然该跳。

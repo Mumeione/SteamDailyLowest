@@ -204,7 +204,7 @@ SteamDailyLowest/
 │   ├── snapshot.py               「即将过期」快照导出（data/expiring.json，跨仓库数据契约）
 │   └── report.py                 Jinja2 渲染 index.html + about.html + data.js + latest.json + all/ 分片
 ├── templates/
-│   ├── index.html.j2 / about.html.j2 / _brand.j2
+│   ├── index.html.j2 / about.html.j2 / _brand.j2 / _analytics.j2
 │   └── static/app.css, app.js
 ├── content/
 │   └── announcements.json        顶部消息区内容（手工维护，改内容不动代码）

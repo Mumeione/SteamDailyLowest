@@ -932,7 +932,7 @@
   }
 
   // 用户有没有**手动**改过日期。现在它只剩一个消费者：date 已选标签的显示条件
-  // （renderActiveChips —— 「全部」标签只在手动选过时出现，见那边）。
+  // （renderActiveChips —— 「不限」标签只在手动选过时出现，见那边）。
   // ⚠️ 这个标记**只由 setFilter 维护**（见下）—— 别在别处赋值。
   var dateTouched = false;
   function touchDate() { dateTouched = true; }
@@ -971,7 +971,7 @@
     if (state.section !== key) state.openGid = null;
     state.section = key;
     state.limit = LIST_BATCH;
-    // 日期这里**什么都不做**：默认已是「全部」（filter_defaults），各页面隐式状态
+    // 日期这里**什么都不做**：默认已是「不限」（filter_defaults），各页面隐式状态
     // 一致，无需切换；用户手动选的限制切板块时原样保留（冒烟 ⑤ 钉死）。
     // （2026-10-10 前这里有一段「板块 d7 ↔ 全部折扣 all」的隐式切换，默认改 all
     //   后它成了死代码，连同 dateTouched 的读取一起移除。）
@@ -1169,7 +1169,7 @@
   /** 把所有筛选恢复成服务端给的默认值（抽屉的「重置」与标签行的「清空」共用一份）。 */
   function resetFilters() {
     // setFilter(k, undefined) = 恢复默认；对 date 会自动 clearDateTouched
-    // （默认就是「全部」，重置后日期限制整体消失）
+    // （默认就是「不限」，重置后日期限制整体消失）
     Object.keys(FILTER_DEFAULTS).forEach(function (k) { setFilter(k, undefined); });
     applyFilters();
   }
@@ -1188,10 +1188,10 @@
    *  「我选 B3，但是手机端还是默认 B1」。所以这里**不判断点**，隐藏只归 CSS 管。
    *
    *  date 维度**不走差值口径**（2026-10-10 用户报告）：它显示**当前生效的日期窗口** ——
-   *  「近 N 天/具体日」在列表页恒显示（是真实存在的限定）；「全部」只在用户手动选过
+   *  「近 N 天/具体日」在列表页恒显示（是真实存在的限定）；「不限」只在用户手动选过
    *  （dateTouched）时显示 —— 「全部折扣」页程序自动放开（auto:true）不产生标签。
-   *  标签 ✕ 与其他维度同一语义：恢复默认（默认日期 = 「全部」，一步清掉 —— 用户
-   *  裁决不要「先变全部再点一次」的两步）。 */
+   *  标签 ✕ 与其他维度同一语义：恢复默认（默认日期 = 「不限」，一步清掉 —— 用户
+   *  裁决不要「先变不限再点一次」的两步）。 */
   function renderActiveChips() {
     if (!chipsBox) return;
     chipsBox.textContent = "";
@@ -1216,8 +1216,8 @@
           "aria-label": "去掉条件 " + optLabel(k, value),
           onclick: function (e) {
             e.stopPropagation();
-            // 统一 = 恢复默认（2026-10-10 用户定案：一步清掉，不要「先变全部
-            // 再点一次」的两步）。默认日期已是「全部」，清掉后标签消失、
+            // 统一 = 恢复默认（2026-10-10 用户定案：一步清掉，不要「先变不限
+            // 再点一次」的两步）。默认日期已是「不限」，清掉后标签消失、
             // 列表回全量 —— 旧默认 d7 时代的死链（恢复值又被页面隐式改写）
             // 已随默认改 all 消失，这里不再需要 date 特判。
             setFilter(k, undefined);

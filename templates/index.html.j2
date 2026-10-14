@@ -8,8 +8,11 @@
    favicon 用**内联 SVG data URI**（2026-10-07 用户：「可以适当加 favicon」），
    页面要能离线双击打开，所以不引 .ico / .svg 文件。 #}
 {% from "_brand.j2" import favicon_link, brand_mark %}
+{% from "_analytics.j2" import analytics_51la %}
 {{ favicon_link() }}
 <link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
+{# 站点统计（51.la 异步安装）—— 唯一来源见 _analytics.j2；只统计、不加可视徽章。 #}
+{{ analytics_51la() }}
 </head>
 <body>
 

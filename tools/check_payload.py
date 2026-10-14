@@ -196,7 +196,7 @@ def main() -> int:
     lines.append(f"  app.js parseDateSpec 认得: {sorted(k for k, ok in handled.items() if ok)}")
     lines.append("  Python 产出的每种形状前端都能解析："
                  + ("是 ✓" if not date_missing else f"否 ✗ 缺 {date_missing}"))
-    lines.append("  日期档位里一定有「全部」："
+    lines.append("  日期档位里一定有「不限」："
                  + ("是 ✓" if "all" in date_vals else "否 ✗"))
 
     # ---- 预聚合计数表的键序：Python AGG_KEY_ORDER ↔ JS aggCount 的数组顺序 ----

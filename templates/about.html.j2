@@ -7,8 +7,11 @@
 {# favicon 与顶栏站点图标都来自 _brand.j2（唯一来源，与首页共用，改图标只改那一个文件）
    —— 内联 SVG data URI，页面要能离线双击打开，不引 .ico / .svg 文件。 #}
 {% from "_brand.j2" import favicon_link, brand_mark %}
+{% from "_analytics.j2" import analytics_51la %}
 {{ favicon_link() }}
 <link rel="stylesheet" href="static/app.css?v={{ assets_version }}">
+{# 站点统计（51.la 异步安装）—— 唯一来源见 _analytics.j2；只统计、不加可视徽章。 #}
+{{ analytics_51la() }}
 </head>
 <body>
 

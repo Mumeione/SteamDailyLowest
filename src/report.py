@@ -537,20 +537,28 @@ def _review_bands(cfg: dict) -> list[int]:
 
 
 def _date_bands(cfg: dict) -> list[dict]:
-    """日期档位 ``[{value, label}]``（升序）—— 协议值 ``0/1/2/dN/all``。
+    """日期档位 ``[{value, label}]`` —— 协议值 ``all/0/1/2/dN``。
 
-    **唯一出处**：:func:`filter_dim_values`（前端查表键）与 :func:`filter_specs`
+    ⚠️ **顺序即契约**：「不限」放在**最左**，与抽屉里其余四维（折扣区间 / 好评数量 /
+    史低类型都首项 = 不限）对齐（用户 2026-10-14）。日期档的物理顺序因此是
+    「不限 → 今天 → 昨天 → 前天 → 近 N 天」，**不再是时间升序**。
+
+    **唯一出处**：:func:`filter_dim_values`（前端查表键）、:func:`filter_specs`
     （抽屉选项）都从这里取，两边不可能再漂移 —— 曾经两处各拼一份，加档位时
     容易只改一边（查表 miss 会静默退回分片遍历）。冒烟另有「抽屉选项值 ==
     payload 的 agg 维度」对拍兜底。
+
+    ⚠️ 位序跟着**本列表的下标**（:func:`_agg_rows` 的日期位图、:func:`section_agg`
+    的 ``1 << di``）—— 整体挪动选项时必须同步改 :func:`_agg_rows` 的位分配
+    （那里的 ``all_bit`` / ``near_bit`` 都按下标取，别写回死值）。
     """
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     return [
+        {"value": "all", "label": "不限"},
         {"value": "0", "label": "今天"},
         {"value": "1", "label": "昨天"},
         {"value": "2", "label": "前天"},
         {"value": f"d{days}", "label": f"近 {days} 天"},
-        {"value": "all", "label": "全部"},
     ]
 
 
@@ -577,20 +585,26 @@ def _agg_rows(members: list[dict], cfg: dict, key: str) -> list[tuple]:
     days = int(cfg.get("home_new_low_days", DEFAULT_HOME_DAYS))
     cuts = _cut_bands(cfg)          # 档位只在 _cut_bands / _review_bands 里算一次
     revs = _review_bands(cfg)
+    # 日期位图：位号 = 该选项在 ``_date_bands`` 里的**下标**（顺序可整体挪动，
+    # 见那边的警告）—— 因此这里按下标取，别写回「0→1 / 1→2 / 2→4 / dN→8 / all→16」
+    # 那套死值，否则把「不限」挪到最左后位图会整体错位、agg 计数全错。
+    dates = filter_dim_values(cfg)["date"]
+    dbits = {v: (1 << i) for i, v in enumerate(dates)}
+    all_bit = dbits["all"]          # "all" 恒真
+    near_bit = dbits[f"d{days}"]
     rows = []
     for card in members:
         ago = card.get("start_days_ago")
-        # 日期位图，位序跟着 :func:`filter_dim_values` 的 date 选项：0/1/2/dN/all
-        bits = 16                                   # "all" 恒真
+        bits = all_bit
         if ago is not None:
             if ago == 0:
-                bits |= 1
+                bits |= dbits["0"]
             if ago == 1:
-                bits |= 2
+                bits |= dbits["1"]
             if ago == 2:
-                bits |= 4
+                bits |= dbits["2"]
             if ago <= days:
-                bits |= 8
+                bits |= near_bit
         rows.append((
             True if key == "__all__" else _is_live(card),   # 「全部折扣」不叠加 liveOk
             bits,
@@ -625,9 +639,12 @@ def section_agg(members: list[dict], cfg: dict, key: str) -> dict:
     counts: dict[str, int] = {}
     _spec = _SECTIONS_BY_KEY.get(key)
     ignores_window = bool(_spec) and not _spec["date_window"]
+    # 「忽略日期」的板块复用 "all" 那一档的位（该位在对角恒真）—— 位号即选项下标，
+    # `_date_bands` 挪动顺序也不会错（别写死 16，见那边的警告）。
+    all_bit = 1 << dates.index("all")
     for di, d in enumerate(dates):
         # 「即将到期」忽略日期 ⇒ 5 个日期选项共用一份计数（靠 cache 只算一次）
-        bit = 16 if ignores_window else (1 << di)
+        bit = all_bit if ignores_window else (1 << di)
         for ci in range(len(cuts)):
             for ri in range(len(revs)):
                 for oi in range(len(news)):
@@ -777,7 +794,7 @@ def _match_big_cut(card: dict, cfg: dict) -> bool:
 
 def _in_section(key: str, card: dict, cfg: dict) -> bool:
     """单卡是否属于某个板块（判据见 :data:`SECTIONS`）。**只判"性质"，不判日期窗口** ——
-    日期窗口（近 N 天）交给调用方，这样前端点「全部」胶囊时能跳过窗口看全量。"""
+    日期窗口（近 N 天）交给调用方，这样前端点「不限」胶囊时能跳过窗口看全量。"""
     spec = _SECTIONS_BY_KEY.get(key)
     return bool(spec) and spec["match"](card, cfg)
 
@@ -794,7 +811,7 @@ def _section_members(key: str, cards: list[dict], cfg: dict) -> list[dict]:
 
     「近 N 天」窗口已从板块口径整体退场（2026-10-10 用户定案：首页板块与分片、
     agg 一律全量，日期收窄只由用户在筛选抽屉里选）—— 分片若预筛窗口，板块页
-    「日期=全部」会失效、agg 各档计数缩水（cb95120 回归，详见 docs/CHANGELOG.md
+    「日期=不限」会失效、agg 各档计数缩水（cb95120 回归，详见 docs/CHANGELOG.md
     当日条目）。仍在用「近 N 天」口径的只有大卡候选池（见 PICKS 权重表上方）。
     """
     spec = _SECTIONS_BY_KEY.get(key)
@@ -1288,7 +1305,7 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
         rev_opts.append(o)
 
     # 日期选项直接从 _date_bands 取（与 filter_dim_values 的 agg 维度同源），
-    # 只补各自的 `disabled`（「这一天没有数据」）；「全部」永不留空，恒可选。
+    # 只补各自的 `disabled`（「这一天没有数据」）；「不限」永不留空，恒可选。
     date_opts = [dict(o, disabled=False if o["value"] == "all" else dead(o["value"]))
                  for o in _date_bands(cfg)]
 
@@ -1308,11 +1325,11 @@ def filter_specs(cfg: dict, cards: list[dict] | None = None) -> list[dict]:
 def filter_defaults(cfg: dict) -> dict:
     """筛选的默认值 —— 前端 `state.filters` 的初始状态，也是「已选 N 项」角标的基准。
 
-    日期默认 = **「全部」**（2026-10-10 用户定案）：板块与「全部折扣」页都按
+    日期默认 = **「不限」**（值 `all`，2026-10-10 用户定案）：板块与「全部折扣」页都按
     性质全量展示，不默认收窄到「近 N 天」—— 想看窗口内的新增，用户自己在
     抽屉里选（「近 N 天」仍是可选档，选项文案跟着 `home_new_low_days` 走）。
     这同时消掉了旧默认 d7 与「全部折扣页自动放开 all」互相打架的死链
-    （✕「全部」恢复默认 d7、又被页面隐式约定放开回 all，看起来 ✕ 失效）。
+    （✕ 恢复默认 d7、又被页面隐式约定放开回 all，看起来 ✕ 失效）。
     """
     del cfg   # 日期默认已不跟 home_new_low_days 走（2026-10-10）；参数保留给调用方签名
     return {

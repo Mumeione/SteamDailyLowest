@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""一条命令跑齐所有契约锁（2026-10-09，配合 checks.yml 改成只手动触发）。
+"""一条命令跑齐所有契约锁（2026-10-09）。
 
-**为什么需要它**：checks.yml 改成只手动触发之后，「本地必须跑齐」成了**唯一的**
-安全网 —— daily.yml 不看它，而发布跑的是 main 上最新的代码。可原来跑齐要敲五条
-命令、还要记得设 `NODE_PATH`，漏掉任何一条，这张网就破一个洞。这里把六道锁串成
-一条，并在最后给一张通过/失败表：
+**为什么需要它**：checks.yml 在推送 main 后会自动跑（2026-10-14 起），但那是
+**事后**兜底 —— 发布跑的是 main 上最新代码，等它红已经晚了；「本地提交前先跑齐」
+仍是第一道网。可原来跑齐要敲五条命令、还要记得设 `NODE_PATH`，漏掉任何一条，
+这张网就破一个洞。这里把六道锁串成一条，并在最后给一张通过/失败表：
 
   ① workflow YAML 严格校验（重复键直接报错）
   ② pytest（判定 / 渲染 / 状态库 / 传输底座）
@@ -248,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{passed}/{len(results)} 道通过 · 合计 {total:.1f}s")
     if failed:
         print("失败项：" + " · ".join(sorted(failed)))
-        print("⚠️ 本地跑齐是现在唯一的安全网（checks.yml 已改成只手动触发）—— 别带着红的提交。")
+        print("⚠️ 本地跑齐是提交前的第一道网（checks.yml 另在推送 main 后兜底）—— 别带着红的提交。")
         return 1
     print("全绿 ✓")
     return 0
