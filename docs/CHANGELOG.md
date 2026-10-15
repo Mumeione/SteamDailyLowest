@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-10-15 · 写路径数据保护闸（reviews None 闸 · title_zh 中文优先闸 · 降级计数）
+
+- **`set_meta` 的 reviews=None 保留旧值（契约落实）**：docstring 早已承诺「None 表示
+  本次没取到 → 保留旧值」，但实现一直无条件覆盖（stats 方向 2026-09-30 修过、reviews
+  漏了）。Steam 侧 `summary_filtered` 一次抖动就会清空已抓到的好评率并刷掉
+  `fetched_at`，连锁 apply_listing 重判 cold → unlisted 收敛，游戏从报表消失数周。
+  现reviews=None 保留旧 reviews 且**不刷 `fetched_at`**（没取到不该假装抓过，下轮
+  继续派生重试）。
+- **`set_title_zh` 单点「中文优先」闸**：Steam 对个别游戏的 schinese 标题会临时回退
+  英文（The Long Dark / Until Then，2026-10-11 起实测），GetItems 主路径无闸覆盖把
+  英文污染进永久缓存且自愈通道全死路（「中文名时好时坏」事故）。现新值不含 CJK ∧
+  旧值含 CJK → 拒绝覆盖；CJK 判定复用 `classify.CJK_RE` 单一出处；四个调用点
+  （GetItems / prefetch 补名 / enrich / 小黑盒回填）自动收敛同一套保护。
+- **降级可观测**：`State.write_gates` 运行期计数器（不落盘），daily/prefetch 的
+  run_log 尾部新增 `title_zh_downgrade_blocked` / `reviews_nulled_blocked` 两键，
+  Step Summary 在 >0 时告警 —— >0 即 Steam 侧数据抖动信号。
+- 方案与锁定测试见本地 `.scratch/write-gates/`；锁定单测 8 条
+  （`tests/test_state.py::WriteGatesTest`）。
+
+---
+
 ## 2026-10-14 · 日期档「全部」改名「不限」并挪到最左 · checks.yml 推送自动检测
 
 - **筛选日期档改「不限」并挪到最左（用户 2026-10-14）**：抽屉「日期」组首项由

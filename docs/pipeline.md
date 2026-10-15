@@ -133,8 +133,8 @@
 | 数据 | 生命周期 | 说明 |
 | --- | --- | --- |
 | `appid` | **永久** | Steam AppID 不会变 |
-| `reviews` | **折扣感知四档 TTL**：新游（发行 ≤`new_game_days`）1 天 / 到期窗口（expiry − `upcoming_expiry_hours` 起）1 天 / 折扣活跃期普通条目 3 天 / **非折扣期不刷新**（无消费方） | 刷新节奏由条目状态决定，不设全局 TTL |
-| `title_zh`（中文名） | **永久**，与 `reviews` 是**两条独立缓存** | `set_title_zh()` 不碰 `fetched_at`，否则会把好评率的 TTL 一起刷掉 |
+| `reviews` | **折扣感知四档 TTL**：新游（发行 ≤`new_game_days`）1 天 / 到期窗口（expiry − `upcoming_expiry_hours` 起）1 天 / 折扣活跃期普通条目 3 天 / **非折扣期不刷新**（无消费方） | 刷新节奏由条目状态决定，不设全局 TTL。⚠️ **None 保留旧值**：Steam 侧 `summary_filtered` 短暂缺失时不清空已抓到的好评率、也不刷 `fetched_at`（下轮继续重试）；被闸拦下的次数记 run_log `reviews_nulled_blocked` |
+| `title_zh`（中文名） | **永久**，与 `reviews` 是**两条独立缓存** | `set_title_zh()` 不碰 `fetched_at`，否则会把好评率的 TTL 一起刷掉。⚠️ **覆盖需过「中文优先」闸**：新值不含 CJK ∧ 旧值含 CJK → 拒绝写入（防 Steam schinese 标题抖动把英文污染进永久缓存），拦截次数记 run_log `title_zh_downgrade_blocked`；中文覆盖英文 / 首次补名照常放行 |
 | `cover`（Steam 封面补缺） | **永久** | 只为「ITAD 无 boxart」的条目落库 |
 | `compare_cache` | **永久**（键 `<appid>|<cc>`，存区域**原价** `initial`） | 不随折扣期失效、**不参与留存清理**（键不含 expiry）；现价（`final`）每轮对进列表条目**真查**（当日新增 + 即将到期合并去重，20 个/批），真查响应里的原价与缓存比对——不一致即 Valve 区域重定价，回写自愈并记日志（「真查即校准」）。整区真查失败时该区该轮缺行（不回落，下轮自愈）。⚠️ 缓存丢失后历史 appid 的原价**无法重拉重建**，只能靠 data 分支 git 历史找回 |
 | `low_time_cache` | **折扣期暂存**（键 `<game_id>|<expiry>`） | 随 `cleanup_expired` 与 `seen_deal` 同保留期清理；精确键 miss 时回退到该游戏折扣期最新的缓存条目（防折扣期延长/跨换档的键漂移丢行） |

@@ -204,6 +204,13 @@ class State:
         self.tz = tz
         # low_time_cache 的 game_id 索引（惰性建；写/清后置 None 失效），见 last_low_at
         self._low_time_idx: dict | None = None
+        # 写路径保护闸的运行期计数器 —— **不落盘**：统计「本次运行里好数据被
+        # 坏数据降级、被闸拦下」的次数，由 run.py 读去写 run_log / step summary
+        # （>0 即 Steam 侧数据抖动信号；沿革见 docs/CHANGELOG.md 2026-10-15）。
+        self.write_gates: dict = {
+            "title_zh_downgrade_blocked": 0,
+            "reviews_nulled_blocked": 0,
+        }
         #: **原始载荷**（state.json 的顶层对象）—— 读写用，见下面的约定：
         #: ⚠️ 生产代码**不要直接改它**（也别改 ``self.dynamic.data`` / ``self.cache.data``）：
         #:   · ``data["seen_deal"]`` / ``data["game_meta"]`` 有配套语义（幂等键、首见时间、
@@ -531,10 +538,14 @@ class State:
         """写入详情缓存（S6 起按层分写）。
 
         2026-09-30 起多收 ``publishers`` / ``developers`` / ``stats``（快照 v3 需要）。
-        三条约束（改这里前先想清楚）：
+        四条约束（改这里前先想清楚）：
 
         - **只更新传进来的键**，``None`` 表示「本次没取到」→ 保留旧值，**不要清空**；
           （空列表 ``[]`` 是「取到了，确实没有」→ 正常写入。）
+        - **``fetched_at`` 只在 ``reviews`` 实际写入时刷新**：没取到就不该假装抓过了
+          —— 留空让 :func:`classify.entry_needs_detail` 下轮继续派生重试
+          （Steam 侧 summary 一次抖动就清空好评率、连锁 unlisted 收敛的教训，
+          沿革见 docs/CHANGELOG.md 2026-10-15）。
         - **不碰 ``fetched_at`` 的语义** —— 它只决定 ``reviews`` 的刷新节奏，
           新字段不是时间字段（和 ``title_zh`` / ``title_zh_at`` 同一套路）。
         - 条目允许**多代字段共存**：旧条目缺新字段是正常状态，
@@ -548,8 +559,12 @@ class State:
             entry["appid"] = appid
             self.data["game_meta"][game_id] = entry
         dyn = self.dynamic.ensure_entry(game_id)
-        dyn["reviews"] = reviews
-        dyn["fetched_at"] = now.isoformat(timespec="seconds")
+        if reviews is not None:
+            dyn["reviews"] = reviews
+            dyn["fetched_at"] = now.isoformat(timespec="seconds")
+        elif dyn.get("reviews") is not None:
+            # None 闸：旧好评率被本次 None 保护下来 = 降级未遂
+            self.write_gates["reviews_nulled_blocked"] += 1
         if stats is not None:
             dyn["stats"] = stats
         # 新字段的写入规则与回填完全一致 —— 复用 set_meta_extras，别再抄一份
@@ -588,8 +603,16 @@ class State:
         entry = self.game_meta.get(game_id)
         return (entry or {}).get("title_zh")
 
-    def set_title_zh(self, game_id: str, title: str | None, now: datetime) -> None:
-        """单独写中文名。
+    def set_title_zh(self, game_id: str, title: str | None, now: datetime) -> bool:
+        """单独写中文名；返回是否实际写入（False = 被「中文优先」闸拦下）。
+
+        ⚠️ **「中文优先」闸**：新值不含 CJK ∧ 旧值含 CJK → **拒绝覆盖** ——
+        Steam 对个别游戏的 schinese 标题存在临时回退英文的抖动，无条件覆盖会把
+        英文污染进永久缓存，而补名通道全走「只填空」判据无法自愈（沿革见
+        docs/CHANGELOG.md 2026-10-15）。闸下沉到这个唯一写口后，GetItems /
+        appdetails / 小黑盒三个来源自动收敛同一套保护；CJK 判定复用
+        :data:`classify.CJK_RE` 单一出处。新值含 CJK / 旧值为空或纯英文 → 放行
+        （正常刷新与补名）。
 
         ⚠️ **不能顺手改 `fetched_at`** —— 那个字段决定 `reviews` 的 TTL，
         而中文名与详情是两条独立的缓存。
@@ -597,12 +620,18 @@ class State:
         会产生 **naive 本地时间**，而全仓其余时刻一律 aware（读回时 `parse_time`
         按 UTC 解释 → 本地跑（+08:00）写下的值偏 8 小时）。
         """
-        if not title:
-            return
+        if not title or not title.strip():
+            return False
         entry = self.game_meta.get(game_id) or {}
+        old = entry.get("title_zh")
+        if old and classify.CJK_RE.search(old) and not classify.CJK_RE.search(title):
+            # 英文（或无汉字值）试图降级中文 → 拒绝并计数（Steam 侧抖动信号）
+            self.write_gates["title_zh_downgrade_blocked"] += 1
+            return False
         entry["title_zh"] = title
         entry["title_zh_at"] = now.isoformat(timespec="seconds")
         self.data["game_meta"][game_id] = entry
+        return True
 
     # ------------------------------------------------------------------
     # 上次史低时间（折扣期暂存；见 docs/pipeline.md「上一次史低时间」，

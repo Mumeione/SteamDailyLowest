@@ -487,6 +487,89 @@ class StateTest(unittest.TestCase):
         self.assertEqual(reloaded.dynamic.entries, {})
 
 
+class WriteGatesTest(unittest.TestCase):
+    """写路径数据保护闸（2026-10-15，.scratch/write-gates/）。
+
+    背景：中文名「时好时坏」事故（Steam schinese 标题抖动回退英文 ×
+    GetItems 路径无闸覆盖永久缓存）+ 孪生问题 set_meta(reviews=None)
+    无条件覆盖好评率（违反自身 docstring）。两处同构：好数据不该被
+    坏数据降级 —— 单点闸 + 降级计数 + 锁定单测。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = State(Path(self.tmp.name) / "state.json", tz=TZ).load()
+
+    # ---- 修复 A：set_meta reviews=None 保留旧值（docstring 契约对齐）----
+
+    def test_set_meta_reviews_none_keeps_old(self):
+        """reviews=None =「本次没取到」→ 保留旧好评率与旧 fetched_at，
+        不清空、不推迟下次刷新（对齐 docstring；stats 方向 2026-09-30 已修）。"""
+        self.state.set_meta("uuid-1", 111, {"score": 80, "count": 500}, NOW)
+        old_fetched = self.state.dyn("uuid-1")["fetched_at"]
+        # Steam 抖动：summary_filtered 短暂缺失 → None
+        self.state.set_meta("uuid-1", 111, None, NOW + timedelta(minutes=5))
+        dyn = self.state.dyn("uuid-1")
+        self.assertEqual(dyn["reviews"], {"score": 80, "count": 500})
+        self.assertEqual(dyn["fetched_at"], old_fetched)   # 不刷新
+
+    def test_set_meta_reviews_none_first_fetch_no_fetched_at(self):
+        """首次抓取就没取到：不造 fetched_at —— entry_needs_detail 靠它判
+        「没抓过」，下轮继续派生重试，不能假装抓过了。"""
+        self.state.set_meta("uuid-1", 111, None, NOW)
+        dyn = self.state.dyn("uuid-1") or {}
+        self.assertNotIn("reviews", dyn)
+        self.assertNotIn("fetched_at", dyn)
+
+    def test_set_meta_reviews_none_counts_gate_only_when_old_exists(self):
+        """reviews_nulled_blocked 只在「旧值被 None 保护下来」时计数 ——
+        首抓没取到是正常空手而归，不是降级。"""
+        self.state.set_meta("uuid-1", 111, None, NOW)
+        self.assertEqual(self.state.write_gates["reviews_nulled_blocked"], 0)
+        self.state.set_meta("uuid-2", 222, {"score": 70, "count": 100}, NOW)
+        self.state.set_meta("uuid-2", 222, None, NOW)
+        self.assertEqual(self.state.write_gates["reviews_nulled_blocked"], 1)
+
+    # ---- 修复 B：set_title_zh 单点「中文优先」闸 ----
+
+    def test_set_title_zh_rejects_english_over_chinese(self):
+        """英文试图覆盖中文 → 拒绝（返回 False）：值与时间戳都不动，计数 +1。
+        这是本次事故的根因路径（GetItems 抖动降级）。"""
+        self.state.set_title_zh("uuid-1", "漫漫长夜", NOW)
+        stamp = self.state.game_meta["uuid-1"]["title_zh_at"]
+        ok = self.state.set_title_zh("uuid-1", "The Long Dark", NOW + timedelta(days=1))
+        self.assertFalse(ok)
+        self.assertEqual(self.state.title_zh("uuid-1"), "漫漫长夜")
+        self.assertEqual(self.state.game_meta["uuid-1"]["title_zh_at"], stamp)
+        self.assertEqual(self.state.write_gates["title_zh_downgrade_blocked"], 1)
+
+    def test_set_title_zh_allows_chinese_over_english(self):
+        """新中文覆盖旧英文 → 放行：Steam 恢复中文后要能写回（自愈方向）。"""
+        self.state.set_title_zh("uuid-1", "Until Then", NOW)
+        self.assertTrue(self.state.set_title_zh("uuid-1", "直到那时", NOW))
+        self.assertEqual(self.state.title_zh("uuid-1"), "直到那时")
+        self.assertEqual(self.state.write_gates["title_zh_downgrade_blocked"], 0)
+
+    def test_set_title_zh_allows_english_first_fill(self):
+        """旧值为空 → 写英文放行：无官方中文名的游戏靠英文回落正常补名。"""
+        self.assertTrue(self.state.set_title_zh("uuid-1", "Some Game", NOW))
+        self.assertEqual(self.state.title_zh("uuid-1"), "Some Game")
+        self.assertEqual(self.state.write_gates["title_zh_downgrade_blocked"], 0)
+
+    def test_set_title_zh_allows_chinese_refresh(self):
+        """中文刷新中文 → 放行（正常覆盖更新）。"""
+        self.state.set_title_zh("uuid-1", "文明6", NOW)
+        self.assertTrue(self.state.set_title_zh("uuid-1", "文明VI", NOW))
+        self.assertEqual(self.state.title_zh("uuid-1"), "文明VI")
+
+    def test_set_title_zh_empty_value_is_noop(self):
+        """空值（None/空串）依旧直接跳过（不是「取到了空名」）。"""
+        self.assertFalse(self.state.set_title_zh("uuid-1", None, NOW))
+        self.assertFalse(self.state.set_title_zh("uuid-1", "  ", NOW))
+        self.assertIsNone(self.state.title_zh("uuid-1"))
+
+
 class ReadOnlyViewsTest(unittest.TestCase):
     """外泄字典已退回**只读视图**的机械锁（2026-10-09 卡片 04）。
 

@@ -115,6 +115,16 @@ class StageClock:
         return " · ".join(parts)
 
 
+def _gate_summary_rows(write_gates: dict) -> list[tuple[str, str]]:
+    """写闸拦截计数的 step summary 行 —— 全 0 不占版面。"""
+    if not any(write_gates.values()):
+        return []
+    return [("⚠️ 写闸拦截（中文→英文降级 / 好评率被清空）",
+             f"{write_gates.get('title_zh_downgrade_blocked', 0)} / "
+             f"{write_gates.get('reviews_nulled_blocked', 0)}"
+             "（>0 = Steam 侧数据抖动，缓存已被闸保护）")]
+
+
 def write_step_summary(title: str, rows: list[tuple[str, object]]) -> None:
     """往 ``$GITHUB_STEP_SUMMARY`` 追加一张关键指标表（非 Actions 环境静默跳过）。"""
     path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -424,7 +434,10 @@ def _write_browse_meta(state: State, game_id: str, meta, now: datetime, *,
     ``creator_clan_account_id`` 与 ITAD 厂商 id **不同源**且实测 63% 条目缺失
     （2026-10-04 对照探针），进不得倒排索引；已有 ITAD 口径厂商的存量一律不覆盖
     （``stats`` 传 None 同理 —— GetItems 没有 rank/waitlisted，保留旧值）。
-    中文名是同源的 Steam 本地化标题，直接刷新（永久缓存）。
+    中文名是同源的 Steam 本地化标题，直接刷新（永久缓存）—— 但**覆盖要过
+    :meth:`State.set_title_zh` 的「中文优先」闸**：Steam schinese 标题对个别游戏
+    会抖动回退英文，英文试图覆盖已有中文会被闸拒绝并计数（``state.write_gates``），
+    放行方向（中文覆盖英文 / 首次补名）不变。
 
     ⚠️ ``need_cover``：封面是 **ITAD boxart 优先、Steam 补缺** —— 只有 ITAD 无 boxart
     的条目（约 9.5%）才落 ``cover``。否则 3.3 万条全量落库要多背 ~2.4MB
@@ -634,8 +647,12 @@ def _daily_run_log(now: datetime, sweep: str, deals_fetched: int, client,
                    targets: list[dict], target_info: dict, listing: dict,
                    detail_fetched: int, detail_stats: dict, backlog: int,
                    low_time_fetched: int, fx_rates: dict | None,
-                   errors: list[dict]) -> dict:
-    """日常运行写入的 run_log 记录 —— 键集与键序是稳定契约（消费方按名读），别动。"""
+                   errors: list[dict], write_gates: dict) -> dict:
+    """日常运行写入的 run_log 记录 —— 键集与键序是稳定契约（消费方按名读），别动。
+
+    ``write_gates``：写闸运行期计数（``state.write_gates``），尾部平铺展开 ——
+    任一键 ``>0`` 即「好数据被坏数据降级、被闸拦下」，是 Steam 侧数据抖动的告警信号。
+    """
     return {
         "run_at": now.isoformat(timespec="seconds"),
         "mode": "daily",
@@ -674,6 +691,8 @@ def _daily_run_log(now: datetime, sweep: str, deals_fetched: int, client,
         "steam_limiter": steam_client.limiter.stats(),
         "steam_browse_limiter": browse_client.limiter.stats(),
         "errors": errors + transport_errors(steam_client, browse_client),
+        # 写闸拦截计数（尾部平铺）：>0 = Steam 侧标题/评价数据抖动
+        **write_gates,
     }
 
 
@@ -859,7 +878,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
                            browse_client, counts, by_reason, candidates, final,
                            upcoming_entries, targets, target_info, listing,
                            detail_fetched, detail_stats, backlog, low_time_fetched,
-                           fx_rates, errors),
+                           fx_rates, errors, write_gates=state.write_gates),
             keep=int(cfg.get("run_log_keep", 30)),
         )
         state.save(now)
@@ -903,7 +922,7 @@ def run_daily(cfg: dict, audit: bool = False) -> int:
         ("ITAD 请求", client.calls),
         ("Steam 请求", steam_client.calls + browse_client.calls),
         ("阶段耗时", clock.line()),
-    ])
+    ] + _gate_summary_rows(state.write_gates))
     return 0
 
 
@@ -1051,6 +1070,10 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
         f"（预算 {target_info['budget']}，顺序=最近出现在史低优先）")
 
     # 1) 批量详情管线：lookup → GetItems → info/v2 降级（缓存命中不发请求，断点续传）
+    # ⚠️ targets 里的 SCOPE_TITLE（只缺中文名）目标在此处会被 fetch_details 的
+    # entry_needs_detail TTL 判定过滤掉（这类条目动态数据未过期 → False）——
+    # 空转、不发请求；真正的逐游戏补名在下面第 2) 步的独立循环里。
+    # SCOPE_TITLE 留在 targets 仅为复用排序与预算截断。
     detail_stats = fetch_details(client, state, targets, cfg, now, browse=browse)
     fetched = detail_stats["fetched"]
     state.save(now)
@@ -1115,6 +1138,8 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
             "steam_limiter": steam.limiter.stats(),
             "steam_browse_limiter": browse.limiter.stats(),
             "errors": errors,
+            # 写闸拦截计数（尾部平铺，与 _daily_run_log 同款）：>0 = Steam 侧抖动
+            **state.write_gates,
         },
         keep=int(cfg.get("run_log_keep", 30)),
     )
@@ -1129,7 +1154,7 @@ def run_prefetch(cfg: dict, *, state: State | None = None,
         ("ITAD 请求", client.calls),
         ("Steam 请求", steam.calls + browse.calls),
         ("阶段耗时", clock.line()),
-    ])
+    ] + _gate_summary_rows(state.write_gates))
     return 0
 
 
