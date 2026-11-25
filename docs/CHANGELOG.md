@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-11-25 · daily 改由外部调度 06:20 触发 + 07:30 失败重跑 · 预抓提前到 09:14
+
+- **GitHub 侧不再有 daily 主跑的定时**：删除 `14 19`（03:14 主跑）与 `21 21`（05:21 补跑）
+  两个 cron，以及 `daily-guard` job。实测最近 17 次 03:14 主跑的实际创建时间中位约 6.4h、
+  最长跨日；05:21 补跑同样延迟，且 guard 会把 15:14 预抓的成功误判成「已有成功定时主跑」
+  （2026-11-25 实锤：主跑 11:04 失败，12:17 的补跑被 02:52 的预抓成功 skip）。
+- **外部调度 06:20 远程触发**：外部调度器每天 06:20（北京）调
+  `workflow_dispatch`（`mode=daily`），07:30 检查当天首次 daily；失败则复用原 run 重跑
+  失败 job，没 run 才补触发一次。`workflow_dispatch` 新增 `mode`（`all`/`daily`，默认 `all`）。
+- **预抓提前**：`14 7`（15:14）→ `14 1`（09:14）。仍由 GitHub 调度，实测仍会延迟，
+  但离次日 06:20 主跑有足够缓冲。
+- **修复 alert**：`gh issue list/create` 在 runner 上没有 git 仓库会报
+  `fatal: not a git repository`，导致失败告警从未真正开过 Issue；补 `GH_REPO`。
+
+---
+
 ## 2026-10-15 · 写路径数据保护闸（reviews None 闸 · title_zh 中文优先闸 · 降级计数）
 
 - **`set_meta` 的 reviews=None 保留旧值（契约落实）**：docstring 早已承诺「None 表示

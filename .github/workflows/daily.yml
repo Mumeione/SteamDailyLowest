@@ -1,18 +1,19 @@
 # 每日史低日报（对应 .scratch/deploy/spec.md、.scratch/refactor-2026q4/spec.md §3.6 与 docs/DEVELOPMENT.md §8）
 #
-# 入口（cron 是 UTC，GitHub 不认 timezone 字段）：
-#   14 19 * * *  每日 03:14 Asia/Shanghai  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
-#   21 21 * * *  每日 05:21 Asia/Shanghai  补跑：daily-guard 检测到 12h 内已有成功的定时主任务则跳过
-#   14 7 * * *   每日 15:14 Asia/Shanghai  预抓：run.py --prefetch，纯 state 派生补详情缓存、不出报表（S8 起不扫描折扣列表）
-#   14 7 2 * *   每月 2 日 15:14           orphan 清理：data 分支历史清零（只留当前一版）
-#                                          + 清掉 7 天前的 Pages 部署记录（见该 job 注释）
-#   workflow_dispatch                    手动触发：主任务与预抓都跑（并发组串行排队）
+# 入口（2026-11-25 起 daily 主跑改由外部调度器远程触发）：
+#   外部调度器 06:20（北京）workflow_dispatch(mode=daily)  主任务：抓取 → 报表 → Pages 发布 → 状态回写 data 分支
+#   外部调度器 07:30 再检查一次，失败则复用原 run 重跑失败 job
+#   14 1 * * *  每日 09:14 Asia/Shanghai           预抓：run.py --prefetch，纯 state 派生补详情缓存、不出报表
+#   14 7 2 * *  每月 2 日 15:14                    orphan 清理：data 分支历史清零（只留当前一版）
+#                                                  + 清掉 7 天前的 Pages 部署记录（见该 job 注释）
+#   workflow_dispatch                              手动触发：mode=all（默认）主任务+预抓；mode=daily 只跑主任务
 #
-# 定时全部避开整点：官方文档写明「整点是 Actions 高负载时刻，调度可能被推迟甚至丢弃」。
-# 实测 0 19 * * *（03:00 CST，美区下午峰顶）排队 2h48m；05:14 CST 美东临近下班、
-# 07:24/15:14 CST 落在全球低谷，靠补跑兜底主跑被丢弃的场次。
-# 主跑原定 05:14（2026-09-25 实测延迟 2h38m 送达），用户裁决提前到 03:14（距补跑 2h07m），
-# 该时段靠美区下午峰顶、延迟可能更大，但丢弃与时刻无必然联系，仍由补跑兜底。
+# 为什么删掉 03:14 主跑 / 05:21 补跑：GitHub 定时调度实测延迟中位约 6h、最长跨日
+# （见 docs/operations.md），而外部调度器通常准点。daily 改由外部调度器 06:20 触发后，
+# 07:30 的检查能更早发现失败并复用原 run 重跑，不必再靠一个同样会被延迟的补跑兜底。
+# 预抓仍留在 GitHub；09:14 即使被延迟，离次日 06:20 主跑仍有足够缓冲。
+#
+# 预抓与清理仍避开整点：官方文档写明「整点是 Actions 高负载时刻，调度可能被推迟甚至丢弃」。
 #
 # §8 的四个坑在这里的处理方式：
 #   1. GITHUB_TOKEN 推的 commit 不触发 Pages 构建 → 发布用 deploy-pages 在同一次运行内完成
@@ -21,7 +22,7 @@
 #   4. main 的 .gitignore 直接整体忽略 data/（状态由 data 分支持有，不再依赖取反写法）
 #
 # S8（2026-10）在本文件落地的项（spec §3.6「S8 修订」）：
-#   ① timeout-minutes：主跑 90 · 预抓 60 · guard 5 · 清理 10 · 告警 5（此前吃默认 360 分钟）
+#   ① timeout-minutes：主跑 90 · 预抓 60 · 清理 10 · 告警 5（此前吃默认 360 分钟）
 #   ② 失败自动开 GitHub Issue（alert job，按 run.py 退出码分级，同日同因去重）
 #   ③ run.py 写 $GITHUB_STEP_SUMMARY 指标表 + 阶段墙钟（见 run.py）
 #   ④ permissions 顶层清零、按 job 最小化
@@ -29,11 +30,11 @@
 #   ⑥ daily/prefetch 的状态恢复与回写重复块抽成 .github/actions/{state-restore,data-writeback}
 #   ⑦ actions 全部升到 Node 24 运行时的当前主版本（Node 20 已于 2026-09-23 退役）
 #   报表发布韧性（Q3）：「打包报表 / 发布 Pages」用 always() + hashFiles 兜底——
-#   run.py 详情阶段失败（退出码 5）时首版报表照常发布，页面永远可见；失败 run 不计
-#   guard 的「成功定时 daily」，05:21 补跑照常重试详情，成功后完整版覆盖发布。
+#   run.py 详情阶段失败（退出码 5）时首版报表照常发布，页面永远可见；失败 run 由
+#   外部调度器 07:30 的检查复用原 run 重跑失败 job，成功后完整版覆盖发布。
 #
-# 每月 2 日的 14 7 UTC，预抓与 orphan 清理会同时命中：二者都进 state-write 并发组串行排队，
-# 且 orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
+# 每月 2 日：09:14 预抓与 15:14 orphan 清理都会命中，二者都进 state-write 并发组串行排队；
+# orphan 清理只清历史、保留当前 state.json 内容，互相不会丢数据。
 #
 # ⚠️ 本文件**不跑测试**：pytest / check_payload / jsdom 冒烟在 checks.yml（2026-10-09）。
 #   分工是「daily = 发布（要打真实请求）· checks = 契约锁（零网络）」。checks 是
@@ -45,11 +46,17 @@ name: daily
 
 on:
   schedule:
-    - cron: "14 19 * * *"
-    - cron: "21 21 * * *"
-    - cron: "14 7 * * *"
+    # 预抓：每日 09:14（北京时间）；仍由 GitHub 调度，实测会延迟，但离次日 06:20 主跑有足够缓冲
+    - cron: "14 1 * * *"
+    # 每月 2 日 15:14（北京时间）orphan 清理
     - cron: "14 7 2 * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "运行范围：all=主任务+预抓（手动默认）；daily=只跑主任务（外部远程触发用）"
+        type: choice
+        options: [all, daily]
+        default: all
 
 # 顶层清零，各 job 显式申请最小权限（S8 ④）
 permissions: {}
@@ -60,52 +67,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  daily-guard:
-    # 补跑守门：只在 05:21 的补跑触发时执行。过去 12 小时内已有一次成功的定时 daily
-    # （主跑或上一轮补跑）就跳过补跑 —— 状态库幂等不会坏，但能省一整轮
-    # 抓取（约 130 次 ITAD 请求 + Pages 发布）。
-    if: github.event.schedule == '21 21 * * *'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read        # gh run list 查近 12h 的运行记录
-    outputs:
-      skip: ${{ steps.check.outputs.skip }}
-    steps:
-      - id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # ⚠️ 不能按「UTC 当天」过滤：主跑 03:14 CST = 19:14 UTC（UTC 前一天），
-          # 补跑会看不到它。主跑 19:14 UTC 与补跑 21:21 UTC 相距 2h07m，
-          # 用 12 小时窗口既覆盖主跑、又不会把 24 小时前的上一轮补跑算进来。
-          since=$(date -u -d "12 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
-          count=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow daily.yml \
-            --event schedule --status success --created ">=$since" \
-            --json databaseId --jq 'length')
-          echo "过去 12 小时（自 ${since}）已有 ${count} 次成功的定时 daily 运行"
-          if [ "$count" -gt 0 ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
   daily:
     # 串行化（根因 C 修复，2026-10-04 随重构覆盖重新引入）：daily 必须等 prefetch
-    # 写完 data 分支再跑 —— 同 run 内两个 job 并行 push 会非快进冲突（10-02 实锤）
-    needs: [prefetch, daily-guard]
-    # needs 的 job 因 if 为假被 skip 时，依赖它的 job 会被连带 skip（GitHub 规则）。
-    # guard 的 if 只在补跑 cron 时为真，主跑/手动触发下 guard 必被跳过，
-    # 故必须用 always() 解耦，否则主跑永远被连坐杀掉（2026-09-24 实锤过一次）。
-    # 补跑路径仍要求 guard 真实执行过（result == 'success'）且未判 skip。
-    if: >-
-      always() && (
-        github.event_name == 'workflow_dispatch' ||
-        github.event.schedule == '14 19 * * *' ||
-        (github.event.schedule == '21 21 * * *' &&
-          needs.daily-guard.result == 'success' &&
-          needs.daily-guard.outputs.skip == 'false')
-      )
+    # 写完 data 分支再跑 —— 同 run 内两个 job 并行 push 会非快进冲突（10-02 实锤）。
+    # mode=daily 的外部触发会 skip prefetch，故用 always() 解耦，daily 照常跑。
+    needs: [prefetch]
+    if: always() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment:
@@ -254,11 +221,13 @@ jobs:
           echo "已删除 ${deleted} 条，失败 ${failed} 条（失败多为「系统保护的最后一条」，可忽略）"
 
   prefetch:
-    # 批 B 预抓（.scratch/prefetch/spec.md R2）：15:14 Asia/Shanghai 补详情缓存，
-    # 只写 state 不出报表；与主任务错开，防并发写坏 state.json。
+    # 批 B 预抓（.scratch/prefetch/spec.md R2）：09:14 Asia/Shanghai 补详情缓存，
+    # 只写 state 不出报表；与 06:20 主任务错开，防并发写坏 state.json。
     # S8 起**纯 state 派生**：不扫描折扣列表（省 ~27 次 ITAD/天），目标 =
     # 当日新增 ∪ 折扣活跃欠账 ∪ unlisted 重判 ∪ 只缺中文名，公式与主跑一致。
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '14 7 * * *'
+    if: >-
+      github.event.schedule == '14 1 * * *' ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode != 'daily')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -302,10 +271,9 @@ jobs:
     # 只开一个（按标题去重），避免连跑连开。
     # ⚠️ 只判 result == 'failure'，cancelled（手动取消 / 超时连带）不告警是有意的：
     # 取消是人主动行为或已被 timeout 说明，开 Issue 只会噪音（review-s8 P1-2 注）。
-    needs: [daily-guard, daily, prefetch, cleanup-data-branch]
+    needs: [daily, prefetch, cleanup-data-branch]
     if: >-
       always() && (
-        needs.daily-guard.result == 'failure' ||
         needs.daily.result == 'failure' ||
         needs.prefetch.result == 'failure' ||
         needs.cleanup-data-branch.result == 'failure'
@@ -318,19 +286,18 @@ jobs:
       - name: 汇总失败 job 与退出码
         id: summary
         env:
-          GUARD: ${{ needs.daily-guard.result }}
           DAILY: ${{ needs.daily.result }}
           PREFETCH: ${{ needs.prefetch.result }}
           CLEANUP: ${{ needs.cleanup-data-branch.result }}
           RUN_CODE: ${{ needs.daily.outputs.run_exit_code }}
         run: |
           failed=""
-          for pair in "daily-guard ${GUARD}" "daily ${DAILY}" "prefetch ${PREFETCH}" "cleanup-data-branch ${CLEANUP}"; do
+          for pair in "daily ${DAILY}" "prefetch ${PREFETCH}" "cleanup-data-branch ${CLEANUP}"; do
             set -- $pair
             if [ "$2" = "failure" ]; then failed="$failed $1"; fi
           done
           echo "jobs=$failed" >> "$GITHUB_OUTPUT"
-          # 标题日期用北京时间（AGENTS.md：一律北京时间；主跑 03:14 CST = UTC 前一天，
+          # 标题日期用北京时间（AGENTS.md：一律北京时间；06:20 CST 主跑与 UTC 日期可能相差一天，
           # 用 UTC 日期会让当天失败落到「昨天」标题上，去重语义也错位）
           echo "title=每日运行失败 $(TZ='Asia/Shanghai' date +%F)：$failed" >> "$GITHUB_OUTPUT"
           if [ -n "$RUN_CODE" ] && [ "$RUN_CODE" != "0" ]; then
@@ -340,6 +307,9 @@ jobs:
       - name: 开 Issue（当天同标题已开则跳过）
         env:
           GH_TOKEN: ${{ github.token }}
+          # alert job 没有 checkout，gh 无法从 git 远端推断仓库；不设 GH_REPO 会报
+          # 「fatal: not a git repository」，导致告警从未真正开出过 Issue（2026-11-25 修）
+          GH_REPO: ${{ github.repository }}
           TITLE: ${{ steps.summary.outputs.title }}
           FAILED_JOBS: ${{ steps.summary.outputs.jobs }}
           CODE_LINE: ${{ steps.summary.outputs.code_line }}
@@ -364,7 +334,7 @@ jobs:
             echo
             echo "退出码口径：0 成功 · 1 未预期 · 2 配置 · 3 滥用封禁 · 4 请求失败（**仅报表产出前**，页面没更新）· **5 详情/覆盖阶段失败**（含请求失败；页面已兜底发布首版，欠账由下一轮派生自愈，无需人工救数据）"
             echo
-            echo "排查指引：看上面运行里各 job 的 conclusion；\`daily-guard\` 失败会连坐补跑路径；"
-            echo "\`guard 判 skip\` 是设计行为（补跑 cron 场次 12h 窗口），不会触发本告警。"
+            echo "排查指引：看上面运行里各 job 的 conclusion；Pages 失败通常重跑即可恢复，"
+            echo "外部调度器 07:30 的检查会自动复用原 run 重跑失败 job。"
           } > body.md
           gh issue create --title "$TITLE" --body-file body.md

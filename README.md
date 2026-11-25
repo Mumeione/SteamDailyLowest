@@ -38,8 +38,9 @@
 
 ## 运行方式
 
-- GitHub Actions 每天自动运行（**03:14** 主跑 + **05:21** 补跑，15:14 预抓详情缓存），
-  跑完自动发布到 Pages 并把状态库回写到 `data` 分支；任一环节失败会自动开 Issue 告警
+- GitHub Actions 每天 **06:20** 由外部调度器远程触发主跑（**09:14** 预抓详情缓存，每月 2 日 15:14 清理），
+  跑完自动发布到 Pages 并把状态库回写到 `data` 分支；外部调度器 07:30 检查失败会自动重跑失败 job，
+  GitHub 侧任一环节失败也会自动开 Issue 告警
 - 数据源：[IsThereAnyDeal](https://docs.isthereanydeal.com/) 官方 API（Steam 官方 API 不提供历史价格）+ Steam 商店（中文名/比价）
 - 状态（JSON）增量攒库：好评率、appid、中文名、**外区原价**（键 `appid|cc` 永久缓存，
   现价每轮真查即校准——Valve 区域调价自动回写并记日志）走永久/TTL 缓存；

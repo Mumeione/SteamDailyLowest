@@ -709,9 +709,15 @@ if (loadScript) {
 const cardRows = $$("#sections .row");
 const rateEls = cardRows.map((r) => r.querySelector(".row-sub .rate")).filter(Boolean);
 const daysEls = cardRows.map((r) => r.querySelector(".row-sub .days")).filter(Boolean);
-check("好评率单独成 span 并带分档类名",
-  rateEls.length === cardRows.length &&
-  rateEls.every((e) => /rate-(high|ok|mid|low)/.test(e.className)),
+check("好评率单独成 span 并带分档类名（详情待补行允许没有好评率）",
+  cardRows.every((r) => {
+    const sub = r.querySelector(".row-sub");
+    if (!sub) return false;
+    const rate = sub.querySelector(".rate");
+    // 「详情待补」行按设计只显示文案、不挂 .rate；其余行必须有合法分档类名
+    return rate ? /rate-(high|ok|mid|low)/.test(rate.className)
+                : /详情待补/.test(sub.textContent || "");
+  }),
   rateEls.length ? rateEls[0].className + " → " + rateEls[0].textContent : "(无)");
 check("剩余天数带分档类名",
   daysEls.length > 0 && daysEls.every((e) => /days-(final|urgent|soon|later)/.test(e.className)),

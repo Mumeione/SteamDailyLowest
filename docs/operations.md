@@ -11,31 +11,33 @@ key 放 repository secret `ITAD_API_KEY`，用环境变量注入。
 
 | 工作流 | cron（UTC / 北京） | 作用 |
 | --- | --- | --- |
-| `daily.yml` 主跑 | `14 19` / 03:14 | 全流程 + 报表发布 + data 回写 + 告警 |
-| `daily.yml` 补跑 | `21 21` / 05:21 | `daily-guard` 检测过去 12 小时内已有成功的**定时**主跑则跳过（⚠️ 不能按「UTC 当天」过滤——主跑可能创建于 UTC 前一天；guard 只数 `--event schedule`，不计手动运行） |
-| `daily.yml` 预抓 | `14 7` / 15:14 | `--prefetch`：纯 state 派生补欠账，不出报表；价值 = 到期窗口条目提前 ~12h 刷新供次日快照/报表 |
-| `daily.yml` 孤儿清理 | `14 7 2` / 每月 2 日 14:14 | data 分支孤立分支清理 |
+| `daily.yml` 主跑 | **无 GitHub cron**；外部调度器 06:20 远程触发 | 全流程 + 报表发布 + data 回写 + 告警。外部调度器每天 06:20（北京）调 `workflow_dispatch`（`mode=daily`）；07:30 再检查一次，失败则复用原 run 重跑失败 job |
+| `daily.yml` 预抓 | `14 1` / 09:14 | `--prefetch`：纯 state 派生补欠账，不出报表；价值 = 到期窗口条目提前刷新供次日快照/报表 |
+| `daily.yml` 孤儿清理 | `14 7 2` / 每月 2 日 15:14 | data 分支孤立分支清理 + 清旧 Pages 部署记录 |
 | `backfill.yml` | 手动 | 通用回填入口：`script` / `args` 两个入参选定 `tools/backfill_*.py`（史低期 / Steam 封面 / 小黑盒中文名），统一注入 config + `ITAD_API_KEY` |
 | `probe.yml` | 手动 | 探针（有闸、零常驻成本） |
 | `checks.yml` | 手动 / push(main) | 提交前校验（推送 main 自动跑；一次 push 只触发一次、只校验推送尖端 = 最后一次提交） |
 
-> GitHub 调度器偶发延迟（实测最大 8h46m）甚至直接丢弃定时触发（无 run 记录）。
-> 补跑被 guard 的 12h 窗口跳过**不是缺陷是设计**：主跑成功了，补跑自然该跳。
-> 延迟送达的主跑与补跑并发时，优先用本地 `run.py --prefetch` 补预抓
-> （手动 workflow_dispatch 会让两 job 同 run 并行写 data 分支，fetch first 会拒）。
+> GitHub 调度器实测延迟很大：最近 17 次 03:14 主跑实际创建时间中位约 6.4h、最长跨日；
+> 15:14 预抓中位约 8.7h（实际多在 22:00–03:14 才跑）。因此 2026-11-25 起 daily 主跑改由
+> 外部调度器 06:20 触发，GitHub 侧只保留 09:14 预抓与月度清理；预抓仍可能被延迟，
+> 但它离次日 06:20 主跑有足够缓冲。
+> 手动 workflow_dispatch 默认 `mode=all`（主任务+预抓），外部触发传 `mode=daily` 只跑主任务。
 
 ### S8 工作流加固要点
 
-- **timeout-minutes**：主跑 90 · 预抓 60 · guard 5 · 清理 10 · 告警 5
+- **timeout-minutes**：主跑 90 · 预抓 60 · 清理 10 · 告警 5
 - **失败自动开 Issue**：`alert` job 监听各 job failure（cancelled 不告警，有意），
   正文附 run.py 退出码。退出码口径：`0` 成功 · `1` 未预期 · `2` 配置 ·
   `3` 滥用封禁 · `4` 请求失败（**仅报表产出前**，页面没更新）·
   `5` 详情/覆盖阶段失败（页面已兜底发布首版，欠账下轮自愈）——
-  4/5 的判别轴是「页面是否兜底」。同日同因标题去重
+  4/5 的判别轴是「页面是否兜底」。同日同因标题去重。
+  2026-11-25 补 `GH_REPO`：alert job 没有 checkout，不设它会报
+  `fatal: not a git repository`，Issue 从未真正开出
 - **`$GITHUB_STEP_SUMMARY`**：每轮一张关键指标表 + 阶段墙钟（`run.py` 的 StageClock 写入）
 - **报表发布韧性**：「打包报表 / 发布 Pages」`if: !cancelled()` + `hashFiles` 兜底——
   退出码 5 时首版报表照常发布，页面永远可见；手动取消 / 超时连带取消时不发布半成品；
-  失败 run 不计 guard 的「成功定时 daily」，补跑照常重试。状态回写用 `always()`：
+  失败 run 由外部调度器 07:30 检查自动重跑失败 job。状态回写用 `always()`：
   取消场景下已抓一半的状态写回去，下一轮断点续传受益
 - **permissions 按 job 最小化**（顶层清零）；data 回写 push 前 `git pull --rebase`
 - daily/prefetch 的状态恢复与回写抽成 `.github/actions/{state-restore,data-writeback}`
